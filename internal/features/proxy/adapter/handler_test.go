@@ -220,8 +220,17 @@ func TestHandler_PopulatesContextFromRequest(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	after := time.Now()
 
-	if engine.received.RemoteAddr == "" {
-		t.Error("expected non-empty RemoteAddr on the Context passed to the policy engine")
+	if engine.received.Identity != "agent-abc123" {
+		t.Errorf("expected Identity to be forwarded, got %q", engine.received.Identity)
+	}
+	if engine.received.Tool != "read_file" {
+		t.Errorf("expected Tool to be forwarded, got %q", engine.received.Tool)
+	}
+	if string(engine.received.Params) != `{"name":"read_file"}` {
+		t.Errorf("expected Params to be forwarded unchanged, got %q", engine.received.Params)
+	}
+	if engine.received.RemoteAddr != req.RemoteAddr {
+		t.Errorf("expected RemoteAddr %q, got %q", req.RemoteAddr, engine.received.RemoteAddr)
 	}
 	if engine.received.UserAgent != "wardline-test-agent/1.0" {
 		t.Errorf("expected UserAgent to be forwarded, got %q", engine.received.UserAgent)
