@@ -16,7 +16,15 @@ func NewDecider(policy policydomain.Engine) *Decider {
 }
 
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
-	decision := d.policy.Evaluate(call.Identity, call.Tool)
+	ctx := policydomain.Context{
+		Identity:   call.Identity,
+		Tool:       call.Tool,
+		Params:     call.Params,
+		Timestamp:  call.Timestamp,
+		RemoteAddr: call.RemoteAddr,
+		UserAgent:  call.UserAgent,
+	}
+	decision := d.policy.Evaluate(ctx)
 	return domain.Verdict{
 		Allow:  decision.Effect == policydomain.EffectAllow,
 		Reason: decision.Reason,

@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"encoding/json"
+	"time"
+)
+
 // Effect is the outcome of a policy rule: allow or deny.
 type Effect string
 
@@ -16,13 +21,26 @@ type Rule struct {
 	Effect   Effect
 }
 
-// Decision is the result of evaluating an identity+tool pair against policy.
+// Decision is the result of evaluating a Context against policy.
 type Decision struct {
 	Effect Effect
 	Reason string
 }
 
-// Engine evaluates whether an identity may call a tool.
+// Context is everything a policy engine may consider when evaluating a
+// tool call: who's calling, what they're calling, with what arguments,
+// when, and from where. A YAML-rule-matching Engine only reads Identity
+// and Tool; an OPA-backed Engine may read any of these fields.
+type Context struct {
+	Identity   string
+	Tool       string
+	Params     json.RawMessage
+	Timestamp  time.Time
+	RemoteAddr string
+	UserAgent  string
+}
+
+// Engine evaluates whether a Context's identity may make its tool call.
 type Engine interface {
-	Evaluate(identity, tool string) Decision
+	Evaluate(ctx Context) Decision
 }

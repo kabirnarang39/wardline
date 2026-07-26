@@ -27,7 +27,7 @@ func TestMatcher_Evaluate(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := m.Evaluate(tc.identity, tc.tool)
+			got := m.Evaluate(domain.Context{Identity: tc.identity, Tool: tc.tool})
 			if got.Effect != tc.want {
 				t.Errorf("Evaluate(%q, %q) = %q, want %q", tc.identity, tc.tool, got.Effect, tc.want)
 			}
@@ -47,12 +47,12 @@ func TestMatcher_FirstMatchWinsEvenAgainstLaterWildcard(t *testing.T) {
 	}
 	m := usecase.NewMatcher(rules, domain.EffectDeny)
 
-	got := m.Evaluate("agent-abc123", "delete_file")
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file"})
 	if got.Effect != domain.EffectDeny {
 		t.Errorf("expected earlier specific deny to win over later wildcard allow, got %q", got.Effect)
 	}
 
-	got = m.Evaluate("agent-abc123", "read_file")
+	got = m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
 	if got.Effect != domain.EffectAllow {
 		t.Errorf("expected wildcard allow to still catch a non-matching tool, got %q", got.Effect)
 	}
@@ -60,7 +60,7 @@ func TestMatcher_FirstMatchWinsEvenAgainstLaterWildcard(t *testing.T) {
 
 func TestMatcher_DefaultAllow(t *testing.T) {
 	m := usecase.NewMatcher(nil, domain.EffectAllow)
-	got := m.Evaluate("anyone", "anything")
+	got := m.Evaluate(domain.Context{Identity: "anyone", Tool: "anything"})
 	if got.Effect != domain.EffectAllow {
 		t.Errorf("expected default allow, got %q", got.Effect)
 	}

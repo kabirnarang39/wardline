@@ -16,9 +16,14 @@ type jsonRPCEnvelope struct {
 	// it as-is so error responses can echo it back without interpreting it.
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
-	Params struct {
-		Name string `json:"name"`
-	} `json:"params"`
+	Params json.RawMessage `json:"params"`
+}
+
+// toolCallParams extracts just the tool name from an envelope's raw
+// params; the full raw bytes are preserved separately on ToolCall.Params
+// for policy engines that need more than the name.
+type toolCallParams struct {
+	Name string `json:"name"`
 }
 
 // ParseToolCall extracts a ToolCall from an MCP JSON-RPC "tools/call"
@@ -38,8 +43,14 @@ func ParseToolCall(identity string, body []byte) (domain.ToolCall, json.RawMessa
 	if env.Method != "tools/call" {
 		return domain.ToolCall{}, id, fmt.Errorf("unsupported method %q", env.Method)
 	}
-	if env.Params.Name == "" {
+	var params toolCallParams
+	if len(env.Params) > 0 {
+		if err := json.Unmarshal(env.Params, &params); err != nil {
+			return domain.ToolCall{}, id, fmt.Errorf("parse params: %w", err)
+		}
+	}
+	if params.Name == "" {
 		return domain.ToolCall{}, id, fmt.Errorf("missing tool name")
 	}
-	return domain.ToolCall{Identity: identity, Tool: env.Params.Name}, id, nil
+	return domain.ToolCall{Identity: identity, Tool: params.Name, Params: env.Params}, id, nil
 }

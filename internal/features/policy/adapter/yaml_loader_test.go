@@ -35,11 +35,11 @@ default: deny
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := m.Evaluate("agent-abc123", "read_file")
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
 	if got.Effect != domain.EffectAllow {
 		t.Errorf("expected allow, got %q", got.Effect)
 	}
-	got = m.Evaluate("agent-abc123", "delete_file")
+	got = m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file"})
 	if got.Effect != domain.EffectDeny {
 		t.Errorf("expected deny, got %q", got.Effect)
 	}
@@ -116,7 +116,7 @@ default: allow
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := m.Evaluate("anyone", "anything")
+	got := m.Evaluate(domain.Context{Identity: "anyone", Tool: "anything"})
 	if got.Effect != domain.EffectAllow {
 		t.Errorf("expected default allow with no rules, got %q", got.Effect)
 	}
