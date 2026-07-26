@@ -7,6 +7,10 @@ import "time"
 type Verdict struct {
 	Allowed bool
 	Reason  string
+
+	// RetryAfter is how long until the caller's window resets. Only
+	// meaningful when Allowed is false — never read otherwise.
+	RetryAfter time.Duration
 }
 
 // Limiter decides whether an identity may make another call right now.

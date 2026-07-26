@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"time"
 
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
@@ -133,6 +135,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
 		h.record(identity, call.Tool, "throttled", budgetVerdict.Reason, start)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, id, "throttled by budget")
 		return
 	}
@@ -158,6 +161,18 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, identity, tool
 		return nil
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// retryAfterSeconds converts a budget verdict's RetryAfter into a whole
+// number of seconds for the RFC 6585 Retry-After header, rounding up so we
+// never tell a caller to retry before their window has actually reset (and
+// never advertise 0 or negative seconds).
+func retryAfterSeconds(d time.Duration) int {
+	s := int(math.Ceil(d.Seconds()))
+	if s < 1 {
+		return 1
+	}
+	return s
 }
 
 func (h *Handler) record(identity, tool, decision, reason string, start time.Time) {
