@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +24,7 @@ func TestServeEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, "policy.yaml")
 	configPath := filepath.Join(dir, "wardline.yaml")
-	listenAddr := "127.0.0.1:18080"
+	listenAddr := reserveAddr(t)
 
 	if err := os.WriteFile(policyPath, []byte(`
 rules:
@@ -73,6 +74,22 @@ audit:
 	if denyResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
 	}
+}
+
+// reserveAddr binds an ephemeral port to find one that's free, then closes
+// the listener immediately so the wardline subprocess can bind it. This
+// avoids hardcoding a port that could collide under parallel/shared CI runs.
+func reserveAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("release reserved port: %v", err)
+	}
+	return addr
 }
 
 func waitForServer(t *testing.T, addr string) {
