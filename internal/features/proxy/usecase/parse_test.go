@@ -1,7 +1,6 @@
 package usecase_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -75,19 +74,17 @@ func TestParseToolCall_NonObjectParams(t *testing.T) {
 }
 
 func TestParseToolCall_PreservesRawParams(t *testing.T) {
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","path":"/tmp/x"}}`)
+	// Deliberately non-canonical spacing and an unrecognized key: proves
+	// ToolCall.Params carries the exact params bytes through unchanged,
+	// rather than being decoded and re-marshaled (which would normalize
+	// spacing and could drop extra_field) anywhere in the pipeline.
+	rawParams := `{"name":"read_file", "path":"/tmp/x","extra_field":123}`
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + rawParams + `}`)
 	call, _, err := usecase.ParseToolCall("agent-abc123", body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var got struct {
-		Name string `json:"name"`
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(call.Params, &got); err != nil {
-		t.Fatalf("ToolCall.Params did not unmarshal: %v", err)
-	}
-	if got.Name != "read_file" || got.Path != "/tmp/x" {
-		t.Errorf("unexpected round-tripped params: %+v", got)
+	if string(call.Params) != rawParams {
+		t.Errorf("expected Params to equal the exact raw bytes sent:\n got:  %s\n want: %s", call.Params, rawParams)
 	}
 }
