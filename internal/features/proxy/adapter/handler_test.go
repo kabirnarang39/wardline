@@ -41,7 +41,7 @@ func newRequest(identity, tool string) *http.Request {
 func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":"ok"}`))
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
 	}))
 	defer upstream.Close()
 	upstreamURL, _ := url.Parse(upstream.URL)
