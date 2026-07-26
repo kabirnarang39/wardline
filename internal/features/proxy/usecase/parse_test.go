@@ -31,3 +31,27 @@ func TestParseToolCall_UnsupportedMethod(t *testing.T) {
 		t.Fatal("expected error for unsupported method")
 	}
 }
+
+func TestParseToolCall_EmptyParams(t *testing.T) {
+	body := []byte(`{"method":"tools/call","params":{}}`)
+	_, err := usecase.ParseToolCall("agent-abc123", body)
+	if err == nil {
+		t.Fatal("expected error for empty params (no tool name)")
+	}
+}
+
+func TestParseToolCall_MissingParams(t *testing.T) {
+	body := []byte(`{"method":"tools/call"}`)
+	_, err := usecase.ParseToolCall("agent-abc123", body)
+	if err == nil {
+		t.Fatal("expected error for missing params field")
+	}
+}
+
+func TestParseToolCall_EmptyToolName(t *testing.T) {
+	body := []byte(`{"method":"tools/call","params":{"name":""}}`)
+	_, err := usecase.ParseToolCall("agent-abc123", body)
+	if err == nil {
+		t.Fatal("expected error for empty tool name")
+	}
+}
