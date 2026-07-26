@@ -3,8 +3,9 @@
 Open source control-plane proxy for AI agents: identity, policy, budget, and
 audit for MCP and beyond.
 
-v0.1 scope: a reverse proxy in front of one MCP server, a static YAML
-allow/deny policy per identity+tool, and a structured JSON audit log.
+v0.1 scope: a reverse proxy in front of one MCP server, a policy backend
+(a static YAML allow/deny rule list, or an embedded OPA/Rego evaluator) per
+identity+tool, and a structured JSON audit log.
 
 ## Quickstart
 
@@ -50,6 +51,24 @@ config file (defaults to `yaml` if omitted):
   `policy.rego.example` for the same allow rule expressed in Rego, with
   access to the full request context — tool call parameters, timestamp,
   remote address, and user agent — not just identity and tool name.
+
+Choosing the `opa` backend links in the OPA Go SDK, which meaningfully
+increases binary size — roughly 29MB with OPA linked in vs. a few MB
+without — so an operator building a container image should expect the
+larger image when opting into it.
+
+The Rego input (`input` in a policy) is the whole request context as JSON:
+
+```json
+{
+  "identity": "agent-abc123",
+  "tool": "read_file",
+  "params": {"name": "read_file", "arguments": {"path": "/tmp/x"}},
+  "timestamp": "2026-07-27T10:00:00Z",
+  "remote_addr": "10.0.0.5:54321",
+  "user_agent": "some-agent/1.0"
+}
+```
 
 ```bash
 ./wardline validate-policy --file policy.rego.example --backend opa
