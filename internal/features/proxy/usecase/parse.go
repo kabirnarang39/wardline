@@ -25,5 +25,8 @@ func ParseToolCall(identity string, body []byte) (domain.ToolCall, error) {
 	if env.Method != "tools/call" {
 		return domain.ToolCall{}, fmt.Errorf("unsupported method %q", env.Method)
 	}
+	if env.Params.Name == "" {
+		return domain.ToolCall{}, fmt.Errorf("missing tool name")
+	}
 	return domain.ToolCall{Identity: identity, Tool: env.Params.Name}, nil
 }
