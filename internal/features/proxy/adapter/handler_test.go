@@ -164,3 +164,28 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 		t.Errorf("expected null id for unparsable body, got %s", env.ID)
 	}
 }
+
+func TestHandler_OversizedBodyRejected(t *testing.T) {
+	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	// One byte over the 1 MiB cap; content doesn't matter since the reader
+	// should be cut off before the body is parsed as JSON.
+	oversized := bytes.Repeat([]byte("a"), (1<<20)+1)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
+	req.Header.Set("X-Wardline-Identity", "agent-abc123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "error" {
+		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
+	}
+	decodeJSONRPCError(t, w)
+}
