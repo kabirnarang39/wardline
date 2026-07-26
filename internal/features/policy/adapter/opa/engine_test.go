@@ -104,6 +104,47 @@ func TestOPAEngine_BranchesOnParamsAndTimestamp(t *testing.T) {
 	}
 }
 
+const remoteAddrAndUserAgentSource = `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.remote_addr == "10.0.0.5:54321"
+	input.user_agent == "some-agent/1.0"
+}
+`
+
+// TestOPAEngine_RemoteAddrAndUserAgentReachRego proves remote_addr and
+// user_agent — documented in the README as available Rego input fields —
+// actually reach the policy, not just params and timestamp.
+func TestOPAEngine_RemoteAddrAndUserAgentReachRego(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(remoteAddrAndUserAgentSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{
+		Identity:   "agent-abc123",
+		Tool:       "read_file",
+		RemoteAddr: "10.0.0.5:54321",
+		UserAgent:  "some-agent/1.0",
+	})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow when remote_addr/user_agent match, got %q (reason: %q)", got.Effect, got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{
+		Identity:   "agent-abc123",
+		Tool:       "read_file",
+		RemoteAddr: "10.0.0.5:54321",
+		UserAgent:  "some-other-agent/2.0",
+	})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny when user_agent doesn't match, got %q", got.Effect)
+	}
+}
+
 const largeIntDenylistSource = `package wardline.authz
 
 default allow = false
