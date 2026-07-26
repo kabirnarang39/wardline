@@ -126,6 +126,15 @@ func postToolCall(t *testing.T, listenAddr, identity, tool string) *http.Respons
 	return postToolCallBody(t, listenAddr, identity, body)
 }
 
+// postToolCallWithPath is like postToolCall but adds an
+// "arguments":{"path":...} object to params, for policies that branch on
+// tool arguments rather than just identity/tool.
+func postToolCallWithPath(t *testing.T, listenAddr, identity, tool, path string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q,"arguments":{"path":%q}}}`, tool, path)
+	return postToolCallBody(t, listenAddr, identity, body)
+}
+
 func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
@@ -142,6 +151,10 @@ func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Res
 	return resp
 }
 
+// TestServeEndToEnd_OPABackend proves the richer policy.Context (params,
+// not just identity/tool) survives a real HTTP request end-to-end through
+// the OPA backend — a policy expressible with the YAML backend wouldn't
+// prove that.
 func TestServeEndToEnd_OPABackend(t *testing.T) {
 	listenAddr, stderr := startWardline(t, "policy.rego", `package wardline.authz
 
@@ -150,12 +163,18 @@ default allow = false
 allow {
 	input.identity == "agent-abc123"
 	input.tool == "read_file"
+	startswith(input.params.arguments.path, "/safe/")
 }
 `, "policy_backend: opa")
 
-	allowResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	allowResp := postToolCallWithPath(t, listenAddr, "agent-abc123", "read_file", "/safe/x")
 	if allowResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for allowed call, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+		t.Fatalf("expected 200 for a /safe/ path, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+	}
+
+	unsafePathResp := postToolCallWithPath(t, listenAddr, "agent-abc123", "read_file", "/unsafe/x")
+	if unsafePathResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a /unsafe/ path, got %d (stderr: %s)", unsafePathResp.StatusCode, stderr.String())
 	}
 
 	denyResp := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
