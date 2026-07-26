@@ -1,0 +1,8 @@
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+  - identity: "agent-abc123"
+    tool: "*"
+    effect: deny
+default: deny

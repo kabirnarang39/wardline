@@ -1,0 +1,6 @@
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml.example"
+audit:
+  output: stdout
+features: {}
