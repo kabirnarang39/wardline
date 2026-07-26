@@ -10,6 +10,8 @@ import (
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
+	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
+	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
@@ -82,11 +84,13 @@ func runServe(logger *slog.Logger, args []string) {
 
 	decider := proxyusecase.NewDecider(engine)
 
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL)
-
-	// No v0.1 feature reads flags yet; log what the operator has toggled on
-	// so the provider isn't wired in and then silently ignored.
 	featureFlags := flags.NewStaticProvider(cfg.Features)
+	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
+	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
+
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker)
+
+	// Log what the operator has toggled on so a flag isn't silently ignored.
 	for name := range cfg.Features {
 		if featureFlags.Enabled(name) {
 			logger.Info("feature enabled", "feature", name)

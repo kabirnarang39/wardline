@@ -12,6 +12,7 @@ import (
 
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -65,6 +66,14 @@ func (f *fakeWriter) Write(e auditdomain.Entry) error {
 	return nil
 }
 
+// alwaysAllowBudgetChecker is a no-op BudgetChecker for tests that aren't
+// exercising budget behavior — every call is allowed.
+type alwaysAllowBudgetChecker struct{}
+
+func (alwaysAllowBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+	return budgetdomain.Verdict{Allowed: true, Reason: "budget checks not under test"}
+}
+
 type contextRecordingEngine struct {
 	received policydomain.Context
 }
@@ -92,7 +101,7 @@ func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -118,7 +127,7 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: sensitiveReason})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
@@ -153,7 +162,7 @@ func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -173,7 +182,7 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("not json"))
 	req.Header.Set("X-Wardline-Identity", "agent-abc123")
@@ -198,7 +207,7 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	// One byte over the 1 MiB cap; content doesn't matter since the reader
 	// should be cut off before the body is parsed as JSON.
@@ -228,7 +237,7 @@ func TestHandler_PopulatesContextFromRequest(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil)
 	engine := &contextRecordingEngine{}
 	decider := proxyusecase.NewDecider(engine)
-	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{})
 
 	before := time.Now()
 	req := newRequest("agent-abc123", "read_file")
@@ -254,5 +263,102 @@ func TestHandler_PopulatesContextFromRequest(t *testing.T) {
 	}
 	if engine.received.Timestamp.Before(before) || engine.received.Timestamp.After(after) {
 		t.Errorf("expected Timestamp between %v and %v, got %v", before, after, engine.received.Timestamp)
+	}
+}
+
+type fakeBudgetChecker struct {
+	verdict budgetdomain.Verdict
+}
+
+func (f fakeBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+	return f.verdict
+}
+
+func TestHandler_ThrottledCallNeverReachesUpstream(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	const throttleReason = "rate limit exceeded: 1 requests per 1m0s window"
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: throttleReason}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	if upstreamHit {
+		t.Fatal("upstream should not have been called for a throttled request")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "throttled" {
+		t.Fatalf("expected one throttled audit entry, got %+v", writer.entries)
+	}
+	if writer.entries[0].Reason != throttleReason {
+		t.Errorf("expected the audit log to capture the detailed reason %q, got %q", throttleReason, writer.entries[0].Reason)
+	}
+	env := decodeJSONRPCError(t, w)
+	if env.Error.Message != "throttled by budget" {
+		t.Errorf("expected a generic throttle message, got %q", env.Error.Message)
+	}
+	if strings.Contains(env.Error.Message, throttleReason) {
+		t.Error("response body must never contain the detailed budget reason")
+	}
+}
+
+func TestHandler_AllowedByBudgetReachesUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: true, Reason: "within budget"}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_DeniedByPolicyNeverConsultsBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
+	// A budget checker that would deny everything, proving a policy deny
+	// short-circuits before budget is ever consulted (the audit decision
+	// must be "deny", not "throttled").
+	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: "should never be seen"}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (policy deny), got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "deny" {
+		t.Fatalf("expected one deny audit entry (not throttled), got %+v", writer.entries)
 	}
 }
