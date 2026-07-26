@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -27,44 +28,46 @@ const (
 )
 
 func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: wardline <serve|validate-policy|validate-config> [flags]")
+		logger.Error("usage: wardline <serve|validate-policy|validate-config> [flags]")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
 	case "serve":
-		runServe(os.Args[2:])
+		runServe(logger, os.Args[2:])
 	case "validate-policy":
-		runValidatePolicy(os.Args[2:])
+		runValidatePolicy(logger, os.Args[2:])
 	case "validate-config":
-		runValidateConfig(os.Args[2:])
+		runValidateConfig(logger, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
+		logger.Error("unknown command", "command", os.Args[1])
 		os.Exit(1)
 	}
 }
 
-func runServe(args []string) {
+func runServe(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "wardline.yaml", "path to config file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 
 	matcher, err := policyadapter.LoadFile(cfg.PolicyFile)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
 
-	writer := buildAuditWriter(cfg.Audit.Output)
+	writer := buildAuditWriter(logger, cfg.Audit.Output)
 	recorder := auditusecase.NewRecorder(writer, func(err error) {
-		fmt.Fprintf(os.Stderr, "audit write failed: %v\n", err)
+		logger.Error("audit write failed", "error", err)
 	})
 
 	decider := proxyusecase.NewDecider(matcher)
@@ -76,11 +79,11 @@ func runServe(args []string) {
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	for name := range cfg.Features {
 		if featureFlags.Enabled(name) {
-			fmt.Fprintf(os.Stderr, "wardline: feature %q enabled\n", name)
+			logger.Info("feature enabled", "feature", name)
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "wardline listening on %s, proxying to %s\n", cfg.Listen, cfg.Upstream)
+	logger.Info("wardline listening", "addr", cfg.Listen, "upstream", cfg.Upstream)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
@@ -90,42 +93,42 @@ func runServe(args []string) {
 		IdleTimeout:       idleTimeout,
 	}
 	if err := srv.ListenAndServe(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}
 }
 
-func runValidatePolicy(args []string) {
+func runValidatePolicy(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("validate-policy", flag.ExitOnError)
 	path := fs.String("file", "policy.yaml", "path to policy file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
 	if _, err := policyadapter.LoadFile(*path); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("policy file is valid")
 }
 
-func runValidateConfig(args []string) {
+func runValidateConfig(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("validate-config", flag.ExitOnError)
 	path := fs.String("config", "wardline.yaml", "path to config file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
 	if _, err := config.Load(*path); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("config file is valid")
 }
 
-func buildAuditWriter(output string) *auditadapter.JSONLWriter {
+func buildAuditWriter(logger *slog.Logger, output string) *auditadapter.JSONLWriter {
 	if output == "stdout" {
 		return auditadapter.NewJSONLWriter(os.Stdout)
 	}
 	f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("failed to open audit output file", "path", output, "error", err)
 		os.Exit(1)
 	}
 	return auditadapter.NewJSONLWriter(f)
