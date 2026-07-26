@@ -13,6 +13,10 @@ import (
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
 
+// upstreamResponseHeaderTimeout bounds how long we wait for a connected
+// upstream to start responding; MCP tool calls are fast, so 30s is generous.
+const upstreamResponseHeaderTimeout = 30 * time.Second
+
 // Handler is the HTTP entry point: parse each request, ask the Decider for
 // a verdict, record exactly one audit entry per request, and forward
 // allowed calls to the upstream MCP server.
@@ -24,10 +28,12 @@ type Handler struct {
 }
 
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL) *Handler {
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	proxy.Transport = &http.Transport{ResponseHeaderTimeout: upstreamResponseHeaderTimeout}
 	return &Handler{
 		decider:  decider,
 		recorder: recorder,
-		upstream: httputil.NewSingleHostReverseProxy(upstream),
+		upstream: proxy,
 		now:      time.Now,
 	}
 }
