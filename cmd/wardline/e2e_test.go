@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -208,5 +209,34 @@ budget:
 	secondResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if secondResp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 for the second call in the same window, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_BudgetConfiguredButFlagOffWarns proves an operator who
+// sets a budget block but forgets to flip features.budget_enforcement gets
+// a log signal instead of silent no-op enforcement, and that enforcement is
+// in fact not applied (the call succeeds despite requests_per_window: 1).
+func TestServeEndToEnd_BudgetConfiguredButFlagOffWarns(t *testing.T) {
+	listenAddr, stderr := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, `budget:
+  requests_per_window: 1
+  window_seconds: 60`)
+
+	firstResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first call, got %d (stderr: %s)", firstResp.StatusCode, stderr.String())
+	}
+	secondResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if secondResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the second call too (budget_enforcement flag is off), got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "budget config is set but features.budget_enforcement is off") {
+		t.Errorf("expected a warning log about unenforced budget config, got stderr: %s", stderr.String())
 	}
 }
