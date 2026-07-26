@@ -19,11 +19,12 @@ type AuditConfig struct {
 // field exists so internal/platform/flags has something to read from
 // without a later breaking config change).
 type Config struct {
-	Listen     string          `yaml:"listen"`
-	Upstream   string          `yaml:"upstream"`
-	PolicyFile string          `yaml:"policy_file"`
-	Audit      AuditConfig     `yaml:"audit"`
-	Features   map[string]bool `yaml:"features"`
+	Listen         string          `yaml:"listen"`
+	Upstream       string          `yaml:"upstream"`
+	PolicyFile     string          `yaml:"policy_file"`
+	PolicyBackend  string          `yaml:"policy_backend"` // "yaml" (default) or "opa"
+	Audit          AuditConfig     `yaml:"audit"`
+	Features       map[string]bool `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
 	// validate(). Callers (cmd/wardline/main.go) should use this instead of
@@ -66,6 +67,11 @@ func (c *Config) validate() error {
 	}
 	if c.PolicyFile == "" {
 		problems = append(problems, "policy_file must not be empty")
+	}
+	if c.PolicyBackend == "" {
+		c.PolicyBackend = "yaml"
+	} else if c.PolicyBackend != "yaml" && c.PolicyBackend != "opa" {
+		problems = append(problems, fmt.Sprintf(`policy_backend must be "yaml" or "opa", got %q`, c.PolicyBackend))
 	}
 	if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty")
