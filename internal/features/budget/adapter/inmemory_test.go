@@ -1,6 +1,8 @@
 package adapter_test
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,5 +54,34 @@ func TestInMemoryLimiter_IndependentPerIdentity(t *testing.T) {
 	}
 	if got := l.Allow("agent-b", now); !got.Allowed {
 		t.Error("expected agent-b's first call to be independently allowed, got denied")
+	}
+}
+
+// TestInMemoryLimiter_ConcurrentAccessIsSafe proves the limiter is safe
+// under contention (run with -race to catch data races) and doesn't
+// over-admit: with requestsPerWindow=10, exactly 10 of 50 concurrent
+// callers for the same identity should be allowed, never more.
+func TestInMemoryLimiter_ConcurrentAccessIsSafe(t *testing.T) {
+	const goroutines = 50
+	const requestsPerWindow = 10
+
+	l := adapter.NewInMemoryLimiter(requestsPerWindow, time.Minute)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	var allowed int64
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if got := l.Allow("agent-abc123", now); got.Allowed {
+				atomic.AddInt64(&allowed, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if allowed != requestsPerWindow {
+		t.Errorf("expected exactly %d allowed calls out of %d concurrent callers, got %d", requestsPerWindow, goroutines, allowed)
 	}
 }
