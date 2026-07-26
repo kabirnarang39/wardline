@@ -1,0 +1,130 @@
+package adapter_test
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+
+	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
+	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
+	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+)
+
+type fakeEngine struct {
+	effect policydomain.Effect
+}
+
+func (f fakeEngine) Evaluate(identity, tool string) policydomain.Decision {
+	return policydomain.Decision{Effect: f.effect, Reason: "fake"}
+}
+
+type fakeWriter struct {
+	entries []auditdomain.Entry
+}
+
+func (f *fakeWriter) Write(e auditdomain.Entry) error {
+	f.entries = append(f.entries, e)
+	return nil
+}
+
+func newRequest(identity, tool string) *http.Request {
+	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"` + tool + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
+	req.Header.Set("X-Wardline-Identity", identity)
+	return req
+}
+
+func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if upstreamHit {
+		t.Fatal("upstream should not have been called for a denied request")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "deny" {
+		t.Fatalf("expected one deny audit entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
+	upstreamURL, _ := url.Parse("http://127.0.0.1:1") // nothing listens here
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "error" {
+		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_MalformedBodyReturnsError(t *testing.T) {
+	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("not json"))
+	req.Header.Set("X-Wardline-Identity", "agent-abc123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "error" {
+		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
+	}
+}
