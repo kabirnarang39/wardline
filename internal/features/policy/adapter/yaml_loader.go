@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -31,7 +32,9 @@ func LoadFile(path string) (*usecase.Matcher, error) {
 	}
 
 	var raw policyYAML
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse policy file %s: %w", path, err)
 	}
 
