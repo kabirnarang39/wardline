@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	//nolint:staticcheck // SA1019: the v1 package requires Rego v1 syntax
 	// (explicit `if`/`contains` keywords) and rejects this engine's verified
@@ -29,6 +30,10 @@ const wantPackagePath = "data.wardline.authz"
 // the wardline.authz package, so both "allow" and an optional "reason" key
 // come back in a single evaluation.
 const queryPath = "data.wardline.authz"
+
+// evalTimeout bounds a single policy evaluation so a runaway or malicious
+// Rego policy can't hang a request indefinitely.
+const evalTimeout = 5 * time.Second
 
 // OPAEngine is a policydomain.Engine backed by an embedded, in-process OPA
 // evaluator — no external `opa run --server` process, no network hop.
@@ -95,7 +100,17 @@ func (e *OPAEngine) Evaluate(pc domain.Context) domain.Decision {
 		return domain.Decision{Effect: domain.EffectDeny, Reason: fmt.Sprintf("failed to build policy input: %v", err)}
 	}
 
-	rs, err := e.query.Eval(context.Background(), rego.EvalInput(input))
+	// domain.Engine.Evaluate takes no context.Context (widening that
+	// interface is a separate future change), so a bounded timeout is
+	// enforced internally instead — a runaway or malicious policy (e.g.
+	// http.send to a slow endpoint, an expensive comprehension over
+	// attacker-controlled params) must not hang a request indefinitely.
+	// A timeout surfaces as a genuine Eval error, which the existing
+	// fail-closed handling below already turns into a deny.
+	ctx, cancel := context.WithTimeout(context.Background(), evalTimeout)
+	defer cancel()
+
+	rs, err := e.query.Eval(ctx, rego.EvalInput(input))
 	if err != nil {
 		return domain.Decision{Effect: domain.EffectDeny, Reason: fmt.Sprintf("policy evaluation failed: %v", err)}
 	}
