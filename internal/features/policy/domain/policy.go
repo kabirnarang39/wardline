@@ -32,10 +32,40 @@ type Decision struct {
 // when, and from where. A YAML-rule-matching Engine only reads Identity
 // and Tool; an OPA-backed Engine may read any of these fields.
 type Context struct {
-	Identity   string
-	Tool       string
-	Params     json.RawMessage
-	Timestamp  time.Time
+	Identity string
+
+	// Tool is the authoritative tool name, as extracted by Wardline's own
+	// JSON parser. A policy should always key decisions off Tool, never
+	// re-parse Params looking for a "name" key — a body with duplicate
+	// JSON keys could be interpreted differently by a different JSON
+	// parser than the one Wardline used, a confused-deputy risk in a
+	// security-relevant proxy.
+	Tool string
+
+	// Params is the whole MCP "params" object as sent by the client, not
+	// just the tool's arguments — a real "tools/call" params typically
+	// looks like {"name":"...", "arguments":{...}}, so a policy wanting
+	// tool arguments should read params.arguments.*, not assume the top
+	// level IS the arguments.
+	//
+	// On a successful ParseToolCall, Params is always a non-nil JSON
+	// object containing a non-empty "name" key: non-object params are
+	// rejected, and a null/omitted params falls through to the
+	// empty-name rejection, so a policy engine only ever sees a call
+	// that reached policy evaluation. Params is nil only when a Context
+	// is constructed by hand (e.g. in tests) rather than via the real
+	// parse path.
+	Params json.RawMessage
+
+	Timestamp time.Time
+
+	// RemoteAddr is http.Request.RemoteAddr — the direct TCP peer's
+	// host:port as seen by Wardline itself, NOT resolved through
+	// X-Forwarded-For or similar proxy headers. Behind a load balancer
+	// or ingress, this is the LB's address on every request, not the
+	// original client's; a future policy keying off network origin needs
+	// XFF-awareness added explicitly (not yet implemented — a known
+	// limitation, not a bug in this field's current behavior).
 	RemoteAddr string
 	UserAgent  string
 }
