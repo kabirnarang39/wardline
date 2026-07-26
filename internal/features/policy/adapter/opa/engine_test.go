@@ -1,0 +1,188 @@
+package opa_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
+	"github.com/kabirnarang39/wardline/internal/features/policy/domain"
+)
+
+const allowDenySource = `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.tool == "read_file"
+}
+
+reason = "matched read_file rule" {
+	allow
+}
+`
+
+func TestOPAEngine_Allow(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow, got %q", got.Effect)
+	}
+	if got.Reason != "matched read_file rule" {
+		t.Errorf("expected reason from rule, got %q", got.Reason)
+	}
+}
+
+func TestOPAEngine_DenyNoReason(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "someone-else", Tool: "read_file"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny, got %q", got.Effect)
+	}
+	if got.Reason == "" {
+		t.Error("expected a non-empty default reason when the rule produced no reason key")
+	}
+}
+
+const paramsAndTimeSource = `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	startswith(input.params.arguments.path, "/safe/")
+	ns := time.parse_rfc3339_ns(input.timestamp)
+	clock := time.clock([ns, "UTC"])
+	clock[0] >= 9
+	clock[0] < 17
+}
+
+reason = "matched safe-path business-hours rule" {
+	allow
+}
+`
+
+func TestOPAEngine_BranchesOnParamsAndTimestamp(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(paramsAndTimeSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	businessHours := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	afterHours := time.Date(2026, 7, 27, 23, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		params    string
+		timestamp time.Time
+		want      domain.Effect
+	}{
+		{"safe path in business hours", `{"name":"read_file","arguments":{"path":"/safe/x"}}`, businessHours, domain.EffectAllow},
+		{"unsafe path in business hours", `{"name":"read_file","arguments":{"path":"/unsafe/x"}}`, businessHours, domain.EffectDeny},
+		{"safe path after hours", `{"name":"read_file","arguments":{"path":"/safe/x"}}`, afterHours, domain.EffectDeny},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := e.Evaluate(domain.Context{
+				Identity:  "agent-abc123",
+				Tool:      "read_file",
+				Params:    []byte(tc.params),
+				Timestamp: tc.timestamp,
+			})
+			if got.Effect != tc.want {
+				t.Errorf("expected %q, got %q (reason: %q)", tc.want, got.Effect, got.Reason)
+			}
+		})
+	}
+}
+
+func TestOPAEngine_NoRuleAtAll(t *testing.T) {
+	// A package with zero rules under wardline.authz evaluates to an empty
+	// object (verified empirically: rs[0].Expressions[0].Value is
+	// map[string]interface{}{}, not an empty ResultSet) — the "allow" key
+	// is simply absent, which must fail closed rather than panic or
+	// silently allow.
+	e, err := opa.NewOPAEngine("empty.rego", []byte(`package wardline.authz
+`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny when no rule defines allow at all, got %q", got.Effect)
+	}
+	if got.Reason == "" {
+		t.Error("expected a non-empty reason explaining the missing decision")
+	}
+}
+
+func TestOPAEngine_NonBooleanAllow(t *testing.T) {
+	// A malformed policy where allow resolves to a non-boolean value must
+	// never be silently treated as truthy — fail closed instead.
+	e, err := opa.NewOPAEngine("nonbool.rego", []byte(`package wardline.authz
+
+allow = "yes"
+`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny when allow is a non-boolean value, got %q", got.Effect)
+	}
+	if got.Reason == "" {
+		t.Error("expected a non-empty reason explaining the invalid allow value")
+	}
+}
+
+func TestNewOPAEngine_SyntaxError(t *testing.T) {
+	_, err := opa.NewOPAEngine("bad.rego", []byte(`package wardline.authz
+
+allow {
+	this is not valid rego
+`))
+	if err == nil {
+		t.Fatal("expected a syntax error, got nil")
+	}
+}
+
+func TestNewOPAEngine_WrongPackage(t *testing.T) {
+	_, err := opa.NewOPAEngine("wrong.rego", []byte(`package something.else
+
+allow = true
+`))
+	if err == nil {
+		t.Fatal("expected a wrong-package error, got nil")
+	}
+}
+
+func TestLoadRegoFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.rego")
+	if err := os.WriteFile(path, []byte(allowDenySource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e, err := opa.LoadRegoFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow, got %q", got.Effect)
+	}
+}
+
+func TestLoadRegoFile_MissingFile(t *testing.T) {
+	_, err := opa.LoadRegoFile("/nonexistent/policy.rego")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
