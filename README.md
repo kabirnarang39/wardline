@@ -11,6 +11,7 @@ allow/deny policy per identity+tool, and a structured JSON audit log.
 ```bash
 go build -o wardline ./cmd/wardline
 ./wardline validate-policy --file policy.yaml.example
+./wardline validate-config --config wardline.yaml.example
 ./wardline serve --config wardline.yaml.example
 ```
 
