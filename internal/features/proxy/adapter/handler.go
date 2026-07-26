@@ -65,7 +65,13 @@ type Handler struct {
 
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxy.Transport = &http.Transport{ResponseHeaderTimeout: upstreamResponseHeaderTimeout}
+	// Clone http.DefaultTransport rather than starting from a zero-value
+	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
+	// support, connection pooling, and Proxy: ProxyFromEnvironment — only
+	// ResponseHeaderTimeout is overridden.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
+	proxy.Transport = tr
 	return &Handler{
 		decider:  decider,
 		recorder: recorder,
