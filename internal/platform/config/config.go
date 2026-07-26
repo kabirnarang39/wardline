@@ -21,6 +21,13 @@ type BudgetConfig struct {
 	WindowSeconds     int `yaml:"window_seconds"`
 }
 
+// maxBudgetWindowSeconds bounds budget.window_seconds to 24h, a reasonable
+// ceiling for a rate-limit window. It exists to catch config mistakes (a
+// pasted-in millisecond/nanosecond figure) before
+// time.Duration(WindowSeconds)*time.Second in cmd/wardline/main.go turns it
+// into an implausibly large or overflowing duration.
+const maxBudgetWindowSeconds = 86400
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 — budget_enforcement is
 // the first real one; internal/platform/flags reads this map to decide
@@ -90,6 +97,8 @@ func (c *Config) validate() error {
 		}
 		if c.Budget.WindowSeconds <= 0 {
 			problems = append(problems, "budget.window_seconds must be > 0 when features.budget_enforcement is true")
+		} else if c.Budget.WindowSeconds > maxBudgetWindowSeconds {
+			problems = append(problems, fmt.Sprintf("budget.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", maxBudgetWindowSeconds, c.Budget.WindowSeconds))
 		}
 	}
 	if len(problems) > 0 {
