@@ -5,3 +5,8 @@ policy_file: "./policy.yaml.example"
 audit:
   output: stdout
 features: {}
+# features:
+#   budget_enforcement: true   # off by default — see README.md "Budget enforcement"
+# budget:
+#   requests_per_window: 100
+#   window_seconds: 60

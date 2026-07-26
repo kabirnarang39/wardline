@@ -74,5 +74,21 @@ The Rego input (`input` in a policy) is the whole request context as JSON:
 ./wardline validate-policy --file policy.rego.example --backend opa
 ```
 
+## Budget enforcement
+
+Off by default. Opt in with `features.budget_enforcement: true` plus a
+`budget:` block (`requests_per_window`, `window_seconds`) — see
+`wardline.yaml.example`. A throttled call gets HTTP 429 with a generic
+message; the audit log records `decision: "throttled"` with the detailed
+reason.
+
+The limiter is per-process, in-memory — running multiple `wardline`
+replicas gives each its own independent budget. This is a known limitation,
+not a bug.
+
+This is a request-*rate* limit, not a success-rate limit: a request that's
+within budget but then fails upstream (502) still counts against the
+caller's window.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
