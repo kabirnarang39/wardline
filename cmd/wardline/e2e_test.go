@@ -14,25 +14,28 @@ import (
 	"time"
 )
 
-func TestServeEndToEnd(t *testing.T) {
+// startWardline writes policyBody to policyFilename and a wardline.yaml
+// (with extraConfigLines appended, e.g. "policy_backend: opa"), builds the
+// wardline binary, and starts it as a subprocess pointed at a mock upstream
+// that 200s on anything. It blocks until the server is ready and registers
+// cleanup for the subprocess and upstream. Returns the address the server
+// is listening on and the buffer capturing its stderr (for test failure
+// diagnostics).
+func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *bytes.Buffer) {
+	t.Helper()
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
 
 	dir := t.TempDir()
-	policyPath := filepath.Join(dir, "policy.yaml")
+	policyPath := filepath.Join(dir, policyFilename)
 	configPath := filepath.Join(dir, "wardline.yaml")
-	listenAddr := reserveAddr(t)
+	listenAddr = reserveAddr(t)
 
-	if err := os.WriteFile(policyPath, []byte(`
-rules:
-  - identity: "agent-abc123"
-    tool: "read_file"
-    effect: allow
-default: deny
-`), 0644); err != nil {
+	if err := os.WriteFile(policyPath, []byte(policyBody), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,9 +43,10 @@ default: deny
 listen: "%s"
 upstream: "%s"
 policy_file: "%s"
+%s
 audit:
   output: stdout
-`, listenAddr, upstream.URL, policyPath)), 0644); err != nil {
+`, listenAddr, upstream.URL, policyPath, extraConfigLines)), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,17 +57,28 @@ audit:
 	}
 
 	cmd := exec.Command(binPath, "serve", "--config", configPath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr = &bytes.Buffer{}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start wardline: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-	}()
+	})
 
 	waitForServer(t, "http://"+listenAddr)
+	return listenAddr, stderr
+}
+
+func TestServeEndToEnd(t *testing.T) {
+	listenAddr, stderr := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
 
 	allowResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if allowResp.StatusCode != http.StatusOK {
@@ -108,6 +123,11 @@ func waitForServer(t *testing.T, addr string) {
 func postToolCall(t *testing.T, listenAddr, identity, tool string) *http.Response {
 	t.Helper()
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
+	return postToolCallBody(t, listenAddr, identity, body)
+}
+
+func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Response {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
@@ -123,18 +143,7 @@ func postToolCall(t *testing.T, listenAddr, identity, tool string) *http.Respons
 }
 
 func TestServeEndToEnd_OPABackend(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
-	}))
-	defer upstream.Close()
-
-	dir := t.TempDir()
-	policyPath := filepath.Join(dir, "policy.rego")
-	configPath := filepath.Join(dir, "wardline.yaml")
-	listenAddr := reserveAddr(t)
-
-	if err := os.WriteFile(policyPath, []byte(`package wardline.authz
+	listenAddr, stderr := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -142,39 +151,7 @@ allow {
 	input.identity == "agent-abc123"
 	input.tool == "read_file"
 }
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
-listen: "%s"
-upstream: "%s"
-policy_file: "%s"
-policy_backend: opa
-audit:
-  output: stdout
-`, listenAddr, upstream.URL, policyPath)), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	binPath := filepath.Join(dir, "wardline")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, out)
-	}
-
-	cmd := exec.Command(binPath, "serve", "--config", configPath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start wardline: %v", err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	waitForServer(t, "http://"+listenAddr)
+`, "policy_backend: opa")
 
 	allowResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if allowResp.StatusCode != http.StatusOK {
