@@ -24,12 +24,16 @@ import (
 // successfully but produces an empty ResultSet on every future query —
 // silently denying every request forever with no diagnostic. Checking
 // this at load time turns that into a fail-fast startup error instead.
+// It also doubles as queryPath below: the load-time package check and the
+// runtime query must always target the same path, so they share one
+// constant rather than risking two literals drifting apart.
 const wantPackagePath = "data.wardline.authz"
 
 // queryPath is what Evaluate asks OPA for: the whole exported object under
 // the wardline.authz package, so both "allow" and an optional "reason" key
-// come back in a single evaluation.
-const queryPath = "data.wardline.authz"
+// come back in a single evaluation. Same value as wantPackagePath, used
+// here for the runtime query rather than the load-time package check.
+const queryPath = wantPackagePath
 
 // evalTimeout bounds a single policy evaluation so a runaway or malicious
 // Rego policy can't hang a request indefinitely.
