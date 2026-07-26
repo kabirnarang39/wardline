@@ -72,5 +72,5 @@ type Context struct {
 
 // Engine evaluates whether a Context's identity may make its tool call.
 type Engine interface {
-	Evaluate(ctx Context) Decision
+	Evaluate(pc Context) Decision
 }

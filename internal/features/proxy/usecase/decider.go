@@ -16,7 +16,7 @@ func NewDecider(policy policydomain.Engine) *Decider {
 }
 
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
-	ctx := policydomain.Context{
+	pc := policydomain.Context{
 		Identity:   call.Identity,
 		Tool:       call.Tool,
 		Params:     call.Params,
@@ -24,7 +24,7 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 		RemoteAddr: call.RemoteAddr,
 		UserAgent:  call.UserAgent,
 	}
-	decision := d.policy.Evaluate(ctx)
+	decision := d.policy.Evaluate(pc)
 	return domain.Verdict{
 		Allow:  decision.Effect == policydomain.EffectAllow,
 		Reason: decision.Reason,
