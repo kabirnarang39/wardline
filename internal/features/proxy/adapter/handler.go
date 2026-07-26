@@ -127,6 +127,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, identity, tool
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
+			recorded = true
 			h.record(identity, tool, "allow", start)
 		}
 		return nil
