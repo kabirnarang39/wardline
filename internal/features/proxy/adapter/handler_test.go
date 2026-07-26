@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,10 +45,15 @@ func decodeJSONRPCError(t *testing.T, w *httptest.ResponseRecorder) jsonRPCError
 
 type fakeEngine struct {
 	effect policydomain.Effect
+	reason string
 }
 
 func (f fakeEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
-	return policydomain.Decision{Effect: f.effect, Reason: "fake"}
+	reason := f.reason
+	if reason == "" {
+		reason = "fake"
+	}
+	return policydomain.Decision{Effect: f.effect, Reason: reason}
 }
 
 type fakeWriter struct {
@@ -107,9 +113,11 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	defer upstream.Close()
 	upstreamURL, _ := url.Parse(upstream.URL)
 
+	const sensitiveReason = "policy evaluation failed: /etc/wardline/policy.rego:12: internal detail"
+
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
-	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: sensitiveReason})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL)
 
 	w := httptest.NewRecorder()
@@ -124,9 +132,18 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "deny" {
 		t.Fatalf("expected one deny audit entry, got %+v", writer.entries)
 	}
+	if writer.entries[0].Reason != sensitiveReason {
+		t.Errorf("expected the audit log to capture the detailed reason %q, got %q", sensitiveReason, writer.entries[0].Reason)
+	}
 	env := decodeJSONRPCError(t, w)
 	if env.Error.Message == "" {
 		t.Error("expected a non-empty error message")
+	}
+	if env.Error.Message != "denied by policy" {
+		t.Errorf("expected a generic deny message, got %q", env.Error.Message)
+	}
+	if strings.Contains(env.Error.Message, sensitiveReason) {
+		t.Error("response body must never contain the detailed policy reason")
 	}
 }
 

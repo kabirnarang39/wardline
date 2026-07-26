@@ -10,6 +10,12 @@ type Entry struct {
 	Tool      string
 	Decision  string // "allow", "deny", or "error"
 	LatencyMS int64
+
+	// Reason is the detailed, potentially sensitive explanation behind a
+	// decision (e.g. a policy engine's internal error text, file paths,
+	// or rule names). It's recorded here for the operator only — never
+	// sent to the untrusted HTTP caller.
+	Reason string
 }
 
 // Writer persists an audit Entry.

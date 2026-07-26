@@ -14,6 +14,7 @@ type entryJSON struct {
 	Tool      string `json:"tool"`
 	Decision  string `json:"decision"`
 	LatencyMS int64  `json:"latency_ms"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // JSONLWriter writes one JSON object per line to the wrapped io.Writer.
@@ -34,6 +35,7 @@ func (w *JSONLWriter) Write(e domain.Entry) error {
 		Tool:      e.Tool,
 		Decision:  e.Decision,
 		LatencyMS: e.LatencyMS,
+		Reason:    e.Reason,
 	})
 	if err != nil {
 		return err

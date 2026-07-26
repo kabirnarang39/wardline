@@ -30,6 +30,48 @@ func TestJSONLWriter_WritesOneLinePerEntry(t *testing.T) {
 	}
 }
 
+func TestJSONLWriter_IncludesReasonWhenPresent(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := w.Write(domain.Entry{
+		Timestamp: ts,
+		Identity:  "agent-abc123",
+		Tool:      "read_file",
+		Decision:  "deny",
+		LatencyMS: 7,
+		Reason:    "policy evaluation failed: some internal detail",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `{"timestamp":"2026-01-01T12:00:00Z","identity":"agent-abc123","tool":"read_file","decision":"deny","latency_ms":7,"reason":"policy evaluation failed: some internal detail"}` + "\n"
+	if buf.String() != want {
+		t.Errorf("got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+func TestJSONLWriter_OmitsReasonWhenEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := w.Write(domain.Entry{
+		Timestamp: ts,
+		Identity:  "agent-abc123",
+		Tool:      "read_file",
+		Decision:  "allow",
+		LatencyMS: 7,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if bytes.Contains(buf.Bytes(), []byte("reason")) {
+		t.Errorf("expected no reason key when Reason is empty, got: %s", buf.String())
+	}
+}
+
 func TestJSONLWriter_MultipleWritesAppendLines(t *testing.T) {
 	var buf bytes.Buffer
 	w := adapter.NewJSONLWriter(&buf)
