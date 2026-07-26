@@ -59,9 +59,13 @@ func NewOPAEngine(filename string, source []byte) (*OPAEngine, error) {
 	}
 
 	ctx := context.Background()
+	// Reuse the already-parsed AST rather than having rego.Module reparse
+	// the same source bytes from scratch — this also guarantees the exact
+	// module that passed the package check above is the module compiled
+	// here, not a second independent parse of the same string.
 	r := rego.New(
 		rego.Query(queryPath),
-		rego.Module(filename, string(source)),
+		rego.ParsedModule(mod),
 	)
 	pq, err := r.PrepareForEval(ctx)
 	if err != nil {
