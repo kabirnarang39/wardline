@@ -104,6 +104,39 @@ func TestOPAEngine_BranchesOnParamsAndTimestamp(t *testing.T) {
 	}
 }
 
+const largeIntDenylistSource = `package wardline.authz
+
+default allow = false
+
+denylist := {12345678901234567}
+
+allow {
+	not denylist[input.params.account_id]
+}
+`
+
+// TestOPAEngine_LargeIntegerParamsNotRounded proves a Rego denylist keyed
+// on an integer beyond float64's 53-bit integer precision (2^53) still
+// matches an identical integer sent in the request body. Before the fix,
+// decoding params via json.Unmarshal into `any` converted every JSON
+// number to float64, which can silently round a large integer to a
+// different value that no longer matches the denylist literal — a
+// security bypass, not just a precision quirk.
+func TestOPAEngine_LargeIntegerParamsNotRounded(t *testing.T) {
+	e, err := opa.NewOPAEngine("denylist.rego", []byte(largeIntDenylistSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{
+		Identity: "agent-abc123",
+		Tool:     "read_file",
+		Params:   []byte(`{"account_id":12345678901234567}`),
+	})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny (denylisted account_id preserved exactly), got %q (reason: %q)", got.Effect, got.Reason)
+	}
+}
+
 func TestOPAEngine_NoRuleAtAll(t *testing.T) {
 	// A package with zero rules under wardline.authz evaluates to an empty
 	// object (verified empirically: rs[0].Expressions[0].Value is

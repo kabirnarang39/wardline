@@ -1,6 +1,7 @@
 package opa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -127,7 +128,15 @@ func (e *OPAEngine) Evaluate(pc domain.Context) domain.Decision {
 func buildInput(pc domain.Context) (contextInput, error) {
 	var params any
 	if len(pc.Params) > 0 {
-		if err := json.Unmarshal(pc.Params, &params); err != nil {
+		// UseNumber preserves large integers (e.g. snowflake IDs, account
+		// numbers) as json.Number instead of decoding them into float64,
+		// which only has 53 bits of integer precision — silently rounding
+		// a large integer could make it compare unequal to the same
+		// literal in a Rego policy, letting an attacker bypass a denylist
+		// keyed on that ID. OPA's Go SDK natively handles json.Number.
+		dec := json.NewDecoder(bytes.NewReader(pc.Params))
+		dec.UseNumber()
+		if err := dec.Decode(&params); err != nil {
 			return contextInput{}, fmt.Errorf("decode params: %w", err)
 		}
 	}
