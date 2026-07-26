@@ -121,3 +121,68 @@ func postToolCall(t *testing.T, listenAddr, identity, tool string) *http.Respons
 	_, _ = io.ReadAll(resp.Body)
 	return resp
 }
+
+func TestServeEndToEnd_OPABackend(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.rego")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(policyPath, []byte(`package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.tool == "read_file"
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+policy_backend: opa
+audit:
+  output: stdout
+`, listenAddr, upstream.URL, policyPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wardline: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	waitForServer(t, "http://"+listenAddr)
+
+	allowResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if allowResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for allowed call, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+	}
+
+	denyResp := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
+	}
+}
