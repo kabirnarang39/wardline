@@ -222,6 +222,42 @@ budget:
 	}
 }
 
+// TestServeEndToEnd_OPABackendWithBudget proves the OPA policy backend and
+// budget enforcement compose correctly through the real binary — only the
+// YAML backend was previously exercised with a budget, leaving the
+// combination assumed-safe by code inspection rather than tested.
+func TestServeEndToEnd_OPABackendWithBudget(t *testing.T) {
+	listenAddr, stderr := startWardline(t, "policy.rego", `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.tool == "read_file"
+}
+`, `policy_backend: opa
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 1
+  window_seconds: 60`)
+
+	firstResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first OPA-allowed call within budget, got %d (stderr: %s)", firstResp.StatusCode, stderr.String())
+	}
+
+	secondResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for the second OPA-allowed call in the same window, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+
+	denyResp := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for an OPA-denied call (budget never consulted), got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
+	}
+}
+
 // TestServeEndToEnd_BudgetConfiguredButFlagOffWarns proves an operator who
 // sets a budget block but forgets to flip features.budget_enforcement gets
 // a log signal instead of silent no-op enforcement, and that enforcement is
