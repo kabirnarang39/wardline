@@ -123,7 +123,7 @@ func buildAuditWriter(output string) *auditadapter.JSONLWriter {
 	if output == "stdout" {
 		return auditadapter.NewJSONLWriter(os.Stdout)
 	}
-	f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
