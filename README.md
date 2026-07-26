@@ -90,5 +90,11 @@ This is a request-*rate* limit, not a success-rate limit: a request that's
 within budget but then fails upstream (502) still counts against the
 caller's window.
 
+Budget enforcement trusts the `X-Wardline-Identity` header as-is — there's
+no authentication on it today — so it's only as strong as whatever
+validates that header upstream of Wardline (or a future identity
+verification feature); a caller that can set arbitrary identity values can
+evade rate limiting by rotating identities.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
