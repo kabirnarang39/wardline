@@ -182,3 +182,31 @@ allow {
 		t.Fatalf("expected 403 for denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
 	}
 }
+
+// TestServeEndToEnd_BudgetThrottles proves budget enforcement works over a
+// real HTTP request through the real binary: a requests_per_window of 1
+// means the second allowed call in the same window gets throttled, not
+// forwarded.
+func TestServeEndToEnd_BudgetThrottles(t *testing.T) {
+	listenAddr, stderr := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, `features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 1
+  window_seconds: 60`)
+
+	firstResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first call within budget, got %d (stderr: %s)", firstResp.StatusCode, stderr.String())
+	}
+
+	secondResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for the second call in the same window, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+}
