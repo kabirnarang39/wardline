@@ -185,9 +185,13 @@ allow {
 }
 
 // TestServeEndToEnd_BudgetThrottles proves budget enforcement works over a
-// real HTTP request through the real binary: a requests_per_window of 1
-// means the second allowed call in the same window gets throttled, not
-// forwarded.
+// real HTTP request through the real binary, using the real wall clock (not
+// an injected one, unlike the unit-level limiter tests): a
+// requests_per_window of 1 means the second allowed call in the same window
+// gets throttled, not forwarded — and a third call after the (short,
+// window_seconds: 1) window has rolled over succeeds again, proving the
+// fixed-window reset through config-parsing/time.Now(), not just the bare
+// limiter with an injected clock.
 func TestServeEndToEnd_BudgetThrottles(t *testing.T) {
 	listenAddr, stderr := startWardline(t, "policy.yaml", `
 rules:
@@ -199,7 +203,7 @@ default: deny
   budget_enforcement: true
 budget:
   requests_per_window: 1
-  window_seconds: 60`)
+  window_seconds: 1`)
 
 	firstResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if firstResp.StatusCode != http.StatusOK {
@@ -209,6 +213,12 @@ budget:
 	secondResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if secondResp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 for the second call in the same window, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+
+	time.Sleep(1200 * time.Millisecond) // past the 1s window
+	thirdResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if thirdResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a call in the next window, got %d (stderr: %s)", thirdResp.StatusCode, stderr.String())
 	}
 }
 
