@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,32 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
+
+// jsonRPCErrorEnvelope mirrors the shape written by writeJSONRPCError, for
+// asserting on error response bodies from outside the package.
+type jsonRPCErrorEnvelope struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func decodeJSONRPCError(t *testing.T, w *httptest.ResponseRecorder) jsonRPCErrorEnvelope {
+	t.Helper()
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %q", ct)
+	}
+	var env jsonRPCErrorEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (body: %s)", err, w.Body.String())
+	}
+	if env.JSONRPC != "2.0" {
+		t.Errorf("expected jsonrpc 2.0, got %q", env.JSONRPC)
+	}
+	return env
+}
 
 type fakeEngine struct {
 	effect policydomain.Effect
@@ -87,6 +114,10 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "deny" {
 		t.Fatalf("expected one deny audit entry, got %+v", writer.entries)
 	}
+	env := decodeJSONRPCError(t, w)
+	if env.Error.Message == "" {
+		t.Error("expected a non-empty error message")
+	}
 }
 
 func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
@@ -106,6 +137,7 @@ func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "error" {
 		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
 	}
+	decodeJSONRPCError(t, w)
 }
 
 func TestHandler_MalformedBodyReturnsError(t *testing.T) {
@@ -126,5 +158,9 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 	}
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "error" {
 		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
+	}
+	env := decodeJSONRPCError(t, w)
+	if string(env.ID) != "null" {
+		t.Errorf("expected null id for unparsable body, got %s", env.ID)
 	}
 }
