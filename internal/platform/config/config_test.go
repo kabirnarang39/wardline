@@ -229,6 +229,25 @@ audit:
 	}
 }
 
+func TestLoad_BudgetWindowSecondsAboveBoundRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 86401
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when budget.window_seconds exceeds the 24h bound")
+	}
+}
+
 func TestLoad_BudgetEnabledMissingLimits(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
