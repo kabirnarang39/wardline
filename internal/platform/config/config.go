@@ -22,9 +22,9 @@ type BudgetConfig struct {
 }
 
 // Config is Wardline's top-level operator configuration. Features holds
-// flag toggles for capabilities added after v0.1 (none exist yet — this
-// field exists so internal/platform/flags has something to read from
-// without a later breaking config change).
+// flag toggles for capabilities added after v0.1 — budget_enforcement is
+// the first real one; internal/platform/flags reads this map to decide
+// whether a flagged feature is on.
 type Config struct {
 	Listen         string          `yaml:"listen"`
 	Upstream       string          `yaml:"upstream"`

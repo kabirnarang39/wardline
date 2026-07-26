@@ -26,7 +26,7 @@ type BudgetChecker interface {
 // request" from "we understood it and something downstream went wrong".
 const (
 	rpcCodeParseError = -32700 // malformed/oversized/unparsable request body
-	rpcCodeServerErr  = -32000 // policy deny or upstream failure (reserved server-error range)
+	rpcCodeServerErr  = -32000 // policy deny, budget throttling, or upstream failure (reserved server-error range)
 )
 
 type jsonRPCErrorBody struct {

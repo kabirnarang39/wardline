@@ -1,9 +1,10 @@
 package flags
 
-// Provider answers whether a named feature flag is enabled. v0.1 ships no
-// flagged features (proxy/policy/audit are always on) — this interface
-// exists so v0.5+ features (approval workflows, Cedar backend, etc.) have
-// a place to plug into without a rewrite.
+// Provider answers whether a named feature flag is enabled. v0.1 shipped no
+// flagged features (proxy/policy/audit are always on); budget enforcement
+// is now the first real, working example of a flagged feature plugging
+// into this interface, with more (approval workflows, Cedar backend, etc.)
+// expected to follow the same pattern.
 type Provider interface {
 	Enabled(name string) bool
 }
