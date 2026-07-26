@@ -63,6 +63,17 @@ func TestParseToolCall_EmptyToolName(t *testing.T) {
 	}
 }
 
+func TestParseToolCall_NonObjectParams(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":"oops"}`)
+	_, id, err := usecase.ParseToolCall("agent-abc123", body)
+	if err == nil {
+		t.Fatal("expected error for non-object params")
+	}
+	if string(id) != "7" {
+		t.Errorf("expected the request's real id 7 (envelope parsed fine), got %s", id)
+	}
+}
+
 func TestParseToolCall_PreservesRawParams(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","path":"/tmp/x"}}`)
 	call, _, err := usecase.ParseToolCall("agent-abc123", body)
