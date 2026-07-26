@@ -15,12 +15,12 @@ func NewMatcher(rules []domain.Rule, def domain.Effect) *Matcher {
 	return &Matcher{Rules: rules, Default: def}
 }
 
-func (m *Matcher) Evaluate(ctx domain.Context) domain.Decision {
+func (m *Matcher) Evaluate(pc domain.Context) domain.Decision {
 	for _, r := range m.Rules {
-		if r.Identity != ctx.Identity {
+		if r.Identity != pc.Identity {
 			continue
 		}
-		if r.Tool == ctx.Tool || r.Tool == "*" {
+		if r.Tool == pc.Tool || r.Tool == "*" {
 			return domain.Decision{Effect: r.Effect, Reason: "matched rule"}
 		}
 	}
