@@ -11,6 +11,8 @@ import (
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
+	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
@@ -67,7 +69,7 @@ func runServe(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	matcher, err := policyadapter.LoadFile(cfg.PolicyFile)
+	engine, err := loadPolicyEngine(cfg.PolicyBackend, cfg.PolicyFile)
 	if err != nil {
 		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
@@ -78,7 +80,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDecider(matcher)
+	decider := proxyusecase.NewDecider(engine)
 
 	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL)
 
@@ -109,13 +111,25 @@ func runServe(logger *slog.Logger, args []string) {
 func runValidatePolicy(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("validate-policy", flag.ExitOnError)
 	path := fs.String("file", "policy.yaml", "path to policy file")
+	backend := fs.String("backend", "yaml", `policy backend: "yaml" or "opa"`)
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
-	if _, err := policyadapter.LoadFile(*path); err != nil {
+	if _, err := loadPolicyEngine(*backend, *path); err != nil {
 		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("policy file is valid")
+}
+
+// loadPolicyEngine picks the policy.Engine implementation named by
+// backend ("yaml" or "opa", any other value is a config-validation bug
+// since config.Load already rejects unrecognized values before this is
+// ever called) and loads it from path.
+func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
+	if backend == "opa" {
+		return opaadapter.LoadRegoFile(path)
+	}
+	return policyadapter.LoadFile(path)
 }
 
 func runValidateConfig(logger *slog.Logger, args []string) {
