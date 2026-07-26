@@ -11,9 +11,32 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// safeBuffer is a mutex-guarded bytes.Buffer. The subprocess's stderr is
+// forwarded to it by an internal exec.Cmd goroutine while the process is
+// running; tests read it via String() both on failure and (for log-content
+// assertions) while the process is still alive — a plain bytes.Buffer would
+// race between that writer and these readers.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // startWardline writes policyBody to policyFilename and a wardline.yaml
 // (with extraConfigLines appended, e.g. "policy_backend: opa"), builds the
@@ -21,8 +44,8 @@ import (
 // that 200s on anything. It blocks until the server is ready and registers
 // cleanup for the subprocess and upstream. Returns the address the server
 // is listening on and the buffer capturing its stderr (for test failure
-// diagnostics).
-func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *bytes.Buffer) {
+// diagnostics, or log-content assertions).
+func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *safeBuffer) {
 	t.Helper()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +81,7 @@ audit:
 	}
 
 	cmd := exec.Command(binPath, "serve", "--config", configPath)
-	stderr = &bytes.Buffer{}
+	stderr = &safeBuffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start wardline: %v", err)
