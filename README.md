@@ -14,6 +14,12 @@ go build -o wardline ./cmd/wardline
 ./wardline serve --config wardline.yaml.example
 ```
 
+`wardline.yaml.example`'s `upstream` (`http://localhost:9000`) is illustrative
+— nothing listens there by default, so every proxied call will 502 until you
+point it at a real MCP server. For a quick first test, stand up a trivial
+mock upstream in another terminal first: `python3 -m http.server 9000` (it
+200s on anything, good enough to see an allow-path call succeed end-to-end).
+
 ## Identity and calling convention
 
 Every request must carry an `X-Wardline-Identity` header; policy rules match
