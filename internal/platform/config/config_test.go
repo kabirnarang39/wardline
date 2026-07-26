@@ -189,3 +189,58 @@ audit:
 		t.Fatal("expected error for unrecognized policy_backend value")
 	}
 }
+
+func TestLoad_BudgetDisabledByDefaultNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget.RequestsPerWindow != 0 || cfg.Budget.WindowSeconds != 0 {
+		t.Errorf("expected zero-value Budget when unset, got %+v", cfg.Budget)
+	}
+}
+
+func TestLoad_BudgetEnabledValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Budget.RequestsPerWindow != 100 || cfg.Budget.WindowSeconds != 60 {
+		t.Errorf("unexpected Budget: %+v", cfg.Budget)
+	}
+}
+
+func TestLoad_BudgetEnabledMissingLimits(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when budget_enforcement is on but requests_per_window/window_seconds are unset")
+	}
+}

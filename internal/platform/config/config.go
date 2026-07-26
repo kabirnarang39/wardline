@@ -14,6 +14,13 @@ type AuditConfig struct {
 	Output string `yaml:"output"` // "stdout" or a file path
 }
 
+// BudgetConfig configures the per-identity rate limiter. Only validated
+// (and only meaningful) when the budget_enforcement feature flag is on.
+type BudgetConfig struct {
+	RequestsPerWindow int `yaml:"requests_per_window"`
+	WindowSeconds     int `yaml:"window_seconds"`
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 (none exist yet — this
 // field exists so internal/platform/flags has something to read from
@@ -24,6 +31,7 @@ type Config struct {
 	PolicyFile     string          `yaml:"policy_file"`
 	PolicyBackend  string          `yaml:"policy_backend"` // "yaml" (default) or "opa"
 	Audit          AuditConfig     `yaml:"audit"`
+	Budget         BudgetConfig    `yaml:"budget"`
 	Features       map[string]bool `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
@@ -75,6 +83,14 @@ func (c *Config) validate() error {
 	}
 	if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty")
+	}
+	if c.Features["budget_enforcement"] {
+		if c.Budget.RequestsPerWindow <= 0 {
+			problems = append(problems, "budget.requests_per_window must be > 0 when features.budget_enforcement is true")
+		}
+		if c.Budget.WindowSeconds <= 0 {
+			problems = append(problems, "budget.window_seconds must be > 0 when features.budget_enforcement is true")
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(problems, "\n  - "))
