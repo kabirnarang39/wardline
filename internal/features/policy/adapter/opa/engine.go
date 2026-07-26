@@ -159,7 +159,7 @@ func buildInput(pc domain.Context) (contextInput, error) {
 		Identity:   pc.Identity,
 		Tool:       pc.Tool,
 		Params:     params,
-		Timestamp:  pc.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		Timestamp:  pc.Timestamp.UTC().Format(time.RFC3339),
 		RemoteAddr: pc.RemoteAddr,
 		UserAgent:  pc.UserAgent,
 	}, nil
