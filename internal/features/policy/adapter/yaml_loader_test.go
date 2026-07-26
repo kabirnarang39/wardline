@@ -75,3 +75,17 @@ func TestLoadFile_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
+
+func TestLoadFile_UnknownTopLevelKey(t *testing.T) {
+	path := writeTemp(t, `
+rulez:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: allow
+`)
+	_, err := adapter.LoadFile(path)
+	if err == nil {
+		t.Fatal("expected error for unknown top-level key (typo'd 'rulez'), got nil")
+	}
+}

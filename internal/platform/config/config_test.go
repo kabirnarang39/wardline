@@ -64,6 +64,20 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
+func TestLoad_UnknownTopLevelKey(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstrem: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown top-level key (typo'd 'upstrem'), got nil")
+	}
+}
+
 func TestLoad_UpstreamMissingScheme(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
