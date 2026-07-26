@@ -139,3 +139,53 @@ audit:
 		t.Errorf("unexpected UpstreamURL: %+v", cfg.UpstreamURL)
 	}
 }
+
+func TestLoad_PolicyBackendDefaultsToYAML(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PolicyBackend != "yaml" {
+		t.Errorf("expected policy_backend to default to %q, got %q", "yaml", cfg.PolicyBackend)
+	}
+}
+
+func TestLoad_PolicyBackendOPA(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.rego"
+policy_backend: opa
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PolicyBackend != "opa" {
+		t.Errorf("expected policy_backend %q, got %q", "opa", cfg.PolicyBackend)
+	}
+}
+
+func TestLoad_PolicyBackendInvalid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+policy_backend: cedar
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for unrecognized policy_backend value")
+	}
+}
