@@ -45,7 +45,7 @@ type fakeEngine struct {
 	effect policydomain.Effect
 }
 
-func (f fakeEngine) Evaluate(identity, tool string) policydomain.Decision {
+func (f fakeEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
 	return policydomain.Decision{Effect: f.effect, Reason: "fake"}
 }
 

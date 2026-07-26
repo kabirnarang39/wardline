@@ -64,7 +64,7 @@ type fakeTimeoutEngine struct {
 	effect policydomain.Effect
 }
 
-func (f fakeTimeoutEngine) Evaluate(identity, tool string) policydomain.Decision {
+func (f fakeTimeoutEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
 	return policydomain.Decision{Effect: f.effect, Reason: "fake"}
 }
 

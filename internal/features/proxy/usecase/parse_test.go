@@ -1,6 +1,7 @@
 package usecase_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -59,5 +60,23 @@ func TestParseToolCall_EmptyToolName(t *testing.T) {
 	_, _, err := usecase.ParseToolCall("agent-abc123", body)
 	if err == nil {
 		t.Fatal("expected error for empty tool name")
+	}
+}
+
+func TestParseToolCall_PreservesRawParams(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","path":"/tmp/x"}}`)
+	call, _, err := usecase.ParseToolCall("agent-abc123", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(call.Params, &got); err != nil {
+		t.Fatalf("ToolCall.Params did not unmarshal: %v", err)
+	}
+	if got.Name != "read_file" || got.Path != "/tmp/x" {
+		t.Errorf("unexpected round-tripped params: %+v", got)
 	}
 }
