@@ -28,7 +28,7 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: wardline <serve|validate-policy> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: wardline <serve|validate-policy|validate-config> [flags]")
 		os.Exit(1)
 	}
 
@@ -37,6 +37,8 @@ func main() {
 		runServe(os.Args[2:])
 	case "validate-policy":
 		runValidatePolicy(os.Args[2:])
+	case "validate-config":
+		runValidateConfig(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
 		os.Exit(1)
@@ -103,6 +105,18 @@ func runValidatePolicy(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("policy file is valid")
+}
+
+func runValidateConfig(args []string) {
+	fs := flag.NewFlagSet("validate-config", flag.ExitOnError)
+	path := fs.String("config", "wardline.yaml", "path to config file")
+	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
+
+	if _, err := config.Load(*path); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("config file is valid")
 }
 
 func buildAuditWriter(output string) *auditadapter.JSONLWriter {
