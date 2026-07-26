@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -287,7 +288,7 @@ func TestHandler_ThrottledCallNeverReachesUpstream(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: throttleReason}}
+	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: throttleReason, RetryAfter: 45 * time.Second}}
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker)
 
 	w := httptest.NewRecorder()
@@ -301,6 +302,13 @@ func TestHandler_ThrottledCallNeverReachesUpstream(t *testing.T) {
 	}
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "throttled" {
 		t.Fatalf("expected one throttled audit entry, got %+v", writer.entries)
+	}
+	retryAfter := w.Header().Get("Retry-After")
+	if retryAfter == "" {
+		t.Fatal("expected a Retry-After header on a 429 response")
+	}
+	if seconds, err := strconv.Atoi(retryAfter); err != nil || seconds <= 0 {
+		t.Errorf("expected Retry-After to be a positive integer, got %q", retryAfter)
 	}
 	if writer.entries[0].Reason != throttleReason {
 		t.Errorf("expected the audit log to capture the detailed reason %q, got %q", throttleReason, writer.entries[0].Reason)

@@ -70,8 +70,9 @@ func (l *InMemoryLimiter) Allow(identity string, now time.Time) domain.Verdict {
 
 	if b.count >= l.requestsPerWindow {
 		return domain.Verdict{
-			Allowed: false,
-			Reason:  fmt.Sprintf("rate limit exceeded: %d requests per %s window", l.requestsPerWindow, l.window),
+			Allowed:    false,
+			Reason:     fmt.Sprintf("rate limit exceeded: %d requests per %s window", l.requestsPerWindow, l.window),
+			RetryAfter: b.windowStart.Add(l.window).Sub(now),
 		}
 	}
 	b.count++
