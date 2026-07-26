@@ -70,11 +70,11 @@ func runServe(args []string) {
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	for name := range cfg.Features {
 		if featureFlags.Enabled(name) {
-			fmt.Printf("wardline: feature %q enabled\n", name)
+			fmt.Fprintf(os.Stderr, "wardline: feature %q enabled\n", name)
 		}
 	}
 
-	fmt.Printf("wardline listening on %s, proxying to %s\n", cfg.Listen, cfg.Upstream)
+	fmt.Fprintf(os.Stderr, "wardline listening on %s, proxying to %s\n", cfg.Listen, cfg.Upstream)
 	if err := http.ListenAndServe(cfg.Listen, handler); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
