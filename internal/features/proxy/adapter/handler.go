@@ -53,6 +53,11 @@ func writeJSONRPCError(w http.ResponseWriter, status, code int, id json.RawMessa
 // upstream to start responding; MCP tool calls are fast, so 30s is generous.
 const upstreamResponseHeaderTimeout = 30 * time.Second
 
+// maxRequestBodyBytes caps how much of the request body we'll read before
+// any policy check runs; MCP tool-call payloads are small JSON-RPC
+// envelopes, so 1 MiB is generous headroom, not a real limit in practice.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // Handler is the HTTP entry point: parse each request, ask the Decider for
 // a verdict, record exactly one audit entry per request, and forward
 // allowed calls to the upstream MCP server.
@@ -84,6 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.now()
 	identity := r.Header.Get("X-Wardline-Identity")
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.record(identity, "", "error", start)

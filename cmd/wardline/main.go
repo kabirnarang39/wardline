@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
@@ -13,6 +14,16 @@ import (
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+)
+
+// Server-level timeouts, chosen to stop an unauthenticated caller from
+// holding a connection open before the policy layer ever gets a say. Not
+// yet exposed in the YAML config — v0.1 doesn't need per-deployment tuning.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
 )
 
 func main() {
@@ -68,7 +79,15 @@ func runServe(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "wardline listening on %s, proxying to %s\n", cfg.Listen, cfg.Upstream)
-	if err := http.ListenAndServe(cfg.Listen, handler); err != nil {
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
