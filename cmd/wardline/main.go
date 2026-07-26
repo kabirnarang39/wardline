@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
@@ -57,13 +56,7 @@ func runServe(args []string) {
 
 	decider := proxyusecase.NewDecider(matcher)
 
-	upstreamURL, err := url.Parse(cfg.Upstream)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	handler := proxyadapter.NewHandler(decider, recorder, upstreamURL)
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL)
 
 	// No v0.1 feature reads flags yet; log what the operator has toggled on
 	// so the provider isn't wired in and then silently ignored.

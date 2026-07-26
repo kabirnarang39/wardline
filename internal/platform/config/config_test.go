@@ -63,3 +63,65 @@ func TestLoad_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestLoad_UpstreamMissingScheme(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for upstream missing scheme/host")
+	}
+}
+
+func TestLoad_UpstreamWrongScheme(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "ftp://host"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for non-http(s) upstream scheme")
+	}
+}
+
+func TestLoad_UpstreamEmptyHost(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for upstream with empty host")
+	}
+}
+
+func TestLoad_ValidUpstreamPopulatesUpstreamURL(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.UpstreamURL == nil {
+		t.Fatal("expected UpstreamURL to be populated")
+	}
+	if cfg.UpstreamURL.Scheme != "http" || cfg.UpstreamURL.Host != "localhost:9000" {
+		t.Errorf("unexpected UpstreamURL: %+v", cfg.UpstreamURL)
+	}
+}
