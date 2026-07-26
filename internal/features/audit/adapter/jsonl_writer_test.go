@@ -35,8 +35,8 @@ func TestJSONLWriter_MultipleWritesAppendLines(t *testing.T) {
 	w := adapter.NewJSONLWriter(&buf)
 
 	entry := domain.Entry{Timestamp: time.Unix(0, 0).UTC(), Identity: "a", Tool: "t", Decision: "deny", LatencyMS: 1}
-	w.Write(entry)
-	w.Write(entry)
+	_ = w.Write(entry)
+	_ = w.Write(entry)
 
 	lines := bytes.Count(buf.Bytes(), []byte("\n"))
 	if lines != 2 {
