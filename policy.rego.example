@@ -1,0 +1,12 @@
+package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.tool == "read_file"
+}
+
+reason = "matched read_file rule" {
+	allow
+}

@@ -37,5 +37,23 @@ curl -X POST http://localhost:8080 \
 (This matches the `agent-abc123` / `read_file` allow rule in
 `policy.yaml.example`.)
 
+## Policy backends
+
+Wardline supports two policy backends, selected by `policy_backend` in the
+config file (defaults to `yaml` if omitted):
+
+- **`yaml`** (default) — a static allow/deny rule list, as in
+  `policy.yaml.example`.
+- **`opa`** — an embedded OPA/Rego evaluator (no external `opa` process, no
+  network hop). Policies must declare `package wardline.authz` and export an
+  `allow` boolean (and, optionally, a `reason` string). See
+  `policy.rego.example` for the same allow rule expressed in Rego, with
+  access to the full request context — tool call parameters, timestamp,
+  remote address, and user agent — not just identity and tool name.
+
+```bash
+./wardline validate-policy --file policy.rego.example --backend opa
+```
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
