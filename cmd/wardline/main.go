@@ -20,10 +20,18 @@ import (
 // Server-level timeouts, chosen to stop an unauthenticated caller from
 // holding a connection open before the policy layer ever gets a say. Not
 // yet exposed in the YAML config — v0.1 doesn't need per-deployment tuning.
+//
+// writeTimeout must stay comfortably above proxy/adapter's
+// upstreamResponseHeaderTimeout (30s): a slow-but-connected upstream fires
+// the Transport timeout at 30s, and the handler still needs time after that
+// to write the 502 response back to the client. Equal values race — the
+// server can close the connection for exceeding its own write deadline at
+// the same instant the error response is being written, so the client sees
+// a dropped connection instead of a clean 502.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
-	writeTimeout      = 30 * time.Second
+	writeTimeout      = 45 * time.Second
 	idleTimeout       = 60 * time.Second
 )
 
