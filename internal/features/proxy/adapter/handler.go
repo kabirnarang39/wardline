@@ -104,6 +104,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, id, err.Error())
 		return
 	}
+	call.Timestamp = h.now()
+	call.RemoteAddr = r.RemoteAddr
+	call.UserAgent = r.Header.Get("User-Agent")
 
 	verdict := h.decider.Decide(call)
 	if !verdict.Allow {

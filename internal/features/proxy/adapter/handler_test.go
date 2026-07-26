@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
@@ -56,6 +57,15 @@ type fakeWriter struct {
 func (f *fakeWriter) Write(e auditdomain.Entry) error {
 	f.entries = append(f.entries, e)
 	return nil
+}
+
+type contextRecordingEngine struct {
+	received policydomain.Context
+}
+
+func (e *contextRecordingEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
+	e.received = ctx
+	return policydomain.Decision{Effect: policydomain.EffectAllow, Reason: "fake"}
 }
 
 func newRequest(identity, tool string) *http.Request {
@@ -188,4 +198,35 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 		t.Fatalf("expected one error audit entry, got %+v", writer.entries)
 	}
 	decodeJSONRPCError(t, w)
+}
+
+func TestHandler_PopulatesContextFromRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	engine := &contextRecordingEngine{}
+	decider := proxyusecase.NewDecider(engine)
+	handler := adapter.NewHandler(decider, recorder, upstreamURL)
+
+	before := time.Now()
+	req := newRequest("agent-abc123", "read_file")
+	req.Header.Set("User-Agent", "wardline-test-agent/1.0")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	after := time.Now()
+
+	if engine.received.RemoteAddr == "" {
+		t.Error("expected non-empty RemoteAddr on the Context passed to the policy engine")
+	}
+	if engine.received.UserAgent != "wardline-test-agent/1.0" {
+		t.Errorf("expected UserAgent to be forwarded, got %q", engine.received.UserAgent)
+	}
+	if engine.received.Timestamp.Before(before) || engine.received.Timestamp.After(after) {
+		t.Errorf("expected Timestamp between %v and %v, got %v", before, after, engine.received.Timestamp)
+	}
 }
