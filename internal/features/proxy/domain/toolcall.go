@@ -9,8 +9,13 @@ import (
 // identity is trying to call which tool, with what arguments, when, and
 // from where.
 type ToolCall struct {
-	Identity   string
-	Tool       string
+	Identity string
+
+	// Tool is the authoritative tool name, extracted by Wardline's own
+	// JSON parser. Downstream consumers (policy, audit) should always
+	// key off Tool, never re-parse Params looking for a "name" key.
+	Tool string
+
 	Params     json.RawMessage
 	Timestamp  time.Time
 	RemoteAddr string
