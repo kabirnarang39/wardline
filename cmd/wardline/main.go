@@ -122,14 +122,20 @@ func runValidatePolicy(logger *slog.Logger, args []string) {
 }
 
 // loadPolicyEngine picks the policy.Engine implementation named by
-// backend ("yaml" or "opa", any other value is a config-validation bug
-// since config.Load already rejects unrecognized values before this is
-// ever called) and loads it from path.
+// backend ("yaml" or "opa"; "" defaults to "yaml"). runServe only ever
+// passes a value config.Load has already validated, but runValidatePolicy
+// passes its raw, unvalidated -backend flag straight through, so any other
+// value is rejected explicitly here rather than silently falling back to
+// the YAML loader.
 func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
-	if backend == "opa" {
+	switch backend {
+	case "opa":
 		return opaadapter.LoadRegoFile(path)
+	case "yaml", "":
+		return policyadapter.LoadFile(path)
+	default:
+		return nil, fmt.Errorf("unknown policy backend %q (want \"yaml\" or \"opa\")", backend)
 	}
-	return policyadapter.LoadFile(path)
 }
 
 func runValidateConfig(logger *slog.Logger, args []string) {
