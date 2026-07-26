@@ -3,7 +3,6 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -92,7 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.record(identity, "", "error", start)
+		h.record(identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -100,7 +99,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	call, id, err := proxyusecase.ParseToolCall(identity, body)
 	if err != nil {
-		h.record(identity, "", "error", start)
+		h.record(identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, id, err.Error())
 		return
 	}
@@ -110,8 +109,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	verdict := h.decider.Decide(call)
 	if !verdict.Allow {
-		h.record(identity, call.Tool, "deny", start)
-		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, id, fmt.Sprintf("denied: %s", verdict.Reason))
+		// verdict.Reason may carry detailed policy-engine diagnostics (with
+		// the OPA backend, potentially internal error text, file paths, or
+		// rule names) — record it in the audit log for the operator, but
+		// never echo it to the untrusted HTTP caller.
+		h.record(identity, call.Tool, "deny", verdict.Reason, start)
+		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, id, "denied by policy")
 		return
 	}
 
@@ -125,19 +128,19 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, identity, tool
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		recorded = true
-		h.record(identity, tool, "error", start)
+		h.record(identity, tool, "error", "", start)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.record(identity, tool, "allow", start)
+			h.record(identity, tool, "allow", "", start)
 		}
 		return nil
 	}
 	proxy.ServeHTTP(w, r)
 }
 
-func (h *Handler) record(identity, tool, decision string, start time.Time) {
-	h.recorder.Record(identity, tool, decision, h.now().Sub(start), start)
+func (h *Handler) record(identity, tool, decision, reason string, start time.Time) {
+	h.recorder.Record(identity, tool, decision, reason, h.now().Sub(start), start)
 }
