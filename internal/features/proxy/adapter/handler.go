@@ -10,8 +10,16 @@ import (
 	"time"
 
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
+
+// BudgetChecker is the subset of budgetusecase.Checker's behavior Handler
+// depends on — a narrow interface so tests can supply a fake without
+// importing the real usecase package's flags/limiter wiring.
+type BudgetChecker interface {
+	Check(identity string, now time.Time) budgetdomain.Verdict
+}
 
 // JSON-RPC error codes used for v0.1. This isn't a full JSON-RPC error code
 // taxonomy — just enough to distinguish "we couldn't understand the
@@ -58,16 +66,17 @@ const upstreamResponseHeaderTimeout = 30 * time.Second
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // Handler is the HTTP entry point: parse each request, ask the Decider for
-// a verdict, record exactly one audit entry per request, and forward
-// allowed calls to the upstream MCP server.
+// a verdict, check the budget, record exactly one audit entry per request,
+// and forward allowed calls to the upstream MCP server.
 type Handler struct {
-	decider  *proxyusecase.Decider
-	recorder *auditusecase.Recorder
-	upstream *httputil.ReverseProxy
-	now      func() time.Time
+	decider       *proxyusecase.Decider
+	recorder      *auditusecase.Recorder
+	upstream      *httputil.ReverseProxy
+	budgetChecker BudgetChecker
+	now           func() time.Time
 }
 
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL) *Handler {
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -77,10 +86,11 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 	tr.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
 	proxy.Transport = tr
 	return &Handler{
-		decider:  decider,
-		recorder: recorder,
-		upstream: proxy,
-		now:      time.Now,
+		decider:       decider,
+		recorder:      recorder,
+		upstream:      proxy,
+		budgetChecker: budgetChecker,
+		now:           time.Now,
 	}
 }
 
@@ -115,6 +125,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// never echo it to the untrusted HTTP caller.
 		h.record(identity, call.Tool, "deny", verdict.Reason, start)
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, id, "denied by policy")
+		return
+	}
+
+	budgetVerdict := h.budgetChecker.Check(identity, start)
+	if !budgetVerdict.Allowed {
+		// Same reasoning as the policy-deny path above: detailed reason to
+		// the audit log, generic message to the caller.
+		h.record(identity, call.Tool, "throttled", budgetVerdict.Reason, start)
+		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, id, "throttled by budget")
 		return
 	}
 
