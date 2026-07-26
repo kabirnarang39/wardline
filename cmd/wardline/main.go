@@ -71,6 +71,14 @@ func runServe(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
+	// A budget block with no flag to enforce it is very likely an operator
+	// mistake (forgot to flip the flag, or forgot to remove the block) —
+	// surface it instead of silently no-op'ing enforcement.
+	if (cfg.Budget.RequestsPerWindow > 0 || cfg.Budget.WindowSeconds > 0) && !cfg.Features["budget_enforcement"] {
+		logger.Info("budget config is set but features.budget_enforcement is off; budget is not being enforced",
+			"requests_per_window", cfg.Budget.RequestsPerWindow, "window_seconds", cfg.Budget.WindowSeconds)
+	}
+
 	engine, err := loadPolicyEngine(cfg.PolicyBackend, cfg.PolicyFile)
 	if err != nil {
 		logger.Error("failed to load policy", "error", err)
