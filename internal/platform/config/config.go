@@ -109,7 +109,7 @@ func (c *Config) validate() error {
 			problems = append(problems, "audit.postgres_dsn must not be empty when features.postgres_storage is true")
 		}
 	} else if c.Audit.Output == "" {
-		problems = append(problems, "audit.output must not be empty")
+		problems = append(problems, "audit.output must not be empty (or set features.postgres_storage: true and audit.postgres_dsn instead)")
 	}
 	if c.Features["budget_enforcement"] {
 		if c.Budget.RequestsPerWindow <= 0 {
