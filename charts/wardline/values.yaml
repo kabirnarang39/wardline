@@ -16,6 +16,13 @@ service:
   type: ClusterIP
   port: 8080
 
+# The port the wardline container actually listens on (and binds inside
+# wardline.yaml). Kept separate from service.port: the Service's targetPort
+# resolves by name ("http"), so service.port can be changed freely (e.g. to
+# a privileged port like 80) without affecting what the non-root container
+# binds to.
+containerPort: 8080
+
 resources: {}
 
 # wardline mirrors internal/platform/config.Config's YAML shape exactly.
