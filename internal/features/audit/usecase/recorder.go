@@ -19,7 +19,7 @@ func NewRecorder(w domain.Writer, onError func(error)) *Recorder {
 	return &Recorder{writer: w, onError: onError}
 }
 
-func (r *Recorder) Record(identity, tool, decision, reason string, latency time.Duration, now time.Time) {
+func (r *Recorder) Record(identity, tool, decision, reason, traceID string, latency time.Duration, now time.Time) {
 	entry := domain.Entry{
 		Timestamp: now,
 		Identity:  identity,
@@ -27,6 +27,7 @@ func (r *Recorder) Record(identity, tool, decision, reason string, latency time.
 		Decision:  decision,
 		LatencyMS: latency.Milliseconds(),
 		Reason:    reason,
+		TraceID:   traceID,
 	}
 	if err := r.writer.Write(entry); err != nil && r.onError != nil {
 		r.onError(err)

@@ -16,6 +16,11 @@ type Entry struct {
 	// or rule names). It's recorded here for the operator only — never
 	// sent to the untrusted HTTP caller.
 	Reason string
+
+	// TraceID correlates this entry with a distributed trace, when OTel
+	// tracing is enabled. Empty when tracing is disabled — no all-zero
+	// placeholder IDs cluttering the audit log.
+	TraceID string
 }
 
 // Writer persists an audit Entry.

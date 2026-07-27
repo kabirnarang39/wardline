@@ -85,3 +85,25 @@ func TestJSONLWriter_MultipleWritesAppendLines(t *testing.T) {
 		t.Errorf("expected 2 lines, got %d", lines)
 	}
 }
+
+func TestJSONLWriter_IncludesTraceIDWhenPresent(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := w.Write(domain.Entry{
+		Timestamp: ts,
+		Identity:  "agent-abc123",
+		Tool:      "read_file",
+		Decision:  "allow",
+		LatencyMS: 7,
+		TraceID:   "4bf92f3577b34da6a3ce929d0e0e4736",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `{"timestamp":"2026-01-01T12:00:00Z","identity":"agent-abc123","tool":"read_file","decision":"allow","latency_ms":7,"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736"}` + "\n"
+	if buf.String() != want {
+		t.Errorf("got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
