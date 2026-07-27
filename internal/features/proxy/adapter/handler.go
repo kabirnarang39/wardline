@@ -82,11 +82,12 @@ type Handler struct {
 	recorder      *auditusecase.Recorder
 	upstream      *httputil.ReverseProxy
 	budgetChecker BudgetChecker
+	identityAuth  IdentityAuthenticator
 	tracer        trace.Tracer
 	now           func() time.Time
 }
 
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer) *Handler {
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -100,6 +101,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 		recorder:      recorder,
 		upstream:      proxy,
 		budgetChecker: budgetChecker,
+		identityAuth:  identityAuth,
 		tracer:        tracer,
 		now:           time.Now,
 	}
@@ -107,7 +109,17 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.now()
-	identity := r.Header.Get("X-Wardline-Identity")
+
+	// Authentication happens before anything else — a rejected caller
+	// never reaches policy, budget, or the audit log (see
+	// docs/superpowers/specs/2026-07-27-credential-issuance-design.md
+	// "Error handling"). HeaderIdentity (the default) never errors, so
+	// this is a no-op when credential_issuance is off.
+	identity, err := h.identityAuth.Authenticate(r)
+	if err != nil {
+		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeServerErr, nil, "unauthorized")
+		return
+	}
 
 	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 	ctx, span := h.tracer.Start(ctx, "wardline.proxy_request", trace.WithAttributes(attribute.String("wardline.identity", identity)))
