@@ -167,13 +167,19 @@ Then visit `http://<listen-addr>/dashboard/`.
 **Security note:** the dashboard has no authentication and is read-only
 by design — it does not accept writes and cannot influence policy,
 budget, or proxy decisions. It does, however, display audit *reasons*
-(which can include internal policy-engine diagnostics) and raw policy
-file content, both of which may carry information you don't want a
-stranger to see. **Do not expose `/dashboard/` on any network an
-untrusted party can reach.** If Wardline's listen address is already
-bound to a private network or `localhost`, the dashboard inherits that
-same protection; if it isn't, put it behind your own reverse proxy or
-network policy before turning `web_ui` on in a shared environment.
+(which can include internal policy-engine diagnostics normally kept out
+of proxy responses) and raw policy file content, both of which may
+carry information you don't want a stranger to see. The dashboard
+shares the exact same listener/port as the proxy itself, so anyone who
+can reach Wardline's proxy port — **including every agent Wardline
+proxies calls for** — can already `GET /dashboard/api/audit` and
+`GET /dashboard/api/policy` on that identical socket. Binding the
+listen address to `localhost` does **not** protect against this: the
+proxy's own legitimate callers are, by definition, already on that
+same port. This is precisely why `web_ui` defaults to off — only
+enable it when you're comfortable with every caller the proxy already
+accepts also being able to read full audit reasons and the complete
+policy source.
 
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
