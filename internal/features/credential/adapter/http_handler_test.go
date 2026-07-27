@@ -3,6 +3,8 @@ package adapter_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +43,8 @@ func (r *recordingRevoker) IsRevoked(identity string) bool { return false }
 func newTestHandler(revoker domain.Revoker) *adapter.Handler {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
-	return adapter.NewHandler(issuance, revocation)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return adapter.NewHandler(issuance, revocation, logger)
 }
 
 func TestHandleToken_ValidSecretReturns200WithToken(t *testing.T) {
@@ -161,12 +164,26 @@ func TestHandleRevoke_MissingIdentityReturns400(t *testing.T) {
 func TestHandleRevoke_WrongMethodReturns405(t *testing.T) {
 	h := newTestHandler(&recordingRevoker{})
 	req := httptest.NewRequest(http.MethodGet, "/credentials/revoke", nil)
+	req.RemoteAddr = "127.0.0.1:54321" // loopback, so the method check (not the loopback check) is what's under test
 	w := httptest.NewRecorder()
 
 	h.HandleRevoke(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRevoke_FromNonLoopbackWrongMethodStillReturns403(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	req := httptest.NewRequest(http.MethodGet, "/credentials/revoke", nil)
+	req.RemoteAddr = "203.0.113.5:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (loopback check must run before the method check), got %d", w.Code)
 	}
 }
 

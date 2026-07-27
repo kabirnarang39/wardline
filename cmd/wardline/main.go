@@ -158,12 +158,12 @@ func runServe(logger *slog.Logger, args []string) {
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revocationList)
 		revocation := credentialusecase.NewRevocationService(revocationList)
-		credentialHandler = credentialadapter.NewHandler(issuance, revocation)
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger)
 		identityAuth = proxyadapter.NewBearerIdentity(verification)
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
 
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth)
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger)
 
 	startedAt := time.Now()
 

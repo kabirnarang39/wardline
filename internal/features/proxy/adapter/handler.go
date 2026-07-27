@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -29,13 +30,13 @@ type BudgetChecker interface {
 	Check(identity string, now time.Time) budgetdomain.Verdict
 }
 
-// JSON-RPC error codes used for v0.1. This isn't a full JSON-RPC error code
+// JSON-RPC error codes used since v1.0. This isn't a full JSON-RPC error code
 // taxonomy — just enough to distinguish "we couldn't understand the
 // request" from "we understood it and something downstream went wrong".
 const (
-	rpcCodeParseError      = -32700 // malformed/oversized/unparsable request body
-	rpcCodeUnauthorized    = -32001 // identity authentication failure
-	rpcCodeServerErr       = -32000 // policy deny, budget throttling, or upstream failure (reserved server-error range)
+	rpcCodeParseError   = -32700 // malformed/oversized/unparsable request body
+	rpcCodeUnauthorized = -32001 // identity authentication failure
+	rpcCodeServerErr    = -32000 // policy deny, budget throttling, or upstream failure (reserved server-error range)
 )
 
 type jsonRPCErrorBody struct {
@@ -85,10 +86,11 @@ type Handler struct {
 	budgetChecker BudgetChecker
 	identityAuth  IdentityAuthenticator
 	tracer        trace.Tracer
+	logger        *slog.Logger
 	now           func() time.Time
 }
 
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator) *Handler {
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -104,6 +106,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 		budgetChecker: budgetChecker,
 		identityAuth:  identityAuth,
 		tracer:        tracer,
+		logger:        logger,
 		now:           time.Now,
 	}
 }
@@ -118,6 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this is a no-op when credential_issuance is off.
 	identity, err := h.identityAuth.Authenticate(r)
 	if err != nil {
+		h.logger.Warn("identity authentication failed", "remote_addr", r.RemoteAddr)
 		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeUnauthorized, nil, "unauthorized")
 		return
 	}
@@ -203,6 +207,15 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 		}
 		return nil
 	}
+	// httputil.ReverseProxy does not strip Authorization (it's not a
+	// hop-by-hop header) — without this, the bearer credential the caller
+	// authenticated to Wardline with would be forwarded verbatim to the
+	// untrusted upstream MCP server, handing it a live, replayable Wardline
+	// credential. Safe unconditionally: Wardline injects no upstream
+	// credential of its own today, so nothing downstream depends on this
+	// header surviving.
+	r.Header.Del("Authorization")
+
 	// Inject Wardline's own span context into the outgoing request headers
 	// before proxying, overwriting any traceparent the caller sent. Without
 	// this, httputil.ReverseProxy copies the caller's original headers
