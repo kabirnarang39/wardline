@@ -113,7 +113,29 @@ empty when tracing is disabled.
 
 `serve` now handles SIGINT/SIGTERM by draining in-flight requests and
 flushing the tracer provider before exiting, so buffered spans aren't lost
-on shutdown.
+on shutdown. SIGTERM triggers up to a 10s HTTP drain plus a 5s span-flush
+— configure your supervisor's grace period (e.g. Kubernetes
+`terminationGracePeriodSeconds`, systemd `TimeoutStopSec`) above 15s, well
+above Docker's 10s default, or the last few seconds of spans (and any
+in-flight requests) can be lost.
+
+There is no sampling in this version — every request is exported when
+tracing is enabled, so turning this on at real production request rates
+sends full volume to your collector.
+
+When the collector is unreachable, the OTel SDK retries/drops spans
+internally; request handling is never blocked or failed because of it.
+
+Span status descriptions can carry the same detailed policy/budget reason
+text that's deliberately kept out of HTTP responses (see the budget
+section above) — operators enabling tracing should be aware that reason
+text reaches whatever reads their trace backend, which is typically a
+wider audience than the audit log.
+
+The `wardline.identity` span attribute is populated from the same
+unauthenticated, caller-controlled `X-Wardline-Identity` header discussed
+above — a caller rotating identities can inflate cardinality in the trace
+backend, not just evade rate limiting.
 
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
