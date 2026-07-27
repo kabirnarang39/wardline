@@ -1,3 +1,7 @@
+# No published image exists yet (no CI publishes to this path) — point this
+# at an image you've built and pushed yourself, e.g. via `docker build -t
+# <your-registry>/wardline:<tag> . && docker push ...` (see README's
+# Kubernetes / Helm section).
 image:
   repository: ghcr.io/kabirnarang39/wardline
   tag: ""   # defaults to .Chart.AppVersion
