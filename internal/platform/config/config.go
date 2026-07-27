@@ -43,19 +43,27 @@ type TracingConfig struct {
 	ServiceName  string `yaml:"service_name"`  // defaults to "wardline"
 }
 
+// CredentialConfig configures preshared-secret credential issuance. Only
+// validated (and only meaningful) when the credential_issuance feature
+// flag is on.
+type CredentialConfig struct {
+	IdentitiesFile string `yaml:"identities_file"`
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 — budget_enforcement and
 // otel_tracing are the two real ones so far; internal/platform/flags
 // reads this map to decide whether a flagged feature is on.
 type Config struct {
-	Listen         string          `yaml:"listen"`
-	Upstream       string          `yaml:"upstream"`
-	PolicyFile     string          `yaml:"policy_file"`
-	PolicyBackend  string          `yaml:"policy_backend"` // "yaml" (default) or "opa"
-	Audit          AuditConfig     `yaml:"audit"`
-	Budget         BudgetConfig    `yaml:"budget"`
-	Tracing        TracingConfig   `yaml:"tracing"`
-	Features       map[string]bool `yaml:"features"`
+	Listen        string           `yaml:"listen"`
+	Upstream      string           `yaml:"upstream"`
+	PolicyFile    string           `yaml:"policy_file"`
+	PolicyBackend string           `yaml:"policy_backend"` // "yaml" (default) or "opa"
+	Audit         AuditConfig      `yaml:"audit"`
+	Budget        BudgetConfig     `yaml:"budget"`
+	Tracing       TracingConfig    `yaml:"tracing"`
+	Credential    CredentialConfig `yaml:"credential"`
+	Features      map[string]bool  `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
 	// validate(). Callers (cmd/wardline/main.go) should use this instead of
@@ -128,6 +136,9 @@ func (c *Config) validate() error {
 		if c.Tracing.ServiceName == "" {
 			c.Tracing.ServiceName = defaultTracingServiceName
 		}
+	}
+	if c.Features["credential_issuance"] && c.Credential.IdentitiesFile == "" {
+		problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(problems, "\n  - "))

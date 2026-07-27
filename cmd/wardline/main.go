@@ -18,6 +18,8 @@ import (
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
+	credentialadapter "github.com/kabirnarang39/wardline/internal/features/credential/adapter"
+	credentialusecase "github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
 	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
@@ -138,14 +140,34 @@ func runServe(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
+	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
+	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
+	var credentialHandler *credentialadapter.Handler
+	if credentialIssuanceEnabled {
+		bootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
+		if err != nil {
+			logger.Error("failed to load credentials file", "error", err)
+			os.Exit(1)
+		}
+		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier()
+		if err != nil {
+			logger.Error("failed to initialize credential issuer", "error", err)
+			os.Exit(1)
+		}
+		revocationList := credentialadapter.NewRevocationList()
+		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
+		verification := credentialusecase.NewVerificationService(issuerVerifier, revocationList)
+		revocation := credentialusecase.NewRevocationService(revocationList)
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation)
+		identityAuth = proxyadapter.NewBearerIdentity(verification)
+		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
+	}
+
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth)
 
 	startedAt := time.Now()
 
-	// dashboardHandler is only ever meaningfully used inside the
-	// webUIEnabled block below: buildTopHandler returns the bare proxy
-	// handler outright when web_ui is off, never touching this variable.
-	var dashboardHandler http.Handler
+	extraRoutes := map[string]http.Handler{}
 	if webUIEnabled {
 		policySource, err := os.ReadFile(cfg.PolicyFile)
 		if err != nil {
@@ -158,11 +180,15 @@ func runServe(logger *slog.Logger, args []string) {
 			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
 		)
 
-		dashboardHandler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
+		extraRoutes["/dashboard/"] = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
 		logger.Info("dashboard enabled", "path", "/dashboard/")
 	}
+	if credentialIssuanceEnabled {
+		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
+		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
+	}
 
-	topHandler := buildTopHandler(handler, dashboardHandler, webUIEnabled)
+	topHandler := buildTopHandler(handler, extraRoutes)
 
 	// Log what the operator has toggled on so a flag isn't silently ignored.
 	for name := range cfg.Features {
@@ -244,21 +270,24 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
 }
 
-// buildTopHandler routes /dashboard/ requests to dashboard when web_ui is
-// on, and everything else (including /dashboard/ when web_ui is off,
-// same as v0.1's proxy-handles-everything behavior) to proxy. The
-// dashboard is never reachable unless the operator has explicitly
-// enabled it — this is the one place the flag decision is made, not
-// scattered through request handling. When web_ui is on, requests pass
-// through an http.ServeMux, which applies stdlib path cleaning/redirects
-// (e.g. collapsing "//tool" or resolving "..") that do not happen when
-// the flag is off and the bare proxy handler receives the raw path.
-func buildTopHandler(proxy, dashboard http.Handler, webUIEnabled bool) http.Handler {
-	if !webUIEnabled {
+// buildTopHandler routes each key of extraRoutes to its handler, and
+// everything else to proxy. A route is only ever present in the map when
+// its owning feature flag is on — this is the one place that decision is
+// made, not scattered through request handling. Called with an empty map,
+// it returns the bare proxy handler unchanged (same as v0.1's
+// proxy-handles-everything behavior, and identical to today's behavior
+// when no optional feature is enabled). Any non-empty map routes through
+// an http.ServeMux, which applies stdlib path cleaning/redirects (e.g.
+// collapsing "//tool" or resolving "..") that do not happen when the map
+// is empty and the bare proxy handler receives the raw path.
+func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) http.Handler {
+	if len(extraRoutes) == 0 {
 		return proxy
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/dashboard/", dashboard)
+	for pattern, h := range extraRoutes {
+		mux.Handle(pattern, h)
+	}
 	mux.Handle("/", proxy)
 	return mux
 }
