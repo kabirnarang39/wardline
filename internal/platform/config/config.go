@@ -28,10 +28,21 @@ type BudgetConfig struct {
 // into an implausibly large or overflowing duration.
 const maxBudgetWindowSeconds = 86400
 
+// defaultTracingServiceName is used when tracing is enabled but the
+// operator didn't set tracing.service_name.
+const defaultTracingServiceName = "wardline"
+
+// TracingConfig configures OTLP/HTTP span export. Only validated (and
+// only meaningful) when the otel_tracing feature flag is on.
+type TracingConfig struct {
+	OTLPEndpoint string `yaml:"otlp_endpoint"` // host:port, no scheme
+	ServiceName  string `yaml:"service_name"`  // defaults to "wardline"
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
-// flag toggles for capabilities added after v0.1 — budget_enforcement is
-// the first real one; internal/platform/flags reads this map to decide
-// whether a flagged feature is on.
+// flag toggles for capabilities added after v0.1 — budget_enforcement and
+// otel_tracing are the two real ones so far; internal/platform/flags
+// reads this map to decide whether a flagged feature is on.
 type Config struct {
 	Listen         string          `yaml:"listen"`
 	Upstream       string          `yaml:"upstream"`
@@ -39,6 +50,7 @@ type Config struct {
 	PolicyBackend  string          `yaml:"policy_backend"` // "yaml" (default) or "opa"
 	Audit          AuditConfig     `yaml:"audit"`
 	Budget         BudgetConfig    `yaml:"budget"`
+	Tracing        TracingConfig   `yaml:"tracing"`
 	Features       map[string]bool `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
@@ -99,6 +111,14 @@ func (c *Config) validate() error {
 			problems = append(problems, "budget.window_seconds must be > 0 when features.budget_enforcement is true")
 		} else if c.Budget.WindowSeconds > maxBudgetWindowSeconds {
 			problems = append(problems, fmt.Sprintf("budget.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", maxBudgetWindowSeconds, c.Budget.WindowSeconds))
+		}
+	}
+	if c.Features["otel_tracing"] {
+		if c.Tracing.OTLPEndpoint == "" {
+			problems = append(problems, "tracing.otlp_endpoint must not be empty when features.otel_tracing is true")
+		}
+		if c.Tracing.ServiceName == "" {
+			c.Tracing.ServiceName = defaultTracingServiceName
 		}
 	}
 	if len(problems) > 0 {
