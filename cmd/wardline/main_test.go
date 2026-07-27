@@ -50,3 +50,41 @@ func TestBuildTopHandler_WebUIOn_OtherPathsStillGoToProxy(t *testing.T) {
 		t.Error("expected the proxy handler to receive non-/dashboard/ requests")
 	}
 }
+
+func TestBuildTopHandler_WebUIAndCredentialIssuanceOn_AllRoutesReachCorrectHandler(t *testing.T) {
+	proxyHit := false
+	dashboardHit := false
+	tokenHit := false
+	revokeHit := false
+
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxyHit = true })
+	dashboard := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { dashboardHit = true })
+	token := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { tokenHit = true })
+	revoke := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { revokeHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/dashboard/":         dashboard,
+		"/credentials/token":  token,
+		"/credentials/revoke": revoke,
+	})
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/dashboard/", nil))
+	if !dashboardHit {
+		t.Error("expected the dashboard handler to receive /dashboard/ requests")
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/credentials/token", nil))
+	if !tokenHit {
+		t.Error("expected the token handler to receive /credentials/token requests")
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil))
+	if !revokeHit {
+		t.Error("expected the revoke handler to receive /credentials/revoke requests")
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/some/mcp/tool", nil))
+	if !proxyHit {
+		t.Error("expected the proxy handler to receive requests for every other path")
+	}
+}

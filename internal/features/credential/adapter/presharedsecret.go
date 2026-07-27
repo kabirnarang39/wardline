@@ -34,6 +34,9 @@ func LoadBootstrapper(path string) (*Bootstrapper, error) {
 		if e.Name == "" || e.Secret == "" {
 			return nil, fmt.Errorf("credentials file %s: every identity entry must have both name and secret", path)
 		}
+		if existingName, ok := bySecret[e.Secret]; ok {
+			return nil, fmt.Errorf("credentials file %s: duplicate secret for identities %q and %q", path, existingName, e.Name)
+		}
 		bySecret[e.Secret] = e.Name
 	}
 	return &Bootstrapper{bySecret: bySecret}, nil

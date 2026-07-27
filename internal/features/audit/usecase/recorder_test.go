@@ -10,7 +10,7 @@ import (
 )
 
 type fakeWriter struct {
-	entries []domain.Entry
+	entries  []domain.Entry
 	failWith error
 }
 
