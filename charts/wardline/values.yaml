@@ -7,6 +7,8 @@ image:
   tag: ""   # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
+imagePullSecrets: []
+
 # nameOverride: ""
 # fullnameOverride: ""
 
