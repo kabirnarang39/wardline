@@ -424,6 +424,100 @@ func assertAuditLogHasTraceID(t *testing.T, stdout *safeBuffer) {
 	}
 }
 
+// TestServeEndToEnd_DashboardServesWhenEnabled proves the web_ui feature
+// flag, once on, actually mounts the dashboard in the real binary: the SPA
+// shell is servable and its audit API reflects a real proxied call, not
+// just that the handlers compile in isolation.
+func TestServeEndToEnd_DashboardServesWhenEnabled(t *testing.T) {
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "features:\n  web_ui: true\n")
+
+	// Drive one call through the proxy so the dashboard has something to show.
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy call failed: %v; stderr=%s", err, stderr.String())
+	}
+	_ = resp.Body.Close()
+
+	// The SPA shell loads.
+	shellResp, err := http.Get("http://" + addr + "/dashboard/")
+	if err != nil {
+		t.Fatalf("dashboard root failed: %v", err)
+	}
+	defer func() { _ = shellResp.Body.Close() }()
+	if shellResp.StatusCode != http.StatusOK {
+		t.Errorf("dashboard root status = %d, want 200", shellResp.StatusCode)
+	}
+	shellBody, _ := io.ReadAll(shellResp.Body)
+	if !strings.Contains(string(shellBody), `id="app"`) {
+		t.Errorf("dashboard root body missing SPA shell marker: %s", shellBody)
+	}
+
+	// The audit API reflects the call made above.
+	auditResp, err := http.Get("http://" + addr + "/dashboard/api/audit?after=0&limit=10")
+	if err != nil {
+		t.Fatalf("dashboard audit API failed: %v", err)
+	}
+	defer func() { _ = auditResp.Body.Close() }()
+	var entries []struct {
+		Identity string
+		Tool     string
+		Decision string
+	}
+	if err := json.NewDecoder(auditResp.Body).Decode(&entries); err != nil {
+		t.Fatalf("invalid audit JSON: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Identity == "agent-1" && e.Tool == "read_file" && e.Decision == "allow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the proxied call to appear in the dashboard's audit feed, got %+v", entries)
+	}
+}
+
+// TestServeEndToEnd_DashboardNotMountedWhenDisabled proves the web_ui flag
+// actually gates mux registration (not just something inert in the config
+// layer): with the flag off, /dashboard/ falls through to the same proxy
+// path as any other unmatched URL.
+func TestServeEndToEnd_DashboardNotMountedWhenDisabled(t *testing.T) {
+	addr, _, _, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	resp, err := http.Get("http://" + addr + "/dashboard/")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// web_ui is off, so /dashboard/ is just another unmatched tool path,
+	// routed to the proxy like any other — proving the flag actually
+	// gates the mux registration, not just the config layer.
+	if resp.StatusCode == http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(body), `id="app"`) {
+			t.Error("dashboard SPA should not be reachable when web_ui is off")
+		}
+	}
+}
+
 // TestServeEndToEnd_GracefulShutdown proves SIGTERM drains the server and
 // exits cleanly within the shutdown timeout, rather than hanging or
 // needing a force-kill — the path a batched OTLP exporter's final flush
