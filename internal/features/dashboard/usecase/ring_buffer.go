@@ -20,7 +20,12 @@ type RingBuffer struct {
 	nextID  int64
 }
 
+var _ auditdomain.LiveSink = (*RingBuffer)(nil)
+
 func NewRingBuffer(capacity int) *RingBuffer {
+	if capacity < 1 {
+		capacity = 1
+	}
 	return &RingBuffer{
 		cap:     capacity,
 		entries: make([]domain.LiveEntry, 0, capacity),
