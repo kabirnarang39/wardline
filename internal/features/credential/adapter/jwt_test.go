@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,7 +60,24 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	token, _ := iv.Issue("agent-abc123")
-	tampered := token[:len(token)-1] + "x"
+	// Flip the first character of the signature segment rather than the
+	// token's last character. Base64url's trailing (partial) group has
+	// decode don't-care bits — mutating the last char only changes the
+	// decoded signature bytes ~55% of the time, making the test flaky.
+	// The first char of the signature segment sits in a full 4-char/3-byte
+	// group, so any single-character change there deterministically
+	// changes the decoded signature bytes.
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 || len(parts[2]) == 0 {
+		t.Fatalf("expected a 3-segment JWT with a non-empty signature, got %q", token)
+	}
+	sig := []byte(parts[2])
+	if sig[0] == 'A' {
+		sig[0] = 'B'
+	} else {
+		sig[0] = 'A'
+	}
+	tampered := parts[0] + "." + parts[1] + "." + string(sig)
 	_, err = iv.Verify(tampered)
 	if !errors.Is(err, domain.ErrTokenInvalid) {
 		t.Errorf("expected ErrTokenInvalid, got %v", err)
