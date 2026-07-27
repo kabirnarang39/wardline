@@ -110,7 +110,7 @@ func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 
@@ -136,7 +136,7 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	const sensitiveReason = "policy evaluation failed: /etc/wardline/policy.rego:12: internal detail"
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: sensitiveReason})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 
@@ -171,7 +171,7 @@ func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1") // nothing listens here
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 
@@ -191,7 +191,7 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 
@@ -216,7 +216,7 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 
@@ -245,7 +245,7 @@ func TestHandler_PopulatesContextFromRequest(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	engine := &contextRecordingEngine{}
 	decider := proxyusecase.NewDecider(engine)
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
@@ -296,7 +296,7 @@ func TestHandler_ThrottledCallNeverReachesUpstream(t *testing.T) {
 	const throttleReason = "rate limit exceeded: 1 requests per 1m0s window"
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: throttleReason, RetryAfter: 45 * time.Second}}
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer)
@@ -340,7 +340,7 @@ func TestHandler_AllowedByBudgetReachesUpstream(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: true, Reason: "within budget"}}
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer)
@@ -362,7 +362,7 @@ func TestHandler_DeniedByPolicyNeverConsultsBudget(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
 	// A budget checker that would deny everything, proving a policy deny
 	// short-circuits before budget is ever consulted (the audit decision
@@ -402,7 +402,7 @@ func TestHandler_PropagatesIncomingTraceID(t *testing.T) {
 	defer otel.SetTextMapPropagator(prevPropagator)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer)
 
@@ -440,7 +440,7 @@ func TestHandler_DeniedCallSetsErrorSpanStatus(t *testing.T) {
 	tracer := tp.Tracer("test")
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: "some reason"})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer)
 
@@ -479,7 +479,7 @@ func TestHandler_ThrottledCallSetsErrorSpanStatus(t *testing.T) {
 	tracer := tp.Tracer("test")
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: "rate limit exceeded"}}
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, tracer)
@@ -514,7 +514,7 @@ func TestHandler_TraceIDEmptyWhenTracingDisabled(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	writer := &fakeWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
 

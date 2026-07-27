@@ -39,7 +39,7 @@ func TestHandler_SlowUpstreamTimesOut(t *testing.T) {
 	proxy.Transport = &http.Transport{ResponseHeaderTimeout: testTimeout}
 
 	writer := &fakeTimeoutWriter{}
-	recorder := auditusecase.NewRecorder(writer, nil)
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeTimeoutEngine{effect: policydomain.EffectAllow})
 	handler := &Handler{decider: decider, recorder: recorder, upstream: proxy, budgetChecker: alwaysAllowTimeoutBudgetChecker{}, tracer: noop.NewTracerProvider().Tracer("test"), now: time.Now}
 
