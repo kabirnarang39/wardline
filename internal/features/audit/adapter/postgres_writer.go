@@ -3,6 +3,7 @@ package adapter
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -57,6 +58,14 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
+
+	// Conservative fixed defaults for a single-table audit sink, not
+	// tuned for high throughput — the design doc's "Explicitly out of
+	// scope" section defers exposing pool-tuning knobs in config this
+	// cycle, so these bounds aren't operator-overridable yet.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if _, err := db.Exec(createTableSQL); err != nil {
 		_ = db.Close()
