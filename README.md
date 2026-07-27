@@ -274,6 +274,13 @@ Every `internal/platform/config.Config` field is exposed under
 `values.yaml`'s `wardline:` key — feature flags, budget limits, tracing,
 and Postgres storage all work the same way they do outside Kubernetes.
 
+**Exposing the dashboard:** if you enable `features.web_ui` and also
+enable Ingress (or set `service.type` to something other than
+`ClusterIP`), you're making the unauthenticated dashboard reachable
+beyond the cluster — see the [Dashboard](#dashboard) section's security
+note above before doing this; `helm install`'s post-install notes warn
+about this combination too.
+
 **Multiple replicas:** Wardline's budget enforcement and dashboard live
 view are both per-process, in-memory state, not shared across replicas
 — running `replicaCount > 1` means each pod enforces its own
