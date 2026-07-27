@@ -145,7 +145,10 @@ features: {{}}
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    proc.wait(timeout=5)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass  # nothing more we can do; don't let this mask the real exception
 
 
 if __name__ == "__main__":
