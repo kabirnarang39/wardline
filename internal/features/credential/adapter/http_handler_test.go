@@ -157,3 +157,46 @@ func TestHandleRevoke_MissingIdentityReturns400(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+func TestHandleRevoke_WrongMethodReturns405(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	req := httptest.NewRequest(http.MethodGet, "/credentials/revoke", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRevoke_MalformedBodyReturns400(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", bytes.NewBufferString("not json"))
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleRevoke_IPv6LoopbackSucceeds(t *testing.T) {
+	revoker := &recordingRevoker{}
+	h := newTestHandler(revoker)
+	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "[::1]:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if revoker.identity != "agent-abc123" {
+		t.Errorf("expected agent-abc123 to have been revoked, got %q", revoker.identity)
+	}
+}
