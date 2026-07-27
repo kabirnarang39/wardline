@@ -246,5 +246,33 @@ any pruning/retention of the `audit_entries` table over time is not
 managed automatically — plan for both if you expect a long-running,
 high-volume deployment.
 
+## Kubernetes / Helm
+
+A Helm chart is available at `charts/wardline/` for deploying Wardline
+on Kubernetes:
+
+```bash
+helm install my-wardline charts/wardline \
+  --set wardline.upstream=http://your-mcp-server:9000 \
+  --set-file wardline.policy=./policy.yaml
+```
+
+Every `internal/platform/config.Config` field is exposed under
+`values.yaml`'s `wardline:` key — feature flags, budget limits, tracing,
+and Postgres storage all work the same way they do outside Kubernetes.
+
+**Multiple replicas:** Wardline's budget enforcement and dashboard live
+view are both per-process, in-memory state, not shared across replicas
+— running `replicaCount > 1` means each pod enforces its own
+independent rate limit. `helm install`'s own post-install notes repeat
+this warning when `replicaCount` is set above 1. A shared budget store
+across replicas is real future work, not something this chart papers
+over.
+
+**Health checks:** the chart's liveness/readiness probes use a TCP
+socket check against the listen port, not an HTTP health endpoint —
+Wardline doesn't have one yet. This proves the process is listening,
+not that policy/upstream/tracing are fully healthy.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
