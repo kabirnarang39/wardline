@@ -9,6 +9,11 @@ features: {}
 #   budget_enforcement: true   # off by default — see README.md "Budget enforcement"
 #   otel_tracing: true         # off by default — see README.md "Tracing"
 #   web_ui: true               # off by default — see README.md "Dashboard"
+#   postgres_storage: true     # off by default — see README.md "Postgres storage"
+# audit:
+#   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
+#   # only used when features.postgres_storage is true; audit.output is
+#   # ignored (with a warning log) when this flag is on
 # budget:
 #   requests_per_window: 100
 #   window_seconds: 60
