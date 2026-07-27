@@ -737,8 +737,26 @@ credential:
 		t.Fatalf("expected 401 with no Authorization header, got %d", noAuthResp.StatusCode)
 	}
 
-	// A tampered token is rejected.
-	tamperedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token[:len(tokenBody.Token)-1]+"x", "read_file")
+	// A tampered token is rejected. Flip the first character of the
+	// signature segment (not the last character of the whole token): a
+	// base64url group carrying a partial byte has decode-don't-care bit
+	// positions in its last character, so mutating there can (~45% of the
+	// time, reproduced empirically) decode to the identical signature
+	// bytes and pass verification by accident. The first character of a
+	// full base64 group has no such collision — see the same fix in
+	// internal/features/credential/adapter/jwt_test.go.
+	parts := strings.SplitN(tokenBody.Token, ".", 3)
+	if len(parts) != 3 || len(parts[2]) == 0 {
+		t.Fatalf("expected a 3-segment JWT, got %d segments", len(parts))
+	}
+	sig := []byte(parts[2])
+	if sig[0] == 'A' {
+		sig[0] = 'B'
+	} else {
+		sig[0] = 'A'
+	}
+	tamperedToken := parts[0] + "." + parts[1] + "." + string(sig)
+	tamperedResp := postToolCallWithBearer(t, listenAddr, tamperedToken, "read_file")
 	if tamperedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a tampered token, got %d", tamperedResp.StatusCode)
 	}
