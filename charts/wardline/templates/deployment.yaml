@@ -11,6 +11,9 @@ spec:
       {{- include "wardline.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/secret-config.yaml") . | sha256sum }}
+        checksum/policy: {{ include (print $.Template.BasePath "/configmap-policy.yaml") . | sha256sum }}
       labels:
         {{- include "wardline.selectorLabels" . | nindent 8 }}
     spec:
