@@ -9,12 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace/noop"
+
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
-	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // TestHandler_SlowUpstreamTimesOut proves a connected-but-silent upstream

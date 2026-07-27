@@ -12,18 +12,19 @@ import (
 	"testing"
 	"time"
 
-	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
-	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
-	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
-	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
-	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
-	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
+	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
+	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
 
 // jsonRPCErrorEnvelope mirrors the shape written by writeJSONRPCError, for
