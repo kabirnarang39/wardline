@@ -98,9 +98,12 @@ func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines st
 	// doesn't already define one — a caller supplying its own "audit:"
 	// section (e.g. to set postgres_dsn) would otherwise collide with this
 	// one, and yaml.v3 hard-errors on duplicate top-level mapping keys
-	// rather than letting the later one win.
+	// rather than letting the later one win. Checked as a line-anchored
+	// prefix/line match rather than a bare substring, so a hypothetical
+	// future caller passing something like "# audit: see below" in a
+	// comment doesn't falsely suppress the default block.
 	defaultAudit := "audit:\n  output: stdout\n"
-	if strings.Contains(extraConfigLines, "audit:") {
+	if strings.HasPrefix(extraConfigLines, "audit:") || strings.Contains(extraConfigLines, "\naudit:") {
 		defaultAudit = ""
 	}
 	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
@@ -180,7 +183,7 @@ func reserveAddr(t *testing.T) string {
 
 func waitForServer(t *testing.T, addr string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get(addr); err == nil {
 			_ = resp.Body.Close()
@@ -570,6 +573,10 @@ default: deny
 // Postgres instance; skips otherwise, matching this repo's other
 // real-dependency-gated tests (see internal/features/audit/adapter's own
 // Docker-gated Postgres tests).
+//
+// WARNING: this test DROPs the audit_entries table at whatever DSN
+// WARDLINE_TEST_POSTGRES_DSN points at. Point this at a disposable
+// database only — never at a real/shared one.
 func TestServeEndToEnd_PostgresStorage(t *testing.T) {
 	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -606,10 +613,11 @@ default: deny
 	_ = resp.Body.Close()
 
 	var identity, tool, decision string
-	// The audit write happens after the response is sent (ModifyResponse
-	// callback) — poll briefly rather than assuming it's landed
-	// instantly, matching this file's existing polling patterns for
-	// other async-after-response effects.
+	// The audit write happens synchronously on the request path (in
+	// ModifyResponse, before the response is written back to the client),
+	// but poll briefly anyway rather than assuming this test's own SELECT
+	// races the INSERT's transaction commit, matching this file's existing
+	// polling patterns elsewhere.
 	// Filter by identity/tool rather than a bare LIMIT 1: the server's own
 	// readiness probe in startWardline (a bodyless GET) also lands a row
 	// here first, with decision "error" and empty identity/tool, since

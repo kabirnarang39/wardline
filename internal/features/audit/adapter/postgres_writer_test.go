@@ -16,6 +16,10 @@ import (
 // Postgres is available. Start one locally with:
 //   docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=wardline postgres:16
 // and set WARDLINE_TEST_POSTGRES_DSN=postgres://postgres:wardline@localhost:5432/postgres?sslmode=disable
+//
+// WARNING: these tests DROP the audit_entries table at whatever DSN
+// WARDLINE_TEST_POSTGRES_DSN points at (see dropTable below). Point this
+// at a disposable database only — never at a real/shared one.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
