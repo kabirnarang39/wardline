@@ -173,6 +173,37 @@ func TestHandler_UnknownPathFallsBackToIndexHTML(t *testing.T) {
 	}
 }
 
+func TestHandler_JSONEndpoints_RejectNonGETMethods(t *testing.T) {
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets())
+
+	for _, path := range []string{"/dashboard/api/audit", "/dashboard/api/policy", "/dashboard/api/status"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s: POST status = %d, want 405", path, rec.Code)
+		}
+	}
+}
+
+func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets())
+
+	for _, path := range []string{"/dashboard/api/audit", "/dashboard/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'self'" {
+			t.Errorf("%s: Content-Security-Policy = %q, want \"default-src 'self'\"", path, got)
+		}
+	}
+}
+
 func TestHandler_RootServesIndexHTML(t *testing.T) {
 	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets())
 
