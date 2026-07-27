@@ -13,13 +13,9 @@ import (
 	"time"
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
-	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
-	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
-	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
-	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
@@ -28,7 +24,6 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
-	"github.com/kabirnarang39/wardline/internal/platform/version"
 )
 
 // Server-level timeouts, chosen to stop an unauthenticated caller from
@@ -106,21 +101,13 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	writer := buildAuditWriter(logger, cfg.Audit.Output)
-
-	featureFlags := flags.NewStaticProvider(cfg.Features)
-	var ringBuffer *dashboardusecase.RingBuffer
-	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
-	if featureFlags.Enabled("web_ui") {
-		ringBuffer = dashboardusecase.NewRingBuffer(1000)
-		liveSink = ringBuffer
-	}
-
-	recorder := auditusecase.NewRecorder(writer, liveSink, func(err error) {
+	recorder := auditusecase.NewRecorder(writer, auditadapter.NoopSink{}, func(err error) {
 		logger.Error("audit write failed", "error", err)
 	})
 
 	decider := proxyusecase.NewDecider(engine)
 
+	featureFlags := flags.NewStaticProvider(cfg.Features)
 	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
@@ -130,51 +117,13 @@ func runServe(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	proxyHandler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
 
 	// Log what the operator has toggled on so a flag isn't silently ignored.
 	for name := range cfg.Features {
 		if featureFlags.Enabled(name) {
 			logger.Info("feature enabled", "feature", name)
 		}
-	}
-
-	var handler http.Handler = proxyHandler
-	if featureFlags.Enabled("web_ui") {
-		// Build the policy info for the dashboard
-		policySource, err := os.ReadFile(cfg.PolicyFile)
-		if err != nil {
-			logger.Error("failed to read policy file for dashboard", "path", cfg.PolicyFile, "error", err)
-			os.Exit(1)
-		}
-		backend := cfg.PolicyBackend
-		if backend == "" {
-			backend = "yaml"
-		}
-		policyInfo := dashboarddomain.PolicyInfo{
-			Backend: backend,
-			Source:  string(policySource),
-		}
-
-		// Create the status provider
-		statusProvider := dashboardusecase.NewStatusProvider(
-			version.Version,
-			cfg.Listen,
-			cfg.Upstream,
-			cfg.Features,
-			time.Now(),
-			time.Now,
-		)
-
-		// Create the dashboard handler
-		dashboardHandler := dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
-
-		// Create a mux that routes /dashboard/* to the dashboard handler
-		// and everything else to the proxy handler
-		mux := http.NewServeMux()
-		mux.Handle("/dashboard/", dashboardHandler)
-		mux.Handle("/", proxyHandler)
-		handler = mux
 	}
 
 	srv := &http.Server{
