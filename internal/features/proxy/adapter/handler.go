@@ -11,6 +11,12 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -68,17 +74,19 @@ const upstreamResponseHeaderTimeout = 30 * time.Second
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // Handler is the HTTP entry point: parse each request, ask the Decider for
-// a verdict, check the budget, record exactly one audit entry per request,
-// and forward allowed calls to the upstream MCP server.
+// a verdict, check the budget, record exactly one audit entry per request
+// (with a trace ID for correlation), and forward allowed calls to the
+// upstream MCP server.
 type Handler struct {
 	decider       *proxyusecase.Decider
 	recorder      *auditusecase.Recorder
 	upstream      *httputil.ReverseProxy
 	budgetChecker BudgetChecker
+	tracer        trace.Tracer
 	now           func() time.Time
 }
 
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker) *Handler {
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -92,6 +100,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 		recorder:      recorder,
 		upstream:      proxy,
 		budgetChecker: budgetChecker,
+		tracer:        tracer,
 		now:           time.Now,
 	}
 }
@@ -100,10 +109,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.now()
 	identity := r.Header.Get("X-Wardline-Identity")
 
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	ctx, span := h.tracer.Start(ctx, "wardline.proxy_request", trace.WithAttributes(attribute.String("wardline.identity", identity)))
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.record(identity, "", "error", "", start)
+		h.finish(span, identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -111,7 +125,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	call, id, err := proxyusecase.ParseToolCall(identity, body)
 	if err != nil {
-		h.record(identity, "", "error", "", start)
+		h.finish(span, identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, id, err.Error())
 		return
 	}
@@ -125,7 +139,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.record(identity, call.Tool, "deny", verdict.Reason, start)
+		h.finish(span, identity, call.Tool, "deny", verdict.Reason, start)
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, id, "denied by policy")
 		return
 	}
@@ -134,29 +148,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.record(identity, call.Tool, "throttled", budgetVerdict.Reason, start)
+		h.finish(span, identity, call.Tool, "throttled", budgetVerdict.Reason, start)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, id, "throttled by budget")
 		return
 	}
 
-	h.forward(w, r, identity, call.Tool, id, start)
+	h.forward(w, r, span, identity, call.Tool, id, start)
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
 // depending on whether the upstream call succeeded or failed.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, identity, tool string, id json.RawMessage, start time.Time) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tool string, id json.RawMessage, start time.Time) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		recorded = true
-		h.record(identity, tool, "error", "", start)
+		h.finish(span, identity, tool, "error", "", start)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.record(identity, tool, "allow", "", start)
+			h.finish(span, identity, tool, "allow", "", start)
 		}
 		return nil
 	}
@@ -175,6 +189,25 @@ func retryAfterSeconds(d time.Duration) int {
 	return s
 }
 
-func (h *Handler) record(identity, tool, decision, reason string, start time.Time) {
-	h.recorder.Record(identity, tool, decision, reason, h.now().Sub(start), start)
+// finish sets final span attributes/status and records exactly one audit
+// entry for a completed request — every return point in
+// ServeHTTP/forward needs both, so they're combined here rather than
+// repeated at each call site.
+func (h *Handler) finish(span trace.Span, identity, tool, decision, reason string, start time.Time) {
+	span.SetAttributes(
+		attribute.String("wardline.tool", tool),
+		attribute.String("wardline.decision", decision),
+	)
+	if decision == "deny" || decision == "throttled" || decision == "error" {
+		span.SetStatus(codes.Error, reason)
+	}
+	var traceID string
+	if sc := span.SpanContext(); sc.IsValid() {
+		traceID = sc.TraceID().String()
+	}
+	h.record(identity, tool, decision, reason, traceID, start)
+}
+
+func (h *Handler) record(identity, tool, decision, reason, traceID string, start time.Time) {
+	h.recorder.Record(identity, tool, decision, reason, traceID, h.now().Sub(start), start)
 }

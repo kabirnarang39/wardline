@@ -14,6 +14,7 @@ import (
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // TestHandler_SlowUpstreamTimesOut proves a connected-but-silent upstream
@@ -39,7 +40,7 @@ func TestHandler_SlowUpstreamTimesOut(t *testing.T) {
 	writer := &fakeTimeoutWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil)
 	decider := proxyusecase.NewDecider(fakeTimeoutEngine{effect: policydomain.EffectAllow})
-	handler := &Handler{decider: decider, recorder: recorder, upstream: proxy, budgetChecker: alwaysAllowTimeoutBudgetChecker{}, now: time.Now}
+	handler := &Handler{decider: decider, recorder: recorder, upstream: proxy, budgetChecker: alwaysAllowTimeoutBudgetChecker{}, tracer: noop.NewTracerProvider().Tracer("test"), now: time.Now}
 
 	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))

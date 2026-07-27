@@ -15,6 +15,7 @@ type entryJSON struct {
 	Decision  string `json:"decision"`
 	LatencyMS int64  `json:"latency_ms"`
 	Reason    string `json:"reason,omitempty"`
+	TraceID   string `json:"trace_id,omitempty"`
 }
 
 // JSONLWriter writes one JSON object per line to the wrapped io.Writer.
@@ -36,6 +37,7 @@ func (w *JSONLWriter) Write(e domain.Entry) error {
 		Decision:  e.Decision,
 		LatencyMS: e.LatencyMS,
 		Reason:    e.Reason,
+		TraceID:   e.TraceID,
 	})
 	if err != nil {
 		return err
