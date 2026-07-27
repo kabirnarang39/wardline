@@ -95,3 +95,29 @@ func TestRingBuffer_ConcurrentPublishAndSince(t *testing.T) {
 		t.Errorf("expected 50 published entries, got %d", len(got))
 	}
 }
+
+func TestRingBuffer_ZeroCapacityDoesNotPanic(t *testing.T) {
+	b := usecase.NewRingBuffer(0)
+	now := time.Now()
+	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now})
+	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now})
+
+	got := b.Since(0, 10)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry in capacity-1 buffer, got %d", len(got))
+	}
+	if got[0].Identity != "b" {
+		t.Errorf("expected most recent entry 'b', got %q", got[0].Identity)
+	}
+}
+
+func TestRingBuffer_NegativeCapacityDoesNotPanic(t *testing.T) {
+	b := usecase.NewRingBuffer(-5)
+	now := time.Now()
+	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now})
+
+	got := b.Since(0, 10)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry in capacity-1 buffer, got %d", len(got))
+	}
+}
