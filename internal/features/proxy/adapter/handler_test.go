@@ -212,6 +212,32 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 	}
 }
 
+func TestHandler_ToolCallParseErrorEchoesRealID(t *testing.T) {
+	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer)
+
+	// Well-formed envelope with a real id, but malformed tools/call params
+	// (a string instead of an object) — the id is fully recoverable, so
+	// the error response must echo it back rather than "null".
+	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":"oops"}`
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
+	req.Header.Set("X-Wardline-Identity", "agent-abc123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	env := decodeJSONRPCError(t, w)
+	if string(env.ID) != "7" {
+		t.Errorf("expected id 7 to be echoed back, got %s", env.ID)
+	}
+}
+
 func TestHandler_OversizedBodyRejected(t *testing.T) {
 	upstreamURL, _ := url.Parse("http://127.0.0.1:1")
 

@@ -126,7 +126,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parsed, err := proxyusecase.ParseRequest(identity, body)
 	if err != nil {
 		h.finish(span, identity, "", "error", "", start)
-		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, err.Error())
+		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
 	}
 
