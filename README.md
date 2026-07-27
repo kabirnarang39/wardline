@@ -208,7 +208,7 @@ audit trail. Off by default — enable with:
 features:
   postgres_storage: true
 audit:
-  postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
+  postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable&connect_timeout=5"
 ```
 
 `audit.output` is ignored (with a warning logged at startup) when this
@@ -222,9 +222,9 @@ that's a deliberate future decision, not something this handles
 automatically.
 
 **A real tradeoff, not an oversight:** each audit write is a synchronous
-SQL `INSERT` on the request path — a proxied request's response isn't
-delayed by it (the write happens after the response is sent), but the
-audit entry landing in Postgres is a real network round-trip. For a
+SQL `INSERT` on the client-visible request path — it happens before the
+response is sent back to the client, so the audit entry landing in
+Postgres is a real network round-trip the caller waits on. For a
 co-located database this is single-digit milliseconds, smaller than the
 JSON-RPC parsing and policy evaluation Wardline already does per
 request; for a database in a meaningfully different region, this
@@ -235,6 +235,16 @@ if that ever matters for your deployment — not built preemptively here.
 startup (`wardline serve` refuses to start), the same as a bad policy
 file — this is deliberate, so a misconfigured database is caught
 immediately rather than silently dropping every audit entry at runtime.
+Every Postgres operation (the startup ping and every per-request
+`INSERT`) is bounded by a 5-second timeout, so a blackholed connection
+(as opposed to a fast connection-refused failure) degrades to a bounded
+error instead of hanging a request-handling goroutine indefinitely.
+
+**Indexing and retention are the operator's responsibility:** beyond the
+one index this feature creates on `timestamp`, any further indexing and
+any pruning/retention of the `audit_entries` table over time is not
+managed automatically — plan for both if you expect a long-running,
+high-volume deployment.
 
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
