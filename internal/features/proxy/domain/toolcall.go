@@ -27,3 +27,18 @@ type Verdict struct {
 	Allow  bool
 	Reason string
 }
+
+// ParsedRequest is the result of parsing an incoming MCP JSON-RPC
+// request body. IsToolCall distinguishes a "tools/call" request (Call
+// is populated, goes through policy/budget evaluation) from any other
+// well-formed JSON-RPC method (Method is populated, Call is the zero
+// value — these are protocol-lifecycle/discovery methods like
+// "initialize" or "tools/list" that every real MCP client sends before
+// its first tool call, and Wardline's policy model is scoped to tool
+// calls only, so these are forwarded to upstream without evaluation).
+type ParsedRequest struct {
+	Call       ToolCall
+	Method     string
+	ID         json.RawMessage
+	IsToolCall bool
+}
