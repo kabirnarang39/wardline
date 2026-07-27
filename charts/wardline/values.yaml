@@ -3,6 +3,9 @@ image:
   tag: ""   # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
+# nameOverride: ""
+# fullnameOverride: ""
+
 replicaCount: 1
 
 service:
