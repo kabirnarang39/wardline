@@ -84,6 +84,13 @@ The Rego input (`input` in a policy) is the whole request context as JSON:
 ./wardline validate-policy --file policy.rego.example --backend opa
 ```
 
+## Framework integrations
+
+Wardline works as a drop-in reverse proxy for any framework's MCP
+client — see [`docs/integrations/`](docs/integrations/) for verified,
+runnable guides covering LangChain, LlamaIndex, the OpenAI Agents SDK,
+CrewAI, and the raw MCP client.
+
 ## Budget enforcement
 
 Off by default. Opt in with `features.budget_enforcement: true` plus a
@@ -146,13 +153,6 @@ The `wardline.identity` span attribute is populated from the same
 unauthenticated, caller-controlled `X-Wardline-Identity` header discussed
 above — a caller rotating identities can inflate cardinality in the trace
 backend, not just evade rate limiting.
-
-## Framework integrations
-
-Wardline works as a drop-in reverse proxy for any framework's MCP
-client — see [`docs/integrations/`](docs/integrations/) for verified,
-runnable guides covering LangChain, LlamaIndex, the OpenAI Agents SDK,
-CrewAI, and the raw MCP client.
 
 ## Dashboard
 
