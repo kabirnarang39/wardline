@@ -405,3 +405,57 @@ audit:
 		t.Errorf("unexpected Audit.Output: %q", cfg.Audit.Output)
 	}
 }
+
+func TestLoad_CredentialIssuanceDisabledByDefaultNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Credential.IdentitiesFile != "" {
+		t.Errorf("expected empty Credential.IdentitiesFile when unset, got %q", cfg.Credential.IdentitiesFile)
+	}
+}
+
+func TestLoad_CredentialIssuanceEnabledValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "./credentials.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Credential.IdentitiesFile != "./credentials.yaml" {
+		t.Errorf("unexpected Credential.IdentitiesFile: %q", cfg.Credential.IdentitiesFile)
+	}
+}
+
+func TestLoad_CredentialIssuanceEnabledMissingIdentitiesFile(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when credential_issuance is on but credential.identities_file is unset")
+	}
+}
