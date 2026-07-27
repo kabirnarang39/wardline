@@ -42,6 +42,16 @@ const (
 	readTimeout       = 30 * time.Second
 	writeTimeout      = 45 * time.Second
 	idleTimeout       = 60 * time.Second
+
+	// tracingShutdownTimeout bounds how long we wait for the tracer
+	// provider to flush buffered spans on exit. If the OTLP collector is
+	// unreachable, the SDK's batch span processor can otherwise block up
+	// to its export timeout (default 30s, with retry) — well past what a
+	// container orchestrator's SIGTERM-to-SIGKILL grace period allows
+	// (Kubernetes defaults to 30s, Docker to 10s). Paired with the 10s
+	// HTTP drain above, the 15s total comfortably fits inside a 30s grace
+	// period with headroom.
+	tracingShutdownTimeout = 5 * time.Second
 )
 
 func main() {
@@ -138,9 +148,11 @@ func runServe(logger *slog.Logger, args []string) {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server exited", "error", err)
-			if err := tracingProvider.Shutdown(context.Background()); err != nil {
+			tracingShutdownCtx, tracingCancel := context.WithTimeout(context.Background(), tracingShutdownTimeout)
+			if err := tracingProvider.Shutdown(tracingShutdownCtx); err != nil {
 				logger.Error("tracing shutdown failed", "error", err)
 			}
+			tracingCancel()
 			os.Exit(1)
 		}
 	case <-ctx.Done():
@@ -152,7 +164,9 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
-	if err := tracingProvider.Shutdown(context.Background()); err != nil {
+	tracingShutdownCtx, tracingCancel := context.WithTimeout(context.Background(), tracingShutdownTimeout)
+	defer tracingCancel()
+	if err := tracingProvider.Shutdown(tracingShutdownCtx); err != nil {
 		logger.Error("tracing shutdown failed", "error", err)
 	}
 }
