@@ -34,7 +34,7 @@ spec:
             - /etc/wardline/wardline.yaml
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.containerPort }}
           livenessProbe:
             tcpSocket:
               port: http
