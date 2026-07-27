@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -86,6 +88,10 @@ func (alwaysAllowBudgetChecker) Check(identity string, now time.Time) budgetdoma
 
 var noopTracer = noop.NewTracerProvider().Tracer("test")
 
+// testLogger discards output — tests assert behavior, not log lines, and a
+// live logger would just print noise during `go test -v`.
+var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 type contextRecordingEngine struct {
 	received policydomain.Context
 }
@@ -113,7 +119,7 @@ func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -123,6 +129,40 @@ func TestHandler_AllowedCallReachesUpstream(t *testing.T) {
 	}
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
 		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
+	}
+}
+
+// TestHandler_AuthorizationHeaderStrippedBeforeForwarding proves the bearer
+// credential a caller authenticated to Wardline with is never forwarded to
+// the untrusted upstream MCP server. httputil.ReverseProxy does not strip
+// Authorization on its own (it's not a hop-by-hop header) — without an
+// explicit strip in forward(), a malicious/compromised upstream could
+// harvest a live, replayable Wardline credential from every proxied call.
+func TestHandler_AuthorizationHeaderStrippedBeforeForwarding(t *testing.T) {
+	var gotAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
+
+	req := newRequest("agent-abc123", "read_file")
+	req.Header.Set("Authorization", "Bearer some-live-wardline-credential")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if gotAuthorization != "" {
+		t.Errorf("expected the upstream to never see an Authorization header, got %q", gotAuthorization)
 	}
 }
 
@@ -139,7 +179,7 @@ func TestHandler_DeniedCallNeverReachesUpstream(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: sensitiveReason})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
@@ -174,7 +214,7 @@ func TestHandler_UpstreamUnreachableReturnsError(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -194,7 +234,7 @@ func TestHandler_MalformedBodyReturnsError(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("not json"))
 	req.Header.Set("X-Wardline-Identity", "agent-abc123")
@@ -219,7 +259,7 @@ func TestHandler_ToolCallParseErrorEchoesRealID(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	// Well-formed envelope with a real id, but malformed tools/call params
 	// (a string instead of an object) — the id is fully recoverable, so
@@ -245,7 +285,7 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	// One byte over the 1 MiB cap; content doesn't matter since the reader
 	// should be cut off before the body is parsed as JSON.
@@ -275,7 +315,7 @@ func TestHandler_PopulatesContextFromRequest(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	engine := &contextRecordingEngine{}
 	decider := proxyusecase.NewDecider(engine)
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	before := time.Now()
 	req := newRequest("agent-abc123", "read_file")
@@ -326,7 +366,7 @@ func TestHandler_ThrottledCallNeverReachesUpstream(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: throttleReason, RetryAfter: 45 * time.Second}}
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -370,7 +410,7 @@ func TestHandler_AllowedByBudgetReachesUpstream(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: true, Reason: "within budget"}}
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -395,7 +435,7 @@ func TestHandler_DeniedByPolicyNeverConsultsBudget(t *testing.T) {
 	// short-circuits before budget is ever consulted (the audit decision
 	// must be "deny", not "throttled").
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: "should never be seen"}}
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
@@ -431,7 +471,7 @@ func TestHandler_PropagatesIncomingTraceID(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{}, testLogger)
 
 	req := newRequest("agent-abc123", "read_file")
 	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
@@ -469,7 +509,7 @@ func TestHandler_DeniedCallSetsErrorSpanStatus(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: "some reason"})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
@@ -509,7 +549,7 @@ func TestHandler_ThrottledCallSetsErrorSpanStatus(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: "rate limit exceeded"}}
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, tracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, tracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -569,7 +609,7 @@ func TestHandler_PassthroughRequest_SkipsPolicyAndBudget(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(engine)
-	h := adapter.NewHandler(decider, recorder, upstreamURL, budget, noopTracer, adapter.HeaderIdentity{})
+	h := adapter.NewHandler(decider, recorder, upstreamURL, budget, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
@@ -612,7 +652,7 @@ func TestHandler_PassthroughRequest_SpanStatusStaysOK(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
-	h := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{})
+	h := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer, adapter.HeaderIdentity{}, testLogger)
 
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}`)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
@@ -639,7 +679,7 @@ func TestHandler_TraceIDEmptyWhenTracingDisabled(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -669,7 +709,7 @@ func TestHandler_FailedIdentityAuthNeverReachesDeciderBudgetOrRecorder(t *testin
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, failingIdentityAuth{})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, failingIdentityAuth{}, testLogger)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -695,7 +735,7 @@ func TestHandler_SuccessfulIdentityAuthProceedsNormally(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.NewBearerIdentity(fakeSucceedingAuthenticator{identity: "agent-abc123"}))
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.NewBearerIdentity(fakeSucceedingAuthenticator{identity: "agent-abc123"}), testLogger)
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`))
 	req.Header.Set("Authorization", "Bearer some-valid-jwt")

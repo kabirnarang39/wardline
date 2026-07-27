@@ -2,6 +2,8 @@ package adapter
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -41,7 +43,7 @@ func TestHandler_SlowUpstreamTimesOut(t *testing.T) {
 	writer := &fakeTimeoutWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeTimeoutEngine{effect: policydomain.EffectAllow})
-	handler := &Handler{decider: decider, recorder: recorder, upstream: proxy, budgetChecker: alwaysAllowTimeoutBudgetChecker{}, identityAuth: HeaderIdentity{}, tracer: noop.NewTracerProvider().Tracer("test"), now: time.Now}
+	handler := &Handler{decider: decider, recorder: recorder, upstream: proxy, budgetChecker: alwaysAllowTimeoutBudgetChecker{}, identityAuth: HeaderIdentity{}, tracer: noop.NewTracerProvider().Tracer("test"), logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
 
 	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
