@@ -1,0 +1,19 @@
+Wardline has been deployed as "{{ include "wardline.fullname" . }}".
+
+Port-forward to reach it locally:
+  kubectl port-forward svc/{{ include "wardline.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+{{- if gt (.Values.replicaCount | int) 1 }}
+
+IMPORTANT — you've set replicaCount to {{ .Values.replicaCount }}:
+Wardline's budget enforcement (rate limiting) and dashboard live-activity
+view are both per-process, in-memory state — NOT shared across replicas.
+With {{ .Values.replicaCount }} replicas, each pod enforces its own
+independent rate limit and shows its own independent live audit view;
+a caller's requests may be load-balanced across replicas, effectively
+multiplying their real rate limit by {{ .Values.replicaCount }}. This is
+not a bug in this chart — it's the current, documented behavior of
+Wardline's in-memory budget limiter and dashboard ring buffer. A shared
+(e.g. Postgres- or Redis-backed) budget store is real future work, not
+something this chart can paper over.
+{{- end }}

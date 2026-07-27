@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wardline.fullname" . }}
+  labels:
+    {{- include "wardline.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wardline.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wardline.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: wardline
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - -config
+            - /etc/wardline/wardline.yaml
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/wardline
+              readOnly: true
+            - name: policy
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "wardline.fullname" . }}-config
+        - name: policy
+          configMap:
+            name: {{ include "wardline.fullname" . }}-policy
+            items:
+              - key: policy
+                path: policy
