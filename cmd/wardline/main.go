@@ -138,7 +138,9 @@ func runServe(logger *slog.Logger, args []string) {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server exited", "error", err)
-			_ = tracingProvider.Shutdown(context.Background())
+			if err := tracingProvider.Shutdown(context.Background()); err != nil {
+				logger.Error("tracing shutdown failed", "error", err)
+			}
 			os.Exit(1)
 		}
 	case <-ctx.Done():
