@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -45,9 +46,10 @@ func (s *safeBuffer) String() string {
 // wardline binary, and starts it as a subprocess pointed at a mock upstream
 // that 200s on anything. It blocks until the server is ready and registers
 // cleanup for the subprocess and upstream. Returns the address the server
-// is listening on and the buffer capturing its stderr (for test failure
-// diagnostics, or log-content assertions).
-func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *safeBuffer, cmd *exec.Cmd) {
+// is listening on and the buffers capturing its stdout (the audit log
+// defaults there) and stderr (for test failure diagnostics, or
+// log-content assertions).
+func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stdout, stderr *safeBuffer, cmd *exec.Cmd) {
 	t.Helper()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +85,9 @@ audit:
 	}
 
 	cmd = exec.Command(binPath, "serve", "--config", configPath)
+	stdout = &safeBuffer{}
 	stderr = &safeBuffer{}
+	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start wardline: %v", err)
@@ -94,11 +98,11 @@ audit:
 	})
 
 	waitForServer(t, "http://"+listenAddr)
-	return listenAddr, stderr, cmd
+	return listenAddr, stdout, stderr, cmd
 }
 
 func TestServeEndToEnd(t *testing.T) {
-	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -182,7 +186,7 @@ func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Res
 // the OPA backend — a policy expressible with the YAML backend wouldn't
 // prove that.
 func TestServeEndToEnd_OPABackend(t *testing.T) {
-	listenAddr, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, _, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -218,7 +222,7 @@ allow {
 // fixed-window reset through config-parsing/time.Now(), not just the bare
 // limiter with an injected clock.
 func TestServeEndToEnd_BudgetThrottles(t *testing.T) {
-	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -252,7 +256,7 @@ budget:
 // YAML backend was previously exercised with a budget, leaving the
 // combination assumed-safe by code inspection rather than tested.
 func TestServeEndToEnd_OPABackendWithBudget(t *testing.T) {
-	listenAddr, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, _, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -288,7 +292,7 @@ budget:
 // a log signal instead of silent no-op enforcement, and that enforcement is
 // in fact not applied (the call succeeds despite requests_per_window: 1).
 func TestServeEndToEnd_BudgetConfiguredButFlagOffWarns(t *testing.T) {
-	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -329,7 +333,7 @@ func TestServeEndToEnd_OTLPExport(t *testing.T) {
 	// wants host:port, no scheme.
 	collectorHostPort := strings.TrimPrefix(collector.URL, "http://")
 
-	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, stdout, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -348,6 +352,7 @@ tracing:
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if gotExport.Load() {
+			assertAuditLogHasTraceID(t, stdout)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -355,12 +360,45 @@ tracing:
 	t.Fatalf("collector never received a span export within the deadline (stderr: %s)", stderr.String())
 }
 
+// assertAuditLogHasTraceID parses the last non-empty line of the
+// subprocess's stdout (the audit log defaults there) as a JSON audit
+// entry and asserts its trace_id field is present and not an all-zero
+// placeholder — proving the whole pipeline (config -> Provider -> Handler
+// -> OTel SDK -> audit record) threads a real trace ID through, not just
+// that some export happened.
+func assertAuditLogHasTraceID(t *testing.T, stdout *safeBuffer) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if lastLine == "" {
+		t.Fatalf("no audit log line found in stdout: %q", stdout.String())
+	}
+	var entry struct {
+		TraceID string `json:"trace_id"`
+	}
+	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+		t.Fatalf("audit log line is not valid JSON: %v (line: %s)", err, lastLine)
+	}
+	if entry.TraceID == "" {
+		t.Fatalf("expected a non-empty trace_id in the audit log line, got none (line: %s)", lastLine)
+	}
+	if entry.TraceID == "00000000000000000000000000000000" {
+		t.Fatalf("expected a real trace_id, got an all-zeros placeholder: %s", entry.TraceID)
+	}
+}
+
 // TestServeEndToEnd_GracefulShutdown proves SIGTERM drains the server and
 // exits cleanly within the shutdown timeout, rather than hanging or
 // needing a force-kill — the path a batched OTLP exporter's final flush
 // depends on.
 func TestServeEndToEnd_GracefulShutdown(t *testing.T) {
-	_, stderr, cmd := startWardline(t, "policy.yaml", `
+	_, _, stderr, cmd := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
