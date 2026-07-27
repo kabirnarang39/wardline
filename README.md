@@ -25,8 +25,7 @@ mock upstream in another terminal first: `python3 -m http.server 9000` (it
 ## Identity and calling convention
 
 Every request must carry an `X-Wardline-Identity` header; policy rules match
-against this value plus the MCP tool name being called. Only the `tools/call`
-JSON-RPC method is proxied in v0.1 — any other method gets a 400.
+against this value plus the MCP tool name being called.
 
 ```bash
 curl -X POST http://localhost:8080 \
@@ -37,6 +36,17 @@ curl -X POST http://localhost:8080 \
 
 (This matches the `agent-abc123` / `read_file` allow rule in
 `policy.yaml.example`.)
+
+**Scope note:** policy, budget enforcement, and audit decisions apply to
+tool calls (`tools/call`) only. Other MCP protocol methods — the
+`initialize` handshake every client performs, `notifications/initialized`,
+`tools/list`, and (if your upstream MCP server exposes them) `resources/*`
+and `prompts/*` — are forwarded to the upstream server without policy or
+budget evaluation, recorded in the audit log with a `"passthrough"`
+decision so they're visible but distinguishable from an actual policy
+`"allow"`. If your upstream server exposes sensitive resources or
+prompts, be aware they are not currently gated by Wardline's policy
+engine — only tool calls are.
 
 ## Policy backends
 
