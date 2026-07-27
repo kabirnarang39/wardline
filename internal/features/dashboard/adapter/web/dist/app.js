@@ -3,7 +3,6 @@ import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_CLIENT_ROWS = 500;
-const STALE_AFTER_MS = 5000;
 
 const state = {
   entries: [],
@@ -15,7 +14,7 @@ const state = {
 function escapeHTML(s) {
   const div = document.createElement('div');
   div.textContent = s ?? '';
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function formatTime(iso) {
@@ -90,33 +89,41 @@ function setLive(ok) {
 }
 
 async function loadPolicy() {
-  const policy = await fetchPolicy();
-  document.getElementById('policy-backend').textContent = policy.Backend || 'unknown';
-  document.getElementById('policy-source').textContent = policy.Source || '';
+  try {
+    const policy = await fetchPolicy();
+    document.getElementById('policy-backend').textContent = policy.Backend || 'unknown';
+    document.getElementById('policy-source').textContent = policy.Source || '';
+  } catch {
+    document.getElementById('policy-source').textContent = 'Failed to load policy — try refreshing.';
+  }
 }
 
 async function loadStatus() {
-  const status = await fetchStatus();
-  const grid = document.getElementById('status-grid');
-  grid.innerHTML = `
-    <div><dt>Version</dt><dd>${escapeHTML(status.Version)}</dd></div>
-    <div><dt>Uptime</dt><dd>${formatUptime(status.UptimeSeconds)}</dd></div>
-    <div><dt>Listening on</dt><dd>${escapeHTML(status.Listen)}</dd></div>
-    <div><dt>Upstream</dt><dd>${escapeHTML(status.Upstream)}</dd></div>
-  `;
+  try {
+    const status = await fetchStatus();
+    const grid = document.getElementById('status-grid');
+    grid.innerHTML = `
+      <div><dt>Version</dt><dd>${escapeHTML(status.Version)}</dd></div>
+      <div><dt>Uptime</dt><dd>${formatUptime(status.UptimeSeconds)}</dd></div>
+      <div><dt>Listening on</dt><dd>${escapeHTML(status.Listen)}</dd></div>
+      <div><dt>Upstream</dt><dd>${escapeHTML(status.Upstream)}</dd></div>
+    `;
 
-  const featureList = document.getElementById('feature-list');
-  const features = status.Features || {};
-  const names = Object.keys(features).sort();
-  featureList.innerHTML = names.length
-    ? names.map((name) => `
-        <li>
-          <span class="feature-dot ${features[name] ? 'is-on' : 'is-off'}"></span>
-          <span>${escapeHTML(name)}</span>
-          <span>${features[name] ? 'on' : 'off'}</span>
-        </li>
-      `).join('')
-    : '<li>No optional features configured.</li>';
+    const featureList = document.getElementById('feature-list');
+    const features = status.Features || {};
+    const names = Object.keys(features).sort();
+    featureList.innerHTML = names.length
+      ? names.map((name) => `
+          <li>
+            <span class="feature-dot ${features[name] ? 'is-on' : 'is-off'}"></span>
+            <span>${escapeHTML(name)}</span>
+            <span>${features[name] ? 'on' : 'off'}</span>
+          </li>
+        `).join('')
+      : '<li>No optional features configured.</li>';
+  } catch {
+    document.getElementById('status-grid').textContent = 'Failed to load status — try refreshing.';
+  }
 }
 
 function formatUptime(totalSeconds) {
@@ -137,8 +144,8 @@ function switchView(name) {
     if (active) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
-  if (name === 'policy') loadPolicy().catch(() => {});
-  if (name === 'status') loadStatus().catch(() => {});
+  if (name === 'policy') loadPolicy();
+  if (name === 'status') loadStatus();
 }
 
 function wireNav() {
@@ -162,9 +169,11 @@ function wireFilters() {
       if (state.filters.decisions.has(decision)) {
         state.filters.decisions.delete(decision);
         chip.classList.remove('is-active');
+        chip.setAttribute('aria-pressed', 'false');
       } else {
         state.filters.decisions.add(decision);
         chip.classList.add('is-active');
+        chip.setAttribute('aria-pressed', 'true');
       }
       renderActivity();
     });
