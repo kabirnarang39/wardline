@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wardline</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <nav class="rail" aria-label="Dashboard sections">
+      <div class="brand">Wardline</div>
+      <button class="nav-item is-active" data-view="activity" aria-current="page">
+        <span class="nav-icon" data-icon="activity"></span>
+        <span>Activity</span>
+      </button>
+      <button class="nav-item" data-view="policy">
+        <span class="nav-icon" data-icon="policy"></span>
+        <span>Policy</span>
+      </button>
+      <button class="nav-item" data-view="status">
+        <span class="nav-icon" data-icon="status"></span>
+        <span>Status</span>
+      </button>
+      <div class="live-indicator" id="live-indicator" role="status" aria-live="polite">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="live-label">Live</span>
+      </div>
+    </nav>
+
+    <main class="content">
+      <section id="view-activity" class="view is-active" aria-labelledby="view-activity-heading">
+        <div class="view-header">
+          <h1 id="view-activity-heading">Activity</h1>
+          <div class="filters">
+            <input type="text" id="filter-identity" placeholder="Filter by identity" aria-label="Filter by identity">
+            <input type="text" id="filter-tool" placeholder="Filter by tool" aria-label="Filter by tool">
+            <div class="chip-group" role="group" aria-label="Filter by decision">
+              <button class="chip" data-decision="allow">allow</button>
+              <button class="chip" data-decision="deny">deny</button>
+              <button class="chip" data-decision="throttled">throttled</button>
+              <button class="chip" data-decision="error">error</button>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col"></th>
+                <th scope="col">Time</th>
+                <th scope="col">Identity</th>
+                <th scope="col">Tool</th>
+                <th scope="col">Decision</th>
+                <th scope="col">Latency</th>
+                <th scope="col">Trace</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody id="audit-rows"></tbody>
+          </table>
+          <p id="audit-empty" class="empty-state" hidden>No activity yet — requests through Wardline will show up here.</p>
+        </div>
+      </section>
+
+      <section id="view-policy" class="view" aria-labelledby="view-policy-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-policy-heading">Policy</h1>
+          <span class="badge" id="policy-backend"></span>
+        </div>
+        <pre class="policy-source" id="policy-source" tabindex="0"></pre>
+      </section>
+
+      <section id="view-status" class="view" aria-labelledby="view-status-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-status-heading">Status</h1>
+        </div>
+        <dl class="status-grid" id="status-grid"></dl>
+        <h2 class="status-subheading">Features</h2>
+        <ul class="feature-list" id="feature-list"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
