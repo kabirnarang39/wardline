@@ -42,13 +42,6 @@ func NewJWTIssuerVerifier() (*JWTIssuerVerifier, error) {
 	return &JWTIssuerVerifier{privateKey: key, now: time.Now}, nil
 }
 
-// SetClockForTest overrides the issuer's clock. Test-only hook, exported
-// because jwt_test.go lives in package adapter_test and can't reach the
-// unexported now field directly.
-func SetClockForTest(j *JWTIssuerVerifier, now func() time.Time) {
-	j.now = now
-}
-
 func (j *JWTIssuerVerifier) Issue(identity string) (string, error) {
 	jti, err := randomJTI()
 	if err != nil {

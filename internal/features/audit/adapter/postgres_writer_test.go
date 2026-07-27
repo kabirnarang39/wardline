@@ -14,7 +14,9 @@ import (
 
 // testDSN returns the DSN to test against, skipping the test if no real
 // Postgres is available. Start one locally with:
-//   docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=wardline postgres:16
+//
+//	docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=wardline postgres:16
+//
 // and set WARDLINE_TEST_POSTGRES_DSN=postgres://postgres:wardline@localhost:5432/postgres?sslmode=disable
 //
 // WARNING: these tests DROP the audit_entries table at whatever DSN

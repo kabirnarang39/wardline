@@ -1,4 +1,4 @@
-package adapter_test
+package adapter
 
 import (
 	"errors"
@@ -6,12 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 )
 
 func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
-	iv, err := adapter.NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +34,7 @@ func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
-	iv, err := adapter.NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +54,7 @@ func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
-	iv, err := adapter.NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,8 +84,8 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
-	iv1, _ := adapter.NewJWTIssuerVerifier()
-	iv2, _ := adapter.NewJWTIssuerVerifier()
+	iv1, _ := NewJWTIssuerVerifier()
+	iv2, _ := NewJWTIssuerVerifier()
 	token, _ := iv1.Issue("agent-abc123")
 	_, err := iv2.Verify(token)
 	if !errors.Is(err, domain.ErrTokenInvalid) {
@@ -95,17 +94,17 @@ func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
-	iv, err := adapter.NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	adapter.SetClockForTest(iv, func() time.Time {
+	iv.now = func() time.Time {
 		return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	})
+	}
 	token, _ := iv.Issue("agent-abc123")
-	adapter.SetClockForTest(iv, func() time.Time {
+	iv.now = func() time.Time {
 		return time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC) // 1h later, past the 15m TTL
-	})
+	}
 	_, err = iv.Verify(token)
 	if !errors.Is(err, domain.ErrTokenExpired) {
 		t.Errorf("expected ErrTokenExpired, got %v", err)
@@ -113,7 +112,7 @@ func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_MalformedTokenFails(t *testing.T) {
-	iv, err := adapter.NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -94,3 +94,17 @@ identities:
 		t.Fatal("expected an error for an entry missing a secret")
 	}
 }
+
+func TestLoadBootstrapper_DuplicateSecretErrors(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: agent-abc123
+    secret: "same-secret"
+  - name: agent-def456
+    secret: "same-secret"
+`)
+	_, err := adapter.LoadBootstrapper(path)
+	if err == nil {
+		t.Fatal("expected an error for two identities sharing a secret")
+	}
+}
