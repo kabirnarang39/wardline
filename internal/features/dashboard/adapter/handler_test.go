@@ -79,6 +79,30 @@ func TestHandler_AuditEndpoint_BadQueryParamsDefaultSanely(t *testing.T) {
 	}
 }
 
+func TestHandler_AuditEndpoint_LimitClampedToMax(t *testing.T) {
+	entries := make([]domain.LiveEntry, 1200)
+	for i := range entries {
+		entries[i] = domain.LiveEntry{ID: int64(i + 1), Identity: "agent-1"}
+	}
+	audit := &fakeAuditSource{entries: entries}
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets())
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=0&limit=5000", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []domain.LiveEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(got) != 1000 {
+		t.Fatalf("expected limit clamped to 1000, got %d entries", len(got))
+	}
+}
+
 func TestHandler_PolicyEndpoint_ReturnsJSON(t *testing.T) {
 	policy := domain.PolicyInfo{Backend: "yaml", Source: "rules: []\ndefault: deny\n"}
 	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, policy, testAssets())
