@@ -85,6 +85,12 @@ audit:
 	}
 
 	cmd = exec.Command(binPath, "serve", "--config", configPath)
+	// Shorten the OTel SDK's default 5s batch-export interval so
+	// tracing-enabled tests don't need to wait on it — faster and more
+	// deterministic than racing a 10s polling deadline against a 5s batch
+	// timer. Harmless for every other test: only tracing-enabled ones
+	// touch batch export timing at all.
+	cmd.Env = append(os.Environ(), "OTEL_BSP_SCHEDULE_DELAY=200")
 	stdout = &safeBuffer{}
 	stderr = &safeBuffer{}
 	cmd.Stdout = stdout
