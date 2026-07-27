@@ -1,0 +1,96 @@
+package adapter_test
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
+	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
+)
+
+func writeCredentialsFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "credentials.yaml")
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadBootstrapper_ValidSecretResolvesIdentity(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: agent-abc123
+    secret: "sekret-one"
+  - name: agent-def456
+    secret: "sekret-two"
+`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	identity, err := b.Authenticate("sekret-two")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if identity != "agent-def456" {
+		t.Errorf("expected agent-def456, got %q", identity)
+	}
+}
+
+func TestLoadBootstrapper_WrongSecretIsInvalidCredentials(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: agent-abc123
+    secret: "sekret-one"
+`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = b.Authenticate("wrong-secret")
+	if !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Errorf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestLoadBootstrapper_UnknownSecretIsInvalidCredentials(t *testing.T) {
+	path := writeCredentialsFile(t, `identities: []`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = b.Authenticate("anything")
+	if !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Errorf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestLoadBootstrapper_MissingFileErrors(t *testing.T) {
+	_, err := adapter.LoadBootstrapper(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if err == nil {
+		t.Fatal("expected an error for a missing file")
+	}
+}
+
+func TestLoadBootstrapper_MalformedYAMLErrors(t *testing.T) {
+	path := writeCredentialsFile(t, "not: [valid yaml")
+	_, err := adapter.LoadBootstrapper(path)
+	if err == nil {
+		t.Fatal("expected an error for malformed YAML")
+	}
+}
+
+func TestLoadBootstrapper_EntryMissingNameOrSecretErrors(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: agent-abc123
+    secret: ""
+`)
+	_, err := adapter.LoadBootstrapper(path)
+	if err == nil {
+		t.Fatal("expected an error for an entry missing a secret")
+	}
+}
