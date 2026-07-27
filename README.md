@@ -147,6 +147,13 @@ unauthenticated, caller-controlled `X-Wardline-Identity` header discussed
 above — a caller rotating identities can inflate cardinality in the trace
 backend, not just evade rate limiting.
 
+## Framework integrations
+
+Wardline works as a drop-in reverse proxy for any framework's MCP
+client — see [`docs/integrations/`](docs/integrations/) for verified,
+runnable guides covering LangChain, LlamaIndex, the OpenAI Agents SDK,
+CrewAI, and the raw MCP client.
+
 ## Dashboard
 
 A read-only, in-browser view of what Wardline is doing right now:
