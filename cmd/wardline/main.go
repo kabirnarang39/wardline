@@ -156,6 +156,13 @@ func runServe(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	case <-ctx.Done():
+		// Release the signal registration immediately so a second
+		// SIGINT/SIGTERM during a slow drain takes the OS's default action
+		// (immediate termination) instead of being swallowed by the still-live
+		// NotifyContext registration until runServe returns. The deferred
+		// stop() above still covers the other branch, where ctx.Done() never
+		// fires.
+		stop()
 		logger.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
