@@ -113,7 +113,26 @@ func runServe(logger *slog.Logger, args []string) {
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
 
-	writer := buildAuditWriter(logger, cfg.Audit.Output)
+	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
+
+	if cfg.Audit.Output != "" && postgresStorageEnabled {
+		logger.Info("audit.output is set but features.postgres_storage is on; audit.output is being ignored",
+			"output", cfg.Audit.Output)
+	}
+
+	var writer auditdomain.Writer
+	var postgresWriter *auditadapter.PostgresWriter
+	if postgresStorageEnabled {
+		pw, err := auditadapter.NewPostgresWriter(cfg.Audit.PostgresDSN)
+		if err != nil {
+			logger.Error("failed to initialize postgres audit writer", "error", err)
+			os.Exit(1)
+		}
+		postgresWriter = pw
+		writer = pw
+	} else {
+		writer = buildAuditWriter(logger, cfg.Audit.Output)
+	}
 
 	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
 	var ringBuffer *dashboardusecase.RingBuffer
@@ -197,6 +216,11 @@ func runServe(logger *slog.Logger, args []string) {
 				logger.Error("tracing shutdown failed", "error", err)
 			}
 			tracingCancel()
+			if postgresWriter != nil {
+				if err := postgresWriter.Close(); err != nil {
+					logger.Error("postgres writer shutdown failed", "error", err)
+				}
+			}
 			os.Exit(1)
 		}
 	case <-ctx.Done():
@@ -219,6 +243,11 @@ func runServe(logger *slog.Logger, args []string) {
 	defer tracingCancel()
 	if err := tracingProvider.Shutdown(tracingShutdownCtx); err != nil {
 		logger.Error("tracing shutdown failed", "error", err)
+	}
+	if postgresWriter != nil {
+		if err := postgresWriter.Close(); err != nil {
+			logger.Error("postgres writer shutdown failed", "error", err)
+		}
 	}
 }
 
