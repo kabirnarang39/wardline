@@ -234,13 +234,14 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 	// otherwise carefully confined to. This is a deliberate, accepted
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
-	// ponytail: explicit list, not a switch with a default — decision is a
-	// closed set of 5 literals this file alone produces ("allow", "deny",
-	// "throttled", "passthrough", "error"), not caller-controlled. A future
-	// 6th decision value needs a human to add it here too; upgrade to a
-	// typed decision enum with an exhaustive switch if that becomes a real
-	// maintenance pain point.
-	if decision == "deny" || decision == "throttled" || decision == "error" {
+	// ponytail: explicit success allowlist, not a switch with a default —
+	// decision is a closed set of 5 literals this file alone produces
+	// ("allow", "deny", "throttled", "passthrough", "error"), not
+	// caller-controlled. A future 6th decision value needs a human to add
+	// it here too; forgetting fails safe (Error), not silently open.
+	// Upgrade to a typed decision enum with an exhaustive switch if that
+	// becomes a real maintenance pain point.
+	if decision != "allow" && decision != "passthrough" {
 		span.SetStatus(codes.Error, reason)
 	}
 	var traceID string
