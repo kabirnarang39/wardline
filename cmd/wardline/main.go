@@ -101,7 +101,7 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	writer := buildAuditWriter(logger, cfg.Audit.Output)
-	recorder := auditusecase.NewRecorder(writer, func(err error) {
+	recorder := auditusecase.NewRecorder(writer, auditadapter.NoopSink{}, func(err error) {
 		logger.Error("audit write failed", "error", err)
 	})
 

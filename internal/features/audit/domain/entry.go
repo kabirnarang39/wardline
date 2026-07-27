@@ -27,3 +27,12 @@ type Entry struct {
 type Writer interface {
 	Write(Entry) error
 }
+
+// LiveSink receives a live copy of every recorded Entry, independent of
+// the durable Writer. Used by the dashboard feature (when the web_ui flag
+// is on) to power its in-memory audit view without tailing the JSONL
+// file — Publish must never block or error; a slow or full sink drops
+// data rather than affect request handling.
+type LiveSink interface {
+	Publish(Entry)
+}
