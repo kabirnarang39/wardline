@@ -30,7 +30,7 @@ type BudgetChecker interface {
 	Check(identity string, now time.Time) budgetdomain.Verdict
 }
 
-// JSON-RPC error codes used since v1.0. This isn't a full JSON-RPC error code
+// JSON-RPC error codes. This isn't a full JSON-RPC error code
 // taxonomy — just enough to distinguish "we couldn't understand the
 // request" from "we understood it and something downstream went wrong".
 const (

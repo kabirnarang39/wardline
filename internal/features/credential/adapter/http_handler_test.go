@@ -217,3 +217,34 @@ func TestHandleRevoke_IPv6LoopbackSucceeds(t *testing.T) {
 		t.Errorf("expected agent-abc123 to have been revoked, got %q", revoker.identity)
 	}
 }
+
+func TestHandleToken_OversizedBodyRejected(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	// One byte over the 64 KiB cap; content doesn't matter since the reader
+	// should be cut off before the body is parsed as JSON.
+	oversized := bytes.Repeat([]byte("a"), (64<<10)+1)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", bytes.NewReader(oversized))
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d", w.Code)
+	}
+}
+
+func TestHandleRevoke_OversizedBodyRejected(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	// One byte over the 64 KiB cap; content doesn't matter since the reader
+	// should be cut off before the body is parsed as JSON.
+	oversized := bytes.Repeat([]byte("a"), (64<<10)+1)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", bytes.NewReader(oversized))
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d", w.Code)
+	}
+}
