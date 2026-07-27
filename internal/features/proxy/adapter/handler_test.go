@@ -19,6 +19,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -422,6 +423,85 @@ func TestHandler_PropagatesIncomingTraceID(t *testing.T) {
 	}
 	if len(writer.entries) != 1 || writer.entries[0].TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Errorf("expected the audit entry's TraceID to match, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_DeniedCallSetsErrorSpanStatus(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	tracer := tp.Tracer("test")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny, reason: "some reason"})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+
+	// Read spans before Shutdown — Shutdown resets the in-memory exporter's
+	// stored spans, so a read-after-shutdown would silently see zero spans.
+	spans := exporter.GetSpans()
+	_ = tp.Shutdown(context.Background())
+
+	if upstreamHit {
+		t.Fatal("upstream should not have been called for a denied request")
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Status.Code != codes.Error {
+		t.Errorf("expected span status Error for a denied call, got %v", spans[0].Status.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].TraceID == "" {
+		t.Errorf("expected a non-empty audit entry TraceID, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_ThrottledCallSetsErrorSpanStatus(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	tracer := tp.Tracer("test")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	budgetChecker := fakeBudgetChecker{verdict: budgetdomain.Verdict{Allowed: false, Reason: "rate limit exceeded"}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, budgetChecker, tracer)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	// Read spans before Shutdown — Shutdown resets the in-memory exporter's
+	// stored spans, so a read-after-shutdown would silently see zero spans.
+	spans := exporter.GetSpans()
+	_ = tp.Shutdown(context.Background())
+
+	if upstreamHit {
+		t.Fatal("upstream should not have been called for a throttled request")
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Status.Code != codes.Error {
+		t.Errorf("expected span status Error for a throttled call, got %v", spans[0].Status.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].TraceID == "" {
+		t.Errorf("expected a non-empty audit entry TraceID, got %+v", writer.entries)
 	}
 }
 
