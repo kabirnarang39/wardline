@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // safeBuffer is a mutex-guarded bytes.Buffer. The subprocess's stderr is
@@ -91,14 +94,21 @@ func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines st
 		t.Fatal(err)
 	}
 
+	// The default audit block below is only appended when extraConfigLines
+	// doesn't already define one — a caller supplying its own "audit:"
+	// section (e.g. to set postgres_dsn) would otherwise collide with this
+	// one, and yaml.v3 hard-errors on duplicate top-level mapping keys
+	// rather than letting the later one win.
+	defaultAudit := "audit:\n  output: stdout\n"
+	if strings.Contains(extraConfigLines, "audit:") {
+		defaultAudit = ""
+	}
 	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
 listen: "%s"
 upstream: "%s"
 policy_file: "%s"
 %s
-audit:
-  output: stdout
-`, listenAddr, upstream.URL, policyPath, extraConfigLines)), 0644); err != nil {
+%s`, listenAddr, upstream.URL, policyPath, extraConfigLines, defaultAudit)), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -550,5 +560,73 @@ default: deny
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("process did not exit within 15s of SIGTERM (stderr: %s)", stderr.String())
+	}
+}
+
+// TestServeEndToEnd_PostgresStorage proves the postgres_storage feature
+// flag, once on, actually writes audit entries to a real Postgres database
+// through the real binary — not just that PostgresWriter's adapter tests
+// pass in isolation. Requires WARDLINE_TEST_POSTGRES_DSN pointing at a real
+// Postgres instance; skips otherwise, matching this repo's other
+// real-dependency-gated tests (see internal/features/audit/adapter's own
+// Docker-gated Postgres tests).
+func TestServeEndToEnd_PostgresStorage(t *testing.T) {
+	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres e2e test")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db for cleanup/verification: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
+		t.Fatalf("drop table before test: %v", err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "features:\n  postgres_storage: true\naudit:\n  postgres_dsn: \""+dsn+"\"\n")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy call failed: %v; stderr=%s", err, stderr.String())
+	}
+	_ = resp.Body.Close()
+
+	var identity, tool, decision string
+	// The audit write happens after the response is sent (ModifyResponse
+	// callback) — poll briefly rather than assuming it's landed
+	// instantly, matching this file's existing polling patterns for
+	// other async-after-response effects.
+	// Filter by identity/tool rather than a bare LIMIT 1: the server's own
+	// readiness probe in startWardline (a bodyless GET) also lands a row
+	// here first, with decision "error" and empty identity/tool, since
+	// audit recording covers unparseable requests too.
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		lastErr = db.QueryRow(`SELECT identity, tool, decision FROM audit_entries WHERE identity = $1 AND tool = $2 ORDER BY id DESC LIMIT 1`, "agent-1", "read_file").Scan(&identity, &tool, &decision)
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("audit entry never appeared in postgres: %v", lastErr)
+	}
+	if identity != "agent-1" || tool != "read_file" || decision != "allow" {
+		t.Errorf("unexpected audit row: identity=%s tool=%s decision=%s", identity, tool, decision)
 	}
 }
