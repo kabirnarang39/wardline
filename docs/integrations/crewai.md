@@ -48,37 +48,72 @@ for establishing the connection.
 
 ## How a policy denial surfaces
 
-Two distinct cases:
+`MCPServerAdapter` (via `mcpadapt`) holds a long-lived session: it runs
+the MCP connection in a background thread with its own event loop for
+the entire `with MCPServerAdapter(...)` block, and every tool call is
+dispatched onto that loop with
+`asyncio.run_coroutine_threadsafe(session.call_tool(...), loop).result()`
+— the same long-lived-session shape documented in the
+[raw MCP client guide](mcp-client.md#how-a-policy-denial-surfaces). The
+practical effect here is worse than a merely awkward exception, and was
+confirmed empirically against a real Wardline denial using
+`crewai-tools==1.15.7` / `mcpadapt==0.1.19`:
 
-**A denial during the initial connection** (entering the `with
-MCPServerAdapter(...)` block) is wrapped in a plain `RuntimeError`:
+**A denial on an individual tool call** (connection already
+established, an allowed call already having succeeded) does not raise
+a catchable exception to the caller at all — it hangs the calling
+thread indefinitely. The denial cancels `mcpadapt`'s background event
+loop's task group the same way it does for a long-lived raw `mcp`
+session; that background thread then dies with an unhandled
+`ExceptionGroup[httpx.HTTPStatusError]`, printed to stderr by Python's
+default thread exception hook, and **never delivered to the calling
+thread**. Meanwhile `_sync_call_tool`'s `.result()` call has no
+timeout, so the main thread — and any `Agent`/`Task`/`Crew` code
+waiting on that tool call — blocks forever:
+
+```python
+with MCPServerAdapter(server_params) as tools:
+    by_name = {t.name: t for t in tools}
+    by_name["allowed_tool"]._run()   # succeeds
+    by_name["denied_tool"]._run()    # HANGS — never raises, never returns
+```
+
+There is no code a caller can add around the call itself to catch
+this — the failure happens on a different thread than the one running
+your `try`. The only mitigation today is an external timeout (e.g. run
+the call in a thread/process with its own deadline, or a `Crew`-level
+execution timeout if your version supports one) — treat a denied tool
+call through `MCPServerAdapter` as capable of wedging the whole crew,
+not as something that fails fast.
+
+**A failure during the initial connection** (entering the `with
+MCPServerAdapter(...)` block — e.g. Wardline unreachable, or the
+upstream misconfigured) is wrapped in a plain `RuntimeError`, but note
+its `__cause__` is typically a generic `TimeoutError` ("Couldn't connect
+to the MCP server after Ns"), not the specific underlying error — the
+same background-thread-crash-isn't-propagated mechanism above means the
+real exception is swallowed, and the caller only observes that
+`MCPServerAdapter` never got a ready signal within `connect_timeout`:
 
 ```python
 try:
     with MCPServerAdapter(server_params) as tools:
         ...
 except RuntimeError as e:
-    print(e)            # "Failed to initialize MCP Adapter: ..."
-    print(e.__cause__)   # the original httpx.HTTPStatusError
+    print(e)             # "Failed to initialize MCP Adapter: Couldn't connect ..."
+    print(e.__cause__)    # typically TimeoutError, not the original error
 ```
 
-**A denial on an individual tool call** (connection already
-established) is NOT caught by CrewAI or its `mcpadapt` dependency — it
-surfaces the same way it does for the
-[raw MCP client](mcp-client.md#how-a-policy-denial-surfaces), an
-`httpx.HTTPStatusError` commonly wrapped in an `ExceptionGroup`:
+This case is somewhat academic for Wardline specifically: policy only
+gates `tools/call` (see the main [README](../../README.md)'s "Scope
+note"), so Wardline's policy engine itself never denies the initial
+connection — a connect-time failure here means Wardline or the upstream
+is unreachable, not that a policy rule fired.
 
-```python
-import httpx
-
-try:
-    result = some_mcp_tool.run(**kwargs)
-except* httpx.HTTPStatusError as eg:
-    for e in eg.exceptions:
-        print(e.response.status_code, e.request.url)
-except httpx.HTTPStatusError as e:
-    print(e.response.status_code)
-```
-
-(On Python 3.10, drop the `except*` form and catch `ExceptionGroup`
-directly, iterating `.exceptions`.)
+(On Python 3.10, the same caveat applies if you were catching
+`except*` anywhere in adjacent code — install the `exceptiongroup`
+backport package (already a dependency of `mcp`/`anyio` on that
+version) and `from exceptiongroup import ExceptionGroup`, then catch
+`ExceptionGroup` directly and iterate `.exceptions`. It doesn't help
+with the hang above — that failure is never delivered as a raiseable
+exception in the first place.)
