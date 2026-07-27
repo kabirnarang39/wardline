@@ -43,6 +43,30 @@ quirk — it's how these frameworks already behave for any HTTP-level
 failure from any MCP server, proxy or not. Each guide shows the actual
 catch pattern that works today.
 
+The real fault line isn't which framework you're using — it's whether
+that framework opens a **fresh session per call** or holds one
+**long-lived session** across many calls. LangChain's
+`MultiServerMCPClient.get_tools()`, LlamaIndex's `BasicMCPClient`, and
+this project's own smoke test all open a new connection per tool call
+(or per script run) and get a cleanly catchable
+`ExceptionGroup[httpx.HTTPStatusError]` on denial. The raw `mcp` SDK
+used naively (one `ClientSession` reused across calls, as in
+[`mcp-client.md`](mcp-client.md#how-a-policy-denial-surfaces)) and the
+OpenAI Agents SDK's `MCPServerStreamableHttp`
+([`openai-agents-sdk.md`](openai-agents-sdk.md#how-a-policy-denial-surfaces))
+both hold a long-lived session instead, and both were verified to raise
+`asyncio.CancelledError` at the call site on denial — not a catchable
+HTTP exception — and to leave that session permanently dead afterward,
+including for calls to tools the policy would otherwise allow.
+CrewAI's `MCPServerAdapter`
+([`crewai.md`](crewai.md#how-a-policy-denial-surfaces)) also holds a
+long-lived session and was verified to be the worst case of the three:
+the denial crashes its background event-loop thread with an unhandled
+exception that's never delivered to the caller, so a denied tool call
+doesn't raise anything at all — it hangs the calling thread
+indefinitely. Prefer fresh-session-per-call wherever the framework
+supports it if graceful denial handling matters to your use case.
+
 ## Proving it works
 
 [`examples/mcp_client_smoke_test.py`](examples/mcp_client_smoke_test.py)
