@@ -33,8 +33,9 @@ type BudgetChecker interface {
 // taxonomy — just enough to distinguish "we couldn't understand the
 // request" from "we understood it and something downstream went wrong".
 const (
-	rpcCodeParseError = -32700 // malformed/oversized/unparsable request body
-	rpcCodeServerErr  = -32000 // policy deny, budget throttling, or upstream failure (reserved server-error range)
+	rpcCodeParseError      = -32700 // malformed/oversized/unparsable request body
+	rpcCodeUnauthorized    = -32001 // identity authentication failure
+	rpcCodeServerErr       = -32000 // policy deny, budget throttling, or upstream failure (reserved server-error range)
 )
 
 type jsonRPCErrorBody struct {
@@ -117,7 +118,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this is a no-op when credential_issuance is off.
 	identity, err := h.identityAuth.Authenticate(r)
 	if err != nil {
-		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeServerErr, nil, "unauthorized")
+		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeUnauthorized, nil, "unauthorized")
 		return
 	}
 
