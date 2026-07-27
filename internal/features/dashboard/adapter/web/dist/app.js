@@ -60,15 +60,15 @@ function renderActivity() {
 
 async function pollAudit() {
   try {
-    const fresh = await fetchAudit(state.lastID, 200);
+    const fresh = await fetchAudit(state.lastID, 1000);
     if (fresh.length > 0) {
       state.entries.push(...fresh);
       if (state.entries.length > MAX_CLIENT_ROWS) {
         state.entries = state.entries.slice(state.entries.length - MAX_CLIENT_ROWS);
       }
       state.lastID = fresh[fresh.length - 1].ID;
-      renderActivity();
     }
+    renderActivity();
     setLive(true);
   } catch {
     setLive(false);
