@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -45,7 +47,7 @@ func (s *safeBuffer) String() string {
 // cleanup for the subprocess and upstream. Returns the address the server
 // is listening on and the buffer capturing its stderr (for test failure
 // diagnostics, or log-content assertions).
-func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *safeBuffer) {
+func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stderr *safeBuffer, cmd *exec.Cmd) {
 	t.Helper()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +82,7 @@ audit:
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 
-	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	cmd = exec.Command(binPath, "serve", "--config", configPath)
 	stderr = &safeBuffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
@@ -92,11 +94,11 @@ audit:
 	})
 
 	waitForServer(t, "http://"+listenAddr)
-	return listenAddr, stderr
+	return listenAddr, stderr, cmd
 }
 
 func TestServeEndToEnd(t *testing.T) {
-	listenAddr, stderr := startWardline(t, "policy.yaml", `
+	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -180,7 +182,7 @@ func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Res
 // the OPA backend — a policy expressible with the YAML backend wouldn't
 // prove that.
 func TestServeEndToEnd_OPABackend(t *testing.T) {
-	listenAddr, stderr := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -216,7 +218,7 @@ allow {
 // fixed-window reset through config-parsing/time.Now(), not just the bare
 // limiter with an injected clock.
 func TestServeEndToEnd_BudgetThrottles(t *testing.T) {
-	listenAddr, stderr := startWardline(t, "policy.yaml", `
+	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -250,7 +252,7 @@ budget:
 // YAML backend was previously exercised with a budget, leaving the
 // combination assumed-safe by code inspection rather than tested.
 func TestServeEndToEnd_OPABackendWithBudget(t *testing.T) {
-	listenAddr, stderr := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -286,7 +288,7 @@ budget:
 // a log signal instead of silent no-op enforcement, and that enforcement is
 // in fact not applied (the call succeeds despite requests_per_window: 1).
 func TestServeEndToEnd_BudgetConfiguredButFlagOffWarns(t *testing.T) {
-	listenAddr, stderr := startWardline(t, "policy.yaml", `
+	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -307,5 +309,78 @@ default: deny
 
 	if !strings.Contains(stderr.String(), "budget config is set but features.budget_enforcement is off") {
 		t.Errorf("expected a warning log about unenforced budget config, got stderr: %s", stderr.String())
+	}
+}
+
+// TestServeEndToEnd_OTLPExport proves the whole tracing pipeline fires for
+// real: config -> Provider -> Handler -> OTel SDK batching -> network
+// export, not just unit-tested in isolation. The fake collector only
+// records whether any POST arrived — decoding the OTLP protobuf wire
+// format is more machinery than this test needs.
+func TestServeEndToEnd_OTLPExport(t *testing.T) {
+	var gotExport atomic.Bool
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotExport.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+
+	// collector.URL is "http://127.0.0.1:PORT" — otlptracehttp.WithEndpoint
+	// wants host:port, no scheme.
+	collectorHostPort := strings.TrimPrefix(collector.URL, "http://")
+
+	listenAddr, stderr, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  otel_tracing: true
+tracing:
+  otlp_endpoint: "%s"`, collectorHostPort))
+
+	resp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if gotExport.Load() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("collector never received a span export within the deadline (stderr: %s)", stderr.String())
+}
+
+// TestServeEndToEnd_GracefulShutdown proves SIGTERM drains the server and
+// exits cleanly within the shutdown timeout, rather than hanging or
+// needing a force-kill — the path a batched OTLP exporter's final flush
+// depends on.
+func TestServeEndToEnd_GracefulShutdown(t *testing.T) {
+	_, stderr, cmd := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected a clean exit after SIGTERM, got: %v (stderr: %s)", err, stderr.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("process did not exit within 15s of SIGTERM (stderr: %s)", stderr.String())
 	}
 }
