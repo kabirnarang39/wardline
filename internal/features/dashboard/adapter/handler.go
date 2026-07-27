@@ -45,6 +45,10 @@ type Handler struct {
 	mux    *http.ServeMux
 }
 
+// NewHandler expects the returned *Handler to be mounted at exactly
+// "/dashboard/" — its internal routes ("/dashboard/api/audit", etc.) are
+// absolute, not relative, so mounting it anywhere else (or via
+// http.StripPrefix) will break routing.
 func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS) *Handler {
 	h := &Handler{audit: audit, status: status, policy: policy}
 
@@ -58,11 +62,32 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	return h
 }
 
+// ServeHTTP sets defense-in-depth headers on every response — both the
+// JSON API and the static/SPA routes — before delegating to the
+// internal mux, so the protection applies consistently regardless of
+// which route matches.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'")
 	h.mux.ServeHTTP(w, r)
 }
 
+// methodNotAllowed rejects any method other than GET, enforcing the
+// "read-only by construction" contract at the HTTP surface, not just in
+// the handlers' own logic. Returns true if the request was rejected (the
+// caller must return immediately without writing anything else).
+func methodNotAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return true
+	}
+	return false
+}
+
 func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
 	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	if err != nil {
 		after = 0
@@ -82,11 +107,17 @@ func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, entries)
 }
 
-func (h *Handler) handlePolicy(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
 	writeJSON(w, h.policy)
 }
 
-func (h *Handler) handleStatus(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
 	writeJSON(w, h.status.Status())
 }
 
