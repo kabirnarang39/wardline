@@ -53,11 +53,18 @@ try:
     result = await client.call_tool("some_tool", {})
 except* httpx.HTTPStatusError as eg:
     for e in eg.exceptions:
-        print(e.response.status_code, e.response.text)
+        print(e.response.status_code, e.response.reason_phrase)
 ```
 
-(On Python 3.10, catch `ExceptionGroup` and iterate `.exceptions`
-instead of using `except*`.) This is distinct from
+(`e.response.text`/`.aread()` isn't safe to call here — by the time
+this handler runs the underlying stream is already closed, and it
+raises `httpx.ResponseNotRead`/`StreamClosed`; `.status_code` and
+`.reason_phrase` are always safe.)
+
+(On Python 3.10, `except*` isn't available — install the
+`exceptiongroup` backport package (already a dependency of `mcp`/`anyio`
+on that version) and `from exceptiongroup import ExceptionGroup`, then
+catch `ExceptionGroup` directly and iterate `.exceptions`.) This is distinct from
 `mcp.shared.exceptions.McpError`, which `ClientSession` raises for
 JSON-RPC-level protocol errors after a successful HTTP 2xx — a Wardline
 policy denial never reaches that layer, it fails at the transport level

@@ -57,11 +57,18 @@ try:
     result = await tools[0].ainvoke({})
 except* httpx.HTTPStatusError as eg:
     for e in eg.exceptions:
-        print(e.response.status_code, e.response.text)
+        print(e.response.status_code, e.response.reason_phrase)
 ```
 
-(On Python 3.10, catch `ExceptionGroup` and iterate `.exceptions`
-instead of using `except*`.) This is distinct from a genuine MCP
+(`e.response.text`/`.aread()` isn't safe to call here — by the time
+this handler runs the underlying stream is already closed, and it
+raises `httpx.ResponseNotRead`/`StreamClosed`; `.status_code` and
+`.reason_phrase` are always safe.)
+
+(On Python 3.10, `except*` isn't available — install the
+`exceptiongroup` backport package (already a dependency of `mcp`/`anyio`
+on that version) and `from exceptiongroup import ExceptionGroup`, then
+catch `ExceptionGroup` directly and iterate `.exceptions`.) This is distinct from a genuine MCP
 protocol-level tool error (`CallToolResult(isError=True)`, which
 LangChain wraps as a `ToolException` or an error-status `ToolMessage`
 depending on config) — a Wardline policy denial is an HTTP-transport
