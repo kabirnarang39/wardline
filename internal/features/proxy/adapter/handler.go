@@ -174,6 +174,14 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 		}
 		return nil
 	}
+	// Inject Wardline's own span context into the outgoing request headers
+	// before proxying, overwriting any traceparent the caller sent. Without
+	// this, httputil.ReverseProxy copies the caller's original headers
+	// verbatim, so an instrumented upstream would either see the caller's
+	// trace context (making it a sibling of Wardline's span, not a child)
+	// or nothing at all. This is a no-op when tracing is disabled (the
+	// no-op propagator's Inject does nothing).
+	otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(r.Header))
 	proxy.ServeHTTP(w, r)
 }
 
