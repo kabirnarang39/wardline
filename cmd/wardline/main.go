@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
@@ -19,6 +23,7 @@ import (
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/tracing"
 )
 
 // Server-level timeouts, chosen to stop an unauthenticated caller from
@@ -96,7 +101,13 @@ func runServe(logger *slog.Logger, args []string) {
 	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker)
+	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)
+	if err != nil {
+		logger.Error("failed to initialize tracing", "error", err)
+		os.Exit(1)
+	}
+
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
 
 	// Log what the operator has toggled on so a flag isn't silently ignored.
 	for name := range cfg.Features {
@@ -105,7 +116,6 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
-	logger.Info("wardline listening", "addr", cfg.Listen, "upstream", cfg.Upstream)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
@@ -114,10 +124,46 @@ func runServe(logger *slog.Logger, args []string) {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		logger.Error("server exited", "error", err)
-		os.Exit(1)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("wardline listening", "addr", cfg.Listen, "upstream", cfg.Upstream)
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server exited", "error", err)
+			_ = tracingProvider.Shutdown(context.Background())
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		logger.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed", "error", err)
+		}
 	}
+
+	if err := tracingProvider.Shutdown(context.Background()); err != nil {
+		logger.Error("tracing shutdown failed", "error", err)
+	}
+}
+
+// buildTracingProvider returns a disabled (no-op) Provider unless
+// otel_tracing is on, in which case it builds a real OTLP/HTTP-exporting
+// one from cfg.
+func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg config.TracingConfig) (*tracing.Provider, error) {
+	if !featureFlags.Enabled("otel_tracing") {
+		return tracing.NewDisabled(), nil
+	}
+	logger.Info("otel tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "service_name", cfg.ServiceName)
+	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
 }
 
 func runValidatePolicy(logger *slog.Logger, args []string) {
