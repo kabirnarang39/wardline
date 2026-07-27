@@ -141,9 +141,10 @@ func runServe(logger *slog.Logger, args []string) {
 
 	startedAt := time.Now()
 
-	var dashboardHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	})
+	// dashboardHandler is only ever meaningfully used inside the
+	// webUIEnabled block below: buildTopHandler returns the bare proxy
+	// handler outright when web_ui is off, never touching this variable.
+	var dashboardHandler http.Handler
 	if webUIEnabled {
 		policySource, err := os.ReadFile(cfg.PolicyFile)
 		if err != nil {
@@ -237,7 +238,10 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 // same as v0.1's proxy-handles-everything behavior) to proxy. The
 // dashboard is never reachable unless the operator has explicitly
 // enabled it — this is the one place the flag decision is made, not
-// scattered through request handling.
+// scattered through request handling. When web_ui is on, requests pass
+// through an http.ServeMux, which applies stdlib path cleaning/redirects
+// (e.g. collapsing "//tool" or resolving "..") that do not happen when
+// the flag is off and the bare proxy handler receives the raw path.
 func buildTopHandler(proxy, dashboard http.Handler, webUIEnabled bool) http.Handler {
 	if !webUIEnabled {
 		return proxy
