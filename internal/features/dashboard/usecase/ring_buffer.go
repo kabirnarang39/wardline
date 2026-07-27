@@ -40,12 +40,31 @@ func (b *RingBuffer) Publish(e auditdomain.Entry) {
 	defer b.mu.Unlock()
 
 	b.nextID++
-	entry := domain.FromAuditEntry(b.nextID, e)
+	entry := FromAuditEntry(b.nextID, e)
 
 	if len(b.entries) >= b.cap {
 		b.entries = b.entries[1:]
 	}
 	b.entries = append(b.entries, entry)
+}
+
+// FromAuditEntry builds a LiveEntry from an audit.Entry and an ID
+// assigned by the caller (the ring buffer, which owns ID allocation).
+// It lives in usecase, not domain, because domain packages may not
+// import other features' domain types — usecase packages are the
+// permitted place for that (see CLAUDE.md's Clean Architecture rule and
+// proxy/usecase's analogous pattern).
+func FromAuditEntry(id int64, e auditdomain.Entry) domain.LiveEntry {
+	return domain.LiveEntry{
+		ID:        id,
+		Timestamp: e.Timestamp,
+		Identity:  e.Identity,
+		Tool:      e.Tool,
+		Decision:  e.Decision,
+		LatencyMS: e.LatencyMS,
+		Reason:    e.Reason,
+		TraceID:   e.TraceID,
+	}
 }
 
 // Since returns entries with ID > afterID, oldest first, capped to the
@@ -55,6 +74,14 @@ func (b *RingBuffer) Publish(e auditdomain.Entry) {
 func (b *RingBuffer) Since(afterID int64, limit int) []domain.LiveEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// afterID ahead of nextID means Wardline restarted since the client
+	// last polled (nextID reset to 0, but the client's afterID is still
+	// the old, higher value) — treat it as "from the start" instead of
+	// filtering everything out forever.
+	if afterID > b.nextID {
+		afterID = 0
+	}
 
 	out := make([]domain.LiveEntry, 0, len(b.entries))
 	for _, e := range b.entries {

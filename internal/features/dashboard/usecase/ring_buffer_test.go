@@ -6,8 +6,38 @@ import (
 	"time"
 
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
 )
+
+func TestFromAuditEntry(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ae := auditdomain.Entry{
+		Timestamp: ts,
+		Identity:  "agent-1",
+		Tool:      "read_file",
+		Decision:  "deny",
+		LatencyMS: 12,
+		Reason:    "no matching rule",
+		TraceID:   "trace-xyz",
+	}
+
+	got := usecase.FromAuditEntry(42, ae)
+
+	want := domain.LiveEntry{
+		ID:        42,
+		Timestamp: ts,
+		Identity:  "agent-1",
+		Tool:      "read_file",
+		Decision:  "deny",
+		LatencyMS: 12,
+		Reason:    "no matching rule",
+		TraceID:   "trace-xyz",
+	}
+	if got != want {
+		t.Errorf("FromAuditEntry() = %+v, want %+v", got, want)
+	}
+}
 
 func TestRingBuffer_SinceReturnsOnlyNewer(t *testing.T) {
 	b := usecase.NewRingBuffer(10)
@@ -34,6 +64,25 @@ func TestRingBuffer_SinceZeroReturnsAll(t *testing.T) {
 	got := b.Since(0, 10)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(got))
+	}
+}
+
+func TestRingBuffer_SinceAfterIDAheadOfNextIDReturnsAll(t *testing.T) {
+	// Simulates a dashboard tab that was polling before a Wardline
+	// restart: its afterID is a stale, much-higher value than the
+	// freshly restarted buffer's nextID. Since must not treat this as
+	// "nothing is new" forever — it should resend everything.
+	b := usecase.NewRingBuffer(10)
+	now := time.Now()
+	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now}) // ID 1
+	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now}) // ID 2
+
+	got := b.Since(9999, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected all 2 currently-buffered entries when afterID > nextID, got %d", len(got))
+	}
+	if got[0].Identity != "a" || got[1].Identity != "b" {
+		t.Errorf("unexpected entries: %+v", got)
 	}
 }
 
