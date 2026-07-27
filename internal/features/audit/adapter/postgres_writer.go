@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -9,6 +10,14 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
 )
+
+// writeTimeout bounds every Postgres operation (the startup Ping and every
+// per-request INSERT) so a blackholed connection (firewall drop, NAT
+// idle-timeout, failover) degrades to a bounded error instead of hanging
+// the calling goroutine forever — with SetMaxOpenConns(10), an unbounded
+// hang here would eventually block every request the proxy serves, not
+// just fail one audit write.
+const writeTimeout = 5 * time.Second
 
 // createTableSQL is run once, idempotently, by NewPostgresWriter. One
 // table, no migration framework — see
@@ -26,6 +35,12 @@ CREATE TABLE IF NOT EXISTS audit_entries (
 	reason TEXT,
 	trace_id TEXT
 )`
+
+// createTimestampIndexSQL indexes the realistic audit-trail query columns
+// (recency, filtering by actor) — the primary key alone only serves
+// lookup-by-id, which isn't how an audit trail is queried in practice.
+const createTimestampIndexSQL = `
+CREATE INDEX IF NOT EXISTS audit_entries_timestamp_idx ON audit_entries (timestamp DESC)`
 
 const insertSQL = `
 INSERT INTO audit_entries (timestamp, identity, tool, decision, latency_ms, reason, trace_id)
@@ -54,7 +69,9 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 		return nil, fmt.Errorf("open postgres connection: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
@@ -67,9 +84,18 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	if _, err := db.Exec(createTableSQL); err != nil {
+	createCtx, createCancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer createCancel()
+	if _, err := db.ExecContext(createCtx, createTableSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create audit_entries table: %w", err)
+	}
+
+	indexCtx, indexCancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer indexCancel()
+	if _, err := db.ExecContext(indexCtx, createTimestampIndexSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create audit_entries timestamp index: %w", err)
 	}
 
 	return &PostgresWriter{db: db}, nil
@@ -77,7 +103,9 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 
 // Write implements domain.Writer.
 func (w *PostgresWriter) Write(e domain.Entry) error {
-	_, err := w.db.Exec(insertSQL, e.Timestamp, e.Identity, e.Tool, e.Decision, e.LatencyMS, e.Reason, e.TraceID)
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	_, err := w.db.ExecContext(ctx, insertSQL, e.Timestamp, e.Identity, e.Tool, e.Decision, e.LatencyMS, e.Reason, e.TraceID)
 	if err != nil {
 		return fmt.Errorf("insert audit entry: %w", err)
 	}
