@@ -41,15 +41,39 @@ func (s *safeBuffer) String() string {
 	return s.buf.String()
 }
 
+// cmdWaiter runs exec.Cmd.Wait exactly once in a background goroutine and
+// makes its result available to any number of readers via a closed
+// channel — exec.Cmd.Wait must not be called concurrently or more than
+// once, so every caller that needs the exit result (cleanup, and any test
+// that wants to observe a clean exit) reads from the same waiter instead
+// of each calling Wait itself.
+type cmdWaiter struct {
+	done chan struct{}
+	err  error
+}
+
+// waitFor starts cmd (already Start'ed) draining via a single Wait call.
+func waitFor(cmd *exec.Cmd) *cmdWaiter {
+	w := &cmdWaiter{done: make(chan struct{})}
+	go func() {
+		w.err = cmd.Wait()
+		close(w.done)
+	}()
+	return w
+}
+
 // startWardline writes policyBody to policyFilename and a wardline.yaml
 // (with extraConfigLines appended, e.g. "policy_backend: opa"), builds the
 // wardline binary, and starts it as a subprocess pointed at a mock upstream
 // that 200s on anything. It blocks until the server is ready and registers
 // cleanup for the subprocess and upstream. Returns the address the server
-// is listening on and the buffers capturing its stdout (the audit log
+// is listening on, the buffers capturing its stdout (the audit log
 // defaults there) and stderr (for test failure diagnostics, or
-// log-content assertions).
-func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stdout, stderr *safeBuffer, cmd *exec.Cmd) {
+// log-content assertions), the *exec.Cmd itself, and a cmdWaiter draining
+// its exit — tests that care about the exit result (e.g. after sending
+// SIGTERM) read from the waiter rather than calling cmd.Wait() themselves,
+// since Wait must only ever be called once per process.
+func startWardline(t *testing.T, policyFilename, policyBody, extraConfigLines string) (listenAddr string, stdout, stderr *safeBuffer, cmd *exec.Cmd, waiter *cmdWaiter) {
 	t.Helper()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,17 +122,18 @@ audit:
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start wardline: %v", err)
 	}
+	waiter = waitFor(cmd)
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-waiter.done // reading a closed channel never blocks, so this is safe even if the test already consumed waiter.done itself
 	})
 
 	waitForServer(t, "http://"+listenAddr)
-	return listenAddr, stdout, stderr, cmd
+	return listenAddr, stdout, stderr, cmd, waiter
 }
 
 func TestServeEndToEnd(t *testing.T) {
-	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -192,7 +217,7 @@ func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Res
 // the OPA backend — a policy expressible with the YAML backend wouldn't
 // prove that.
 func TestServeEndToEnd_OPABackend(t *testing.T) {
-	listenAddr, _, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -228,7 +253,7 @@ allow {
 // fixed-window reset through config-parsing/time.Now(), not just the bare
 // limiter with an injected clock.
 func TestServeEndToEnd_BudgetThrottles(t *testing.T) {
-	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -262,7 +287,7 @@ budget:
 // YAML backend was previously exercised with a budget, leaving the
 // combination assumed-safe by code inspection rather than tested.
 func TestServeEndToEnd_OPABackendWithBudget(t *testing.T) {
-	listenAddr, _, stderr, _ := startWardline(t, "policy.rego", `package wardline.authz
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.rego", `package wardline.authz
 
 default allow = false
 
@@ -298,7 +323,7 @@ budget:
 // a log signal instead of silent no-op enforcement, and that enforcement is
 // in fact not applied (the call succeeds despite requests_per_window: 1).
 func TestServeEndToEnd_BudgetConfiguredButFlagOffWarns(t *testing.T) {
-	listenAddr, _, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -339,7 +364,7 @@ func TestServeEndToEnd_OTLPExport(t *testing.T) {
 	// wants host:port, no scheme.
 	collectorHostPort := strings.TrimPrefix(collector.URL, "http://")
 
-	listenAddr, stdout, stderr, _ := startWardline(t, "policy.yaml", `
+	listenAddr, stdout, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -404,7 +429,7 @@ func assertAuditLogHasTraceID(t *testing.T, stdout *safeBuffer) {
 // needing a force-kill — the path a batched OTLP exporter's final flush
 // depends on.
 func TestServeEndToEnd_GracefulShutdown(t *testing.T) {
-	_, _, stderr, cmd := startWardline(t, "policy.yaml", `
+	_, _, stderr, cmd, waiter := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-abc123"
     tool: "read_file"
@@ -416,13 +441,15 @@ default: deny
 		t.Fatalf("send SIGTERM: %v", err)
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
+	// Read the same waiter startWardline's cleanup will later read from,
+	// rather than calling cmd.Wait() ourselves — exec.Cmd.Wait must not be
+	// called concurrently or more than once per process, and cleanup's
+	// <-waiter.done races with a second, independent Wait() call if the
+	// test's own 15s timeout fires while cleanup is also unwinding.
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected a clean exit after SIGTERM, got: %v (stderr: %s)", err, stderr.String())
+	case <-waiter.done:
+		if waiter.err != nil {
+			t.Fatalf("expected a clean exit after SIGTERM, got: %v (stderr: %s)", waiter.err, stderr.String())
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("process did not exit within 15s of SIGTERM (stderr: %s)", stderr.String())
