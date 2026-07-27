@@ -263,3 +263,82 @@ audit:
 		t.Fatal("expected error when budget_enforcement is on but requests_per_window/window_seconds are unset")
 	}
 }
+
+func TestLoad_TracingDisabledByDefaultNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracing.OTLPEndpoint != "" {
+		t.Errorf("expected empty OTLPEndpoint when unset, got %+v", cfg.Tracing)
+	}
+}
+
+func TestLoad_TracingEnabledValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  otel_tracing: true
+tracing:
+  otlp_endpoint: "localhost:4318"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracing.OTLPEndpoint != "localhost:4318" {
+		t.Errorf("unexpected OTLPEndpoint: %q", cfg.Tracing.OTLPEndpoint)
+	}
+	if cfg.Tracing.ServiceName != "wardline" {
+		t.Errorf("expected ServiceName to default to %q, got %q", "wardline", cfg.Tracing.ServiceName)
+	}
+}
+
+func TestLoad_TracingEnabledCustomServiceName(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  otel_tracing: true
+tracing:
+  otlp_endpoint: "localhost:4318"
+  service_name: "wardline-prod"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracing.ServiceName != "wardline-prod" {
+		t.Errorf("expected custom ServiceName to be preserved, got %q", cfg.Tracing.ServiceName)
+	}
+}
+
+func TestLoad_TracingEnabledMissingEndpoint(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  otel_tracing: true
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when otel_tracing is on but otlp_endpoint is unset")
+	}
+}
