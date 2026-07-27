@@ -206,7 +206,19 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
 	)
-	if decision == "deny" || decision == "throttled" || decision == "error" {
+	// "allow" is the only decision that should NOT set Error status; every
+	// other value (including any future decision a typo or new call site
+	// introduces) defaults to Error, fail-safe rather than silently
+	// fail-open to an OK-status span.
+	//
+	// Note: reason may carry sensitive policy-engine diagnostics (see the
+	// deny-path comment in ServeHTTP), and setting it as the span status
+	// description means it leaves the process via the trace backend, which
+	// typically has broader read access than the audit log this data is
+	// otherwise carefully confined to. This is a deliberate, accepted
+	// tradeoff, not an oversight — the operator opts into tracing and owns
+	// their collector's access control.
+	if decision != "allow" {
 		span.SetStatus(codes.Error, reason)
 	}
 	var traceID string
