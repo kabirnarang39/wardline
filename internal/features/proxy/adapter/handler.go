@@ -123,12 +123,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	call, id, err := proxyusecase.ParseToolCall(identity, body)
+	parsed, err := proxyusecase.ParseRequest(identity, body)
 	if err != nil {
 		h.finish(span, identity, "", "error", "", start)
-		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, id, err.Error())
+		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, err.Error())
 		return
 	}
+
+	if !parsed.IsToolCall {
+		// Non-tools/call MCP protocol methods (initialize,
+		// notifications/initialized, tools/list, etc.) are forwarded to
+		// upstream without policy or budget evaluation — Wardline's policy
+		// model is scoped to tool calls, and every real MCP client performs
+		// this handshake before its first tool call. See
+		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
+		h.forward(w, r, span, identity, parsed.Method, parsed.ID, start, "passthrough")
+		return
+	}
+
+	call := parsed.Call
 	call.Timestamp = start
 	call.RemoteAddr = r.RemoteAddr
 	call.UserAgent = r.Header.Get("User-Agent")
@@ -140,7 +153,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
 		h.finish(span, identity, call.Tool, "deny", verdict.Reason, start)
-		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, id, "denied by policy")
+		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 		return
 	}
 
@@ -150,16 +163,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the audit log, generic message to the caller.
 		h.finish(span, identity, call.Tool, "throttled", budgetVerdict.Reason, start)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
-		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, id, "throttled by budget")
+		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
 	}
 
-	h.forward(w, r, span, identity, call.Tool, id, start)
+	h.forward(w, r, span, identity, call.Tool, parsed.ID, start, "allow")
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
-// depending on whether the upstream call succeeded or failed.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tool string, id json.RawMessage, start time.Time) {
+// depending on whether the upstream call succeeded or failed. successDecision
+// is the decision recorded on a successful upstream response — "allow" for a
+// policy-evaluated tool call, "passthrough" for a protocol-lifecycle method
+// that skipped policy/budget evaluation entirely.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tool string, id json.RawMessage, start time.Time, successDecision string) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -170,7 +186,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.finish(span, identity, tool, "allow", "", start)
+			h.finish(span, identity, tool, successDecision, "", start)
 		}
 		return nil
 	}
@@ -206,10 +222,10 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
 	)
-	// "allow" is the only decision that should NOT set Error status; every
-	// other value (including any future decision a typo or new call site
-	// introduces) defaults to Error, fail-safe rather than silently
-	// fail-open to an OK-status span.
+	// Explicit failure list rather than "everything but allow" — a
+	// passthrough success (the MCP protocol handshake/discovery methods
+	// every real client sends before its first tool call) is not a
+	// failure and must not flip the span to Error.
 	//
 	// Note: reason may carry sensitive policy-engine diagnostics (see the
 	// deny-path comment in ServeHTTP), and setting it as the span status
@@ -218,7 +234,7 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 	// otherwise carefully confined to. This is a deliberate, accepted
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
-	if decision != "allow" {
+	if decision == "deny" || decision == "throttled" || decision == "error" {
 		span.SetStatus(codes.Error, reason)
 	}
 	var traceID string

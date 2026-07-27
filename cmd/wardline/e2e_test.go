@@ -493,7 +493,7 @@ default: deny
 // actually gates mux registration (not just something inert in the config
 // layer): with the flag off, /dashboard/ falls through to the same proxy
 // path as any other unmatched URL. An unmatched GET carries no JSON-RPC
-// body, so ParseToolCall rejects it and the proxy handler returns 400 —
+// body, so ParseRequest rejects it and the proxy handler returns 400 —
 // asserting that status directly (rather than only conditionally inspecting
 // a 200 body) fails loudly both if the dashboard ever got erroneously
 // mounted (200 + `id="app"`) and if the proxy's own unmatched-path
