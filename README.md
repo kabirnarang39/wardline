@@ -96,5 +96,24 @@ validates that header upstream of Wardline (or a future identity
 verification feature); a caller that can set arbitrary identity values can
 evade rate limiting by rotating identities.
 
+## Tracing
+
+Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`
+block — `otlp_endpoint` (required, `host:port`, no scheme) and
+`service_name` (optional, defaults to `wardline`) — see
+`wardline.yaml.example`.
+
+Wardline emits one span per request, exported via OTLP/HTTP (plaintext, no
+TLS yet) to whatever collector is listening at `otlp_endpoint`. Incoming
+W3C `traceparent` headers are honored — Wardline's span becomes a child of
+an existing trace if the caller already has one.
+
+The audit log's `trace_id` field correlates a log line to its trace; it's
+empty when tracing is disabled.
+
+`serve` now handles SIGINT/SIGTERM by draining in-flight requests and
+flushing the tracer provider before exiting, so buffered spans aren't lost
+on shutdown.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
