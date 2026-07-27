@@ -13,9 +13,13 @@ import (
 	"time"
 
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
+	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
+	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
+	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
+	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
@@ -24,6 +28,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
+	"github.com/kabirnarang39/wardline/internal/platform/version"
 )
 
 // Server-level timeouts, chosen to stop an unauthenticated caller from
@@ -52,6 +57,11 @@ const (
 	// HTTP drain above, the 15s total comfortably fits inside a 30s grace
 	// period with headroom.
 	tracingShutdownTimeout = 5 * time.Second
+
+	// ringBufferCapacity bounds the dashboard's in-memory live audit view.
+	// It's a code constant, not operator-configurable — see
+	// docs/superpowers/specs/2026-07-27-web-ui-design.md "Config".
+	ringBufferCapacity = 1000
 )
 
 func main() {
@@ -100,14 +110,23 @@ func runServe(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
+	featureFlags := flags.NewStaticProvider(cfg.Features)
+
 	writer := buildAuditWriter(logger, cfg.Audit.Output)
-	recorder := auditusecase.NewRecorder(writer, auditadapter.NoopSink{}, func(err error) {
+
+	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
+	var ringBuffer *dashboardusecase.RingBuffer
+	if featureFlags.Enabled("web_ui") {
+		ringBuffer = dashboardusecase.NewRingBuffer(ringBufferCapacity)
+		liveSink = ringBuffer
+	}
+
+	recorder := auditusecase.NewRecorder(writer, liveSink, func(err error) {
 		logger.Error("audit write failed", "error", err)
 	})
 
 	decider := proxyusecase.NewDecider(engine)
 
-	featureFlags := flags.NewStaticProvider(cfg.Features)
 	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
@@ -119,6 +138,34 @@ func runServe(logger *slog.Logger, args []string) {
 
 	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
 
+	startedAt := time.Now()
+	webUIEnabled := featureFlags.Enabled("web_ui")
+
+	var dashboardHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	if webUIEnabled {
+		policySource, err := os.ReadFile(cfg.PolicyFile)
+		if err != nil {
+			logger.Error("failed to read policy file for dashboard", "error", err)
+			os.Exit(1)
+		}
+		policyBackend := cfg.PolicyBackend
+		if policyBackend == "" {
+			policyBackend = "yaml"
+		}
+		policyInfo := dashboarddomain.PolicyInfo{Backend: policyBackend, Source: string(policySource)}
+
+		statusProvider := dashboardusecase.NewStatusProvider(
+			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
+		)
+
+		dashboardHandler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
+		logger.Info("dashboard enabled", "path", "/dashboard/")
+	}
+
+	topHandler := buildTopHandler(handler, dashboardHandler, webUIEnabled)
+
 	// Log what the operator has toggled on so a flag isn't silently ignored.
 	for name := range cfg.Features {
 		if featureFlags.Enabled(name) {
@@ -128,7 +175,7 @@ func runServe(logger *slog.Logger, args []string) {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           handler,
+		Handler:           topHandler,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -187,6 +234,22 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	}
 	logger.Info("otel tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "service_name", cfg.ServiceName)
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
+}
+
+// buildTopHandler routes /dashboard/ requests to dashboard when web_ui is
+// on, and everything else (including /dashboard/ when web_ui is off,
+// same as v0.1's proxy-handles-everything behavior) to proxy. The
+// dashboard is never reachable unless the operator has explicitly
+// enabled it — this is the one place the flag decision is made, not
+// scattered through request handling.
+func buildTopHandler(proxy, dashboard http.Handler, webUIEnabled bool) http.Handler {
+	if !webUIEnabled {
+		return proxy
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/dashboard/", dashboard)
+	mux.Handle("/", proxy)
+	return mux
 }
 
 func runValidatePolicy(logger *slog.Logger, args []string) {

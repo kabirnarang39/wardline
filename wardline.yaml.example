@@ -8,6 +8,7 @@ features: {}
 # features:
 #   budget_enforcement: true   # off by default — see README.md "Budget enforcement"
 #   otel_tracing: true         # off by default — see README.md "Tracing"
+#   web_ui: true               # off by default — see README.md "Dashboard"
 # budget:
 #   requests_per_window: 100
 #   window_seconds: 60
