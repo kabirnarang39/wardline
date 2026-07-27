@@ -3,4 +3,4 @@ name: wardline
 description: Wardline — an AI-agent control-plane proxy (policy, budget, audit, tracing) in front of MCP servers
 type: application
 version: 0.1.1
-appVersion: "0.5.0-dev"
+appVersion: "0.5.0"
