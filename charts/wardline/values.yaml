@@ -1,0 +1,41 @@
+image:
+  repository: ghcr.io/kabirnarang39/wardline
+  tag: ""   # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources: {}
+
+# wardline mirrors internal/platform/config.Config's YAML shape exactly.
+wardline:
+  upstream: "http://your-mcp-server:9000"
+  policyBackend: yaml   # "yaml" or "opa" — see policy.rego.example in the main repo for the OPA shape
+  policy: |
+    rules: []
+    default: deny
+  features: {}
+  audit:
+    output: stdout
+    postgresDsn: ""
+  budget:
+    requestsPerWindow: 0
+    windowSeconds: 0
+  tracing:
+    otlpEndpoint: ""
+    serviceName: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: wardline.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
