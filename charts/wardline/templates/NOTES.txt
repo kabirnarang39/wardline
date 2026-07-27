@@ -17,3 +17,15 @@ Wardline's in-memory budget limiter and dashboard ring buffer. A shared
 (e.g. Postgres- or Redis-backed) budget store is real future work, not
 something this chart can paper over.
 {{- end }}
+
+{{- if and .Values.wardline.features.web_ui (or .Values.ingress.enabled (ne .Values.service.type "ClusterIP")) }}
+{{- $reasons := list }}
+{{- if .Values.ingress.enabled }}{{ $reasons = append $reasons "ingress.enabled=true" }}{{- end }}
+{{- if ne .Values.service.type "ClusterIP" }}{{ $reasons = append $reasons (printf "service.type=%s" .Values.service.type) }}{{- end }}
+
+WARNING — the dashboard (features.web_ui: true) has no authentication,
+and this release is configured to expose it beyond the cluster
+({{ join ", " $reasons }}). Anyone who can reach it can read the full
+policy source and the live audit stream. See the main README's
+"Dashboard" section before exposing this publicly.
+{{- end }}
