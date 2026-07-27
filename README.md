@@ -287,7 +287,13 @@ view are both per-process, in-memory state, not shared across replicas
 independent rate limit. `helm install`'s own post-install notes repeat
 this warning when `replicaCount` is set above 1. A shared budget store
 across replicas is real future work, not something this chart papers
-over.
+over. Note this multi-pod hazard isn't limited to `replicaCount > 1`:
+Kubernetes' default `RollingUpdate` strategy means even a
+single-replica deployment briefly runs the old and new pod
+simultaneously during any `helm upgrade` that changes the pod spec —
+which now includes every policy or config change, since the pod
+template carries a checksum annotation over both — each pod with its
+own independent budget counters reset to zero.
 
 **Health checks:** the chart's liveness/readiness probes use a TCP
 socket check against the listen port, not an HTTP health endpoint —
