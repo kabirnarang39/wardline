@@ -58,6 +58,12 @@ func NewOTLPHTTP(ctx context.Context, serviceName, endpoint string) (*Provider, 
 
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
+	// Deliberately not calling otel.SetTracerProvider(tp): Wardline injects
+	// its tracer explicitly into Handler rather than relying on some other
+	// library reaching for the ambient global tracer via otel.Tracer(...),
+	// which would silently no-op today since nothing calls
+	// SetTracerProvider. Correct, deliberate YAGNI — don't "fix" this
+	// without a real caller that needs the global tracer.
 	return &Provider{
 		tracer:   tp.Tracer("wardline"),
 		shutdown: tp.Shutdown,
