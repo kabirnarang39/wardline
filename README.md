@@ -300,5 +300,13 @@ socket check against the listen port, not an HTTP health endpoint —
 Wardline doesn't have one yet. This proves the process is listening,
 not that policy/upstream/tracing are fully healthy.
 
+**Resources:** `values.yaml`'s `resources: {}` default ships no
+CPU/memory limits or requests — a commented-out example block is
+included, but the chart can't guess a sizing that fits your workload.
+With no resources set, the pod runs in `BestEffort` QoS (first evicted
+under node memory pressure) and will be rejected outright by a
+namespace `ResourceQuota` that requires requests — set `resources`
+explicitly if either applies to you.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.

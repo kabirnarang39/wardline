@@ -24,6 +24,12 @@ service:
 containerPort: 8080
 
 resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
 
 # wardline mirrors internal/platform/config.Config's YAML shape exactly.
 wardline:
