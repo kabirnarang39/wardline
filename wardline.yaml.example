@@ -7,11 +7,10 @@ audit:
 features: {}
 # features:
 #   budget_enforcement: true   # off by default — see README.md "Budget enforcement"
+#   otel_tracing: true         # off by default — see README.md "Tracing"
 # budget:
 #   requests_per_window: 100
 #   window_seconds: 60
-# features:
-#   otel_tracing: true   # off by default — see README.md "Tracing"
 # tracing:
 #   otlp_endpoint: "localhost:4318"   # required — host:port, no scheme, plaintext OTLP/HTTP
 #   service_name: "wardline"          # optional — defaults to "wardline"
