@@ -249,10 +249,23 @@ high-volume deployment.
 ## Kubernetes / Helm
 
 A Helm chart is available at `charts/wardline/` for deploying Wardline
-on Kubernetes:
+on Kubernetes.
+
+**No published image exists yet** — `values.yaml`'s default
+`image.repository` doesn't resolve to anything CI publishes. Build and
+push your own image first:
+
+```bash
+docker build -t <your-registry>/wardline:0.5.0-dev .
+docker push <your-registry>/wardline:0.5.0-dev
+```
+
+then install, pointing the chart at it:
 
 ```bash
 helm install my-wardline charts/wardline \
+  --set image.repository=<your-registry>/wardline \
+  --set image.tag=0.5.0-dev \
   --set wardline.upstream=http://your-mcp-server:9000 \
   --set-file wardline.policy=./policy.yaml
 ```
