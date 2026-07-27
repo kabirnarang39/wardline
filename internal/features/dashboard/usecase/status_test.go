@@ -35,3 +35,27 @@ func TestStatusProvider_Status(t *testing.T) {
 		t.Errorf("Features = %+v, want web_ui=true, budget_enforcement=false", got.Features)
 	}
 }
+
+func TestStatusProvider_Status_RedactsCredentialsInUpstream(t *testing.T) {
+	sp := usecase.NewStatusProvider(
+		"0.5.0-dev", ":8080", "http://user:pass@localhost:9000",
+		nil, time.Now(), time.Now,
+	)
+
+	got := sp.Status().Upstream
+	if got != "http://localhost:9000" {
+		t.Errorf("Upstream = %q, want credentials redacted to %q", got, "http://localhost:9000")
+	}
+}
+
+func TestStatusProvider_Status_PassesThroughUpstreamWithoutCredentials(t *testing.T) {
+	sp := usecase.NewStatusProvider(
+		"0.5.0-dev", ":8080", "http://localhost:9000",
+		nil, time.Now(), time.Now,
+	)
+
+	got := sp.Status().Upstream
+	if got != "http://localhost:9000" {
+		t.Errorf("Upstream = %q, want unchanged %q", got, "http://localhost:9000")
+	}
+}
