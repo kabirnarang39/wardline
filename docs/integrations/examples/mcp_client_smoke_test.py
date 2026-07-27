@@ -5,15 +5,22 @@ this directory depends on this same underlying mechanism — this script
 demonstrates it directly, using only the official mcp SDK (no
 LangChain/LlamaIndex/CrewAI/OpenAI Agents SDK install required).
 
+Requires Python 3.11+ (uses `except*` syntax).
+
 Usage:
     go build -o /tmp/wardline-bin ./cmd/wardline   # from the repo root
     python3 -m venv /tmp/wardline-integrations-venv
     source /tmp/wardline-integrations-venv/bin/activate
-    pip install mcp uvicorn
+    pip install mcp
     python3 docs/integrations/examples/mcp_client_smoke_test.py
+
+Ports default to 18200 (upstream) / 18201 (wardline); override with the
+SMOKE_TEST_UPSTREAM_PORT / SMOKE_TEST_WARDLINE_PORT env vars if either is
+taken on your machine.
 """
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -54,6 +61,21 @@ default: deny
 """
 
 
+def wait_until_ready(proc, port, name, timeout=5.0):
+    """Poll until `port` accepts connections, or fail fast if `proc` has
+    already exited (a clearer signal than an opaque connection error)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"{name} exited early with code {proc.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError(f"{name} did not start listening on port {port} within {timeout}s")
+
+
 async def call_tool(wardline_port, tool_name):
     async with streamablehttp_client(
         f"http://127.0.0.1:{wardline_port}/mcp",
@@ -70,8 +92,8 @@ async def main():
         print(f"Build wardline first: go build -o {wardline_bin} ./cmd/wardline", file=sys.stderr)
         sys.exit(1)
 
-    upstream_port = 18200
-    wardline_port = 18201
+    upstream_port = int(os.environ.get("SMOKE_TEST_UPSTREAM_PORT", 18200))
+    wardline_port = int(os.environ.get("SMOKE_TEST_WARDLINE_PORT", 18201))
 
     with tempfile.TemporaryDirectory() as d:
         upstream_path = os.path.join(d, "upstream.py")
@@ -95,9 +117,11 @@ features: {{}}
 
         upstream_proc = subprocess.Popen([sys.executable, upstream_path])
         wardline_proc = subprocess.Popen([wardline_bin, "serve", "--config", config_path])
-        time.sleep(2)
 
         try:
+            wait_until_ready(upstream_proc, upstream_port, "upstream server")
+            wait_until_ready(wardline_proc, wardline_port, "wardline")
+
             print("=== initialize + call allowed_tool ===")
             result = await call_tool(wardline_port, "allowed_tool")
             print("SUCCESS:", result)
@@ -114,10 +138,14 @@ features: {{}}
 
             print("\nAll checks passed: handshake works, allowed tool succeeds, denied tool is still rejected.")
         finally:
-            wardline_proc.terminate()
-            upstream_proc.terminate()
-            wardline_proc.wait(timeout=5)
-            upstream_proc.wait(timeout=5)
+            for proc in (wardline_proc, upstream_proc):
+                proc.terminate()
+            for proc in (wardline_proc, upstream_proc):
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
 
 
 if __name__ == "__main__":
