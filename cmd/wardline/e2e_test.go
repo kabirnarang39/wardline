@@ -638,3 +638,172 @@ default: deny
 		t.Errorf("unexpected audit row: identity=%s tool=%s decision=%s", identity, tool, decision)
 	}
 }
+
+// TestServeEndToEnd_AllFeaturesCombined is the v0.5 roadmap's final
+// comprehensive check: every optional feature this project has built
+// (OPA policy backend, budget enforcement, OTel tracing, the dashboard,
+// Postgres storage) turned on simultaneously in one process, proving they
+// compose correctly rather than only having been proven pairwise or in
+// isolation by earlier, narrower e2e tests. Exercises the full request
+// lifecycle — allow, throttle, deny — and confirms every sink (the
+// Postgres-backed audit Writer, the dashboard's independent in-memory
+// LiveSink, and the OTLP trace exporter) all receive the same events from
+// the same Recorder.Record call, not just that each works when the others
+// are off.
+func TestServeEndToEnd_AllFeaturesCombined(t *testing.T) {
+	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping combined-features e2e test")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db for cleanup/verification: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
+		t.Fatalf("drop table before test: %v", err)
+	}
+
+	var gotExport atomic.Bool
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotExport.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+	collectorHostPort := strings.TrimPrefix(collector.URL, "http://")
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.rego", `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-combo"
+	input.tool == "read_file"
+}
+`, fmt.Sprintf(`policy_backend: opa
+features:
+  budget_enforcement: true
+  otel_tracing: true
+  web_ui: true
+  postgres_storage: true
+budget:
+  requests_per_window: 1
+  window_seconds: 60
+tracing:
+  otlp_endpoint: "%s"
+audit:
+  postgres_dsn: "%s"
+`, collectorHostPort, dsn))
+
+	// 1. First allowed call — consumes the identity's entire budget window.
+	allowResp := postToolCall(t, addr, "agent-combo", "read_file")
+	if allowResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first OPA-allowed call within budget, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+	}
+	_ = allowResp.Body.Close()
+
+	// 2. Second allowed call in the same window — budget throttles it.
+	throttledResp := postToolCall(t, addr, "agent-combo", "read_file")
+	if throttledResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for the second call in the same budget window, got %d (stderr: %s)", throttledResp.StatusCode, stderr.String())
+	}
+	_ = throttledResp.Body.Close()
+
+	// 3. A call OPA denies outright — budget never consulted for it.
+	denyResp := postToolCall(t, addr, "agent-combo", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for an OPA-denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
+	}
+	_ = denyResp.Body.Close()
+
+	// The OTLP collector received at least one span export.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !gotExport.Load() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !gotExport.Load() {
+		t.Fatalf("OTLP collector never received a span export within the deadline (stderr: %s)", stderr.String())
+	}
+
+	// All three decisions landed in Postgres, not just the allow path —
+	// proving the Postgres writer is truly wired for the whole request
+	// lifecycle, not only the happy path.
+	wantDecisions := map[string]bool{"allow": false, "throttled": false, "deny": false}
+	rows, err := db.Query(`SELECT decision FROM audit_entries WHERE identity = $1`, "agent-combo")
+	if err != nil {
+		t.Fatalf("query postgres audit entries: %v", err)
+	}
+	func() {
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var decision string
+			if err := rows.Scan(&decision); err != nil {
+				t.Fatalf("scan postgres row: %v", err)
+			}
+			if _, ok := wantDecisions[decision]; ok {
+				wantDecisions[decision] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate postgres rows: %v", err)
+		}
+	}()
+	for decision, seen := range wantDecisions {
+		if !seen {
+			t.Errorf("expected a %q decision in postgres audit_entries for agent-combo, never saw one", decision)
+		}
+	}
+
+	// The dashboard's independent in-memory LiveSink also received the
+	// same events — proving Recorder.Record fans out to both sinks
+	// correctly when postgres_storage and web_ui are both on at once,
+	// not just when tested individually.
+	dashResp, err := http.Get("http://" + addr + "/dashboard/api/audit?after=0&limit=20")
+	if err != nil {
+		t.Fatalf("dashboard audit API failed: %v", err)
+	}
+	defer func() { _ = dashResp.Body.Close() }()
+	var entries []struct {
+		Identity string
+		Tool     string
+		Decision string
+		TraceID  string
+	}
+	if err := json.NewDecoder(dashResp.Body).Decode(&entries); err != nil {
+		t.Fatalf("invalid dashboard audit JSON: %v", err)
+	}
+	dashSeen := map[string]bool{"allow": false, "throttled": false, "deny": false}
+	var sawTraceID bool
+	for _, e := range entries {
+		if e.Identity != "agent-combo" {
+			continue
+		}
+		if _, ok := dashSeen[e.Decision]; ok {
+			dashSeen[e.Decision] = true
+		}
+		if e.TraceID != "" {
+			sawTraceID = true
+		}
+	}
+	for decision, seen := range dashSeen {
+		if !seen {
+			t.Errorf("expected a %q decision in the dashboard's live audit feed for agent-combo, never saw one", decision)
+		}
+	}
+	if !sawTraceID {
+		t.Error("expected at least one dashboard audit entry to carry a non-empty trace_id (otel_tracing is on)")
+	}
+
+	// The dashboard SPA itself is reachable — the whole web_ui path is up,
+	// not just its JSON API.
+	shellResp, err := http.Get("http://" + addr + "/dashboard/")
+	if err != nil {
+		t.Fatalf("dashboard root failed: %v", err)
+	}
+	defer func() { _ = shellResp.Body.Close() }()
+	shellBody, _ := io.ReadAll(shellResp.Body)
+	if !strings.Contains(string(shellBody), `id="app"`) {
+		t.Errorf("dashboard root body missing SPA shell marker: %s", shellBody)
+	}
+}
