@@ -198,5 +198,43 @@ enable it when you're comfortable with every caller the proxy already
 accepts also being able to read full audit reasons and the complete
 policy source.
 
+## Postgres storage
+
+An alternative to the JSONL audit log: write audit entries directly to
+a Postgres database instead, for operators who want a SQL-queryable
+audit trail. Off by default — enable with:
+
+```yaml
+features:
+  postgres_storage: true
+audit:
+  postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
+```
+
+`audit.output` is ignored (with a warning logged at startup) when this
+flag is on — pick one audit sink, not both.
+
+**What it does:** creates a single `audit_entries` table (if it doesn't
+already exist) at startup, and writes one row per proxied request —
+identical data to the JSONL format, just in a queryable table instead of
+log lines. No migration framework; if the schema ever needs to change,
+that's a deliberate future decision, not something this handles
+automatically.
+
+**A real tradeoff, not an oversight:** each audit write is a synchronous
+SQL `INSERT` on the request path — a proxied request's response isn't
+delayed by it (the write happens after the response is sent), but the
+audit entry landing in Postgres is a real network round-trip. For a
+co-located database this is single-digit milliseconds, smaller than the
+JSON-RPC parsing and policy evaluation Wardline already does per
+request; for a database in a meaningfully different region, this
+latency is real. A buffered/batched writer is the natural upgrade path
+if that ever matters for your deployment — not built preemptively here.
+
+**Startup behavior:** a bad DSN or unreachable database fails fast at
+startup (`wardline serve` refuses to start), the same as a bad policy
+file — this is deliberate, so a misconfigured database is caught
+immediately rather than silently dropping every audit entry at runtime.
+
 See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
 design and `CLAUDE.md` for engineering conventions.
