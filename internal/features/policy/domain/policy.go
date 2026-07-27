@@ -48,7 +48,7 @@ type Context struct {
 	// tool arguments should read params.arguments.*, not assume the top
 	// level IS the arguments.
 	//
-	// On a successful ParseToolCall, Params is always a non-nil JSON
+	// On a successful ParseRequest, Params is always a non-nil JSON
 	// object containing a non-empty "name" key: non-object params are
 	// rejected, and a null/omitted params falls through to the
 	// empty-name rejection, so a policy engine only ever sees a call

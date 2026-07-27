@@ -8,7 +8,7 @@ type Entry struct {
 	Timestamp time.Time
 	Identity  string
 	Tool      string
-	Decision  string // "allow", "deny", "throttled", or "error"
+	Decision  string // "allow", "deny", "throttled", "passthrough", or "error"
 	LatencyMS int64
 
 	// Reason is the detailed, potentially sensitive explanation behind a

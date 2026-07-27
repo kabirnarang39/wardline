@@ -506,6 +506,102 @@ func TestHandler_ThrottledCallSetsErrorSpanStatus(t *testing.T) {
 	}
 }
 
+// countingEngine wraps fakeEngine and counts Evaluate calls, so a test
+// can assert policy was never consulted for a passthrough request.
+type countingEngine struct {
+	fakeEngine
+	calls int
+}
+
+func (e *countingEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
+	e.calls++
+	return e.fakeEngine.Evaluate(ctx)
+}
+
+// countingBudgetChecker counts Check calls, so a test can assert budget
+// was never consulted for a passthrough request.
+type countingBudgetChecker struct {
+	calls int
+}
+
+func (c *countingBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+	c.calls++
+	return budgetdomain.Verdict{Allowed: true, Reason: "not under test"}
+}
+
+func TestHandler_PassthroughRequest_SkipsPolicyAndBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	engine := &countingEngine{fakeEngine: fakeEngine{effect: policydomain.EffectDeny}}
+	budget := &countingBudgetChecker{}
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(engine)
+	h := adapter.NewHandler(decider, recorder, upstreamURL, budget, noopTracer)
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if engine.calls != 0 {
+		t.Errorf("expected policy engine to never be consulted for a passthrough request, got %d calls", engine.calls)
+	}
+	if budget.calls != 0 {
+		t.Errorf("expected budget checker to never be consulted for a passthrough request, got %d calls", budget.calls)
+	}
+	if len(writer.entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(writer.entries))
+	}
+	entry := writer.entries[0]
+	if entry.Decision != "passthrough" {
+		t.Errorf("expected decision %q, got %q", "passthrough", entry.Decision)
+	}
+	if entry.Tool != "initialize" {
+		t.Errorf("expected Tool to hold the method name %q, got %q", "initialize", entry.Tool)
+	}
+}
+
+func TestHandler_PassthroughRequest_SpanStatusStaysOK(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectDeny})
+	h := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, tracer)
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}`)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Status.Code == codes.Error {
+		t.Errorf("expected passthrough success to NOT set span status to Error, got %v (%s)", spans[0].Status.Code, spans[0].Status.Description)
+	}
+}
+
 func TestHandler_TraceIDEmptyWhenTracingDisabled(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
