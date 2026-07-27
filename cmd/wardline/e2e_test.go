@@ -492,9 +492,14 @@ default: deny
 // TestServeEndToEnd_DashboardNotMountedWhenDisabled proves the web_ui flag
 // actually gates mux registration (not just something inert in the config
 // layer): with the flag off, /dashboard/ falls through to the same proxy
-// path as any other unmatched URL.
+// path as any other unmatched URL. An unmatched GET carries no JSON-RPC
+// body, so ParseToolCall rejects it and the proxy handler returns 400 —
+// asserting that status directly (rather than only conditionally inspecting
+// a 200 body) fails loudly both if the dashboard ever got erroneously
+// mounted (200 + `id="app"`) and if the proxy's own unmatched-path
+// behavior silently changed.
 func TestServeEndToEnd_DashboardNotMountedWhenDisabled(t *testing.T) {
-	addr, _, _, _, _ := startWardline(t, "policy.yaml", `
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
   - identity: "agent-1"
     tool: "read_file"
@@ -507,14 +512,12 @@ default: deny
 		t.Fatalf("request failed: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// web_ui is off, so /dashboard/ is just another unmatched tool path,
-	// routed to the proxy like any other — proving the flag actually
-	// gates the mux registration, not just the config layer.
-	if resp.StatusCode == http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if strings.Contains(string(body), `id="app"`) {
-			t.Error("dashboard SPA should not be reachable when web_ui is off")
-		}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 (unmatched path routed to the proxy, which rejects the bodyless GET) when web_ui is off, got %d (stderr: %s, body: %s)", resp.StatusCode, stderr.String(), body)
+	}
+	if strings.Contains(string(body), `id="app"`) {
+		t.Error("dashboard SPA should not be reachable when web_ui is off")
 	}
 }
 
