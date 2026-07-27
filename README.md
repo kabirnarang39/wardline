@@ -113,6 +113,39 @@ validates that header upstream of Wardline (or a future identity
 verification feature); a caller that can set arbitrary identity values can
 evade rate limiting by rotating identities.
 
+## Credential issuance
+
+Off by default. Opt in with `features.credential_issuance: true` plus a
+`credential:` block (`identities_file`, pointing at a `credentials.yaml`
+mapping identity names to preshared registration secrets — see
+`credentials.yaml.example`).
+
+When on, `X-Wardline-Identity` is no longer read. Agents exchange their
+registration secret for a short-lived (15-minute) RS256 JWT via
+`POST /credentials/token {"secret": "..."}`, then present it as
+`Authorization: Bearer <jwt>` on every proxied call. A missing, malformed,
+expired, tampered, or revoked token gets HTTP 401 before the request
+reaches policy, budget, or the audit log.
+
+An operator revokes an identity with `POST /credentials/revoke
+{"identity": "..."}` — loopback-only by default (not reachable over the
+network), since an unauthenticated network-exposed revoke endpoint would
+itself reopen the class of gap this feature exists to close. Revocation
+cuts off every outstanding and future token for that identity until the
+revocation itself expires (worst case, one token TTL later); to prevent
+that identity from bootstrapping a fresh token afterward, also remove or
+rotate its entry in `credentials.yaml`.
+
+The signing keypair is generated fresh in-process at `wardline serve`
+startup — not persisted, not shared across replicas. Restarting the
+process (or running more than one replica) invalidates every outstanding
+token, the same "no shared state across restarts" posture already true of
+the budget limiter and dashboard ring buffer.
+
+mTLS/SPIFFE-style bootstrap and IdP federation (Okta, Entra, generic
+OIDC) are explicitly out of scope for this version — see
+`docs/superpowers/specs/2026-07-27-credential-issuance-design.md`.
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`

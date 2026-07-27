@@ -639,6 +639,136 @@ default: deny
 	}
 }
 
+// postCredentialsToken calls POST /credentials/token directly (not
+// through postToolCall, which always sets X-Wardline-Identity — the
+// header this feature's bearer-mode intentionally stops trusting).
+func postCredentialsToken(t *testing.T, listenAddr, secret string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"secret":%q}`, secret)
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/credentials/token", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func postToolCallWithBearer(t *testing.T, listenAddr, bearerToken, tool string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return resp
+}
+
+// TestServeEndToEnd_CredentialIssuance proves the full bootstrap → bearer
+// tool-call → revoke → rejected flow over a real HTTP request through the
+// real binary, and that every rejection path fails closed with 401,
+// including the specific regression this feature exists to prevent: a
+// raw X-Wardline-Identity header alone, with no bearer token, must be
+// rejected once the flag is on.
+func TestServeEndToEnd_CredentialIssuance(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: agent-abc123
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"`, credentialsPath))
+
+	// Wrong secret is rejected, no token issued.
+	badResp := postCredentialsToken(t, listenAddr, "wrong-secret")
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a wrong secret, got %d (stderr: %s)", badResp.StatusCode, stderr.String())
+	}
+
+	// Bootstrap a real token.
+	tokenResp := postCredentialsToken(t, listenAddr, "a-long-random-registration-secret")
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a valid secret, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty token")
+	}
+
+	// The bearer token proxies a real allowed tool call.
+	allowedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with a valid bearer token, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// No Authorization header at all is rejected.
+	noAuthResp := postToolCallWithBearer(t, listenAddr, "", "read_file")
+	if noAuthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with no Authorization header, got %d", noAuthResp.StatusCode)
+	}
+
+	// A tampered token is rejected.
+	tamperedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token[:len(tokenBody.Token)-1]+"x", "read_file")
+	if tamperedResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a tampered token, got %d", tamperedResp.StatusCode)
+	}
+
+	// The specific regression this feature exists to prevent: a raw
+	// X-Wardline-Identity header alone, no bearer token, must not work.
+	legacyHeaderResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if legacyHeaderResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a raw X-Wardline-Identity header with credential_issuance on, got %d", legacyHeaderResp.StatusCode)
+	}
+
+	// Revoke from loopback, then confirm the same token is rejected.
+	revokeReq, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/credentials/revoke", bytes.NewBufferString(`{"identity":"agent-abc123"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeResp, err := http.DefaultClient.Do(revokeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 revoking from loopback, got %d (stderr: %s)", revokeResp.StatusCode, stderr.String())
+	}
+
+	revokedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
+	if revokedResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a revoked identity's still-otherwise-valid token, got %d", revokedResp.StatusCode)
+	}
+}
+
 // TestServeEndToEnd_AllFeaturesCombined is the v0.5 roadmap's final
 // comprehensive check: every optional feature this project has built
 // (OPA policy backend, budget enforcement, OTel tracing, the dashboard,

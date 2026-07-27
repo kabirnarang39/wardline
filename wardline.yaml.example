@@ -10,6 +10,7 @@ features: {}
 #   otel_tracing: true         # off by default — see README.md "Tracing"
 #   web_ui: true               # off by default — see README.md "Dashboard"
 #   postgres_storage: true     # off by default — see README.md "Postgres storage"
+#   credential_issuance: true  # off by default — see README.md "Credential issuance"
 # audit:
 #   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
 #   # only used when features.postgres_storage is true; audit.output is
@@ -20,3 +21,6 @@ features: {}
 # tracing:
 #   otlp_endpoint: "localhost:4318"   # required — host:port, no scheme, plaintext OTLP/HTTP
 #   service_name: "wardline"          # optional — defaults to "wardline"
+# credential:
+#   identities_file: "./credentials.yaml.example"
+#   # required when features.credential_issuance is true
