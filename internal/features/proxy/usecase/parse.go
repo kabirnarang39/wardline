@@ -44,7 +44,7 @@ type toolCallParams struct {
 func ParseRequest(identity string, body []byte) (domain.ParsedRequest, error) {
 	var env jsonRPCEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
-		return domain.ParsedRequest{}, fmt.Errorf("parse json-rpc body: %w", err)
+		return domain.ParsedRequest{ID: nullID}, fmt.Errorf("parse json-rpc body: %w", err)
 	}
 	id := env.ID
 	if len(id) == 0 {

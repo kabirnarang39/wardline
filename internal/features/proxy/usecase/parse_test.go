@@ -27,9 +27,12 @@ func TestParseRequest_ToolsCall_Valid(t *testing.T) {
 }
 
 func TestParseRequest_MalformedJSON(t *testing.T) {
-	_, err := usecase.ParseRequest("agent-abc123", []byte(`not json`))
+	parsed, err := usecase.ParseRequest("agent-abc123", []byte(`not json`))
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
+	}
+	if string(parsed.ID) != "null" {
+		t.Errorf("expected id to default to null when the id can't even be extracted, got %s", parsed.ID)
 	}
 }
 
