@@ -111,12 +111,13 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	featureFlags := flags.NewStaticProvider(cfg.Features)
+	webUIEnabled := featureFlags.Enabled("web_ui")
 
 	writer := buildAuditWriter(logger, cfg.Audit.Output)
 
 	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
 	var ringBuffer *dashboardusecase.RingBuffer
-	if featureFlags.Enabled("web_ui") {
+	if webUIEnabled {
 		ringBuffer = dashboardusecase.NewRingBuffer(ringBufferCapacity)
 		liveSink = ringBuffer
 	}
@@ -139,7 +140,6 @@ func runServe(logger *slog.Logger, args []string) {
 	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer())
 
 	startedAt := time.Now()
-	webUIEnabled := featureFlags.Enabled("web_ui")
 
 	var dashboardHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -150,11 +150,7 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Error("failed to read policy file for dashboard", "error", err)
 			os.Exit(1)
 		}
-		policyBackend := cfg.PolicyBackend
-		if policyBackend == "" {
-			policyBackend = "yaml"
-		}
-		policyInfo := dashboarddomain.PolicyInfo{Backend: policyBackend, Source: string(policySource)}
+		policyInfo := dashboarddomain.PolicyInfo{Backend: cfg.PolicyBackend, Source: string(policySource)}
 
 		statusProvider := dashboardusecase.NewStatusProvider(
 			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
