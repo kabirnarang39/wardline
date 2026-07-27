@@ -342,3 +342,66 @@ audit:
 		t.Fatal("expected error when otel_tracing is on but otlp_endpoint is unset")
 	}
 }
+
+func TestLoad_PostgresStorageEnabledMissingDSN(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  postgres_storage: true
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error: postgres_storage on with empty audit.postgres_dsn")
+	}
+}
+
+func TestLoad_PostgresStorageEnabledWithDSNNoOutputRequired(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  postgres_storage: true
+audit:
+  postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error with postgres_storage on and audit.postgres_dsn set: %v", err)
+	}
+	if cfg.Audit.PostgresDSN != "postgres://user:pass@localhost:5432/wardline?sslmode=disable" {
+		t.Errorf("unexpected Audit.PostgresDSN: %q", cfg.Audit.PostgresDSN)
+	}
+}
+
+func TestLoad_PostgresStorageDisabledOutputStillRequired(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error: audit.output must still be required when postgres_storage is off (backward compatibility)")
+	}
+}
+
+func TestLoad_PostgresStorageDisabledDSNSetIsIgnored(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+  postgres_dsn: "postgres://leftover-config-from-before"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: audit.postgres_dsn set while postgres_storage is off should be ignored, not validated, got: %v", err)
+	}
+	if cfg.Audit.Output != "stdout" {
+		t.Errorf("unexpected Audit.Output: %q", cfg.Audit.Output)
+	}
+}

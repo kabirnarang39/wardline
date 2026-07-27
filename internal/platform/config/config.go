@@ -10,8 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AuditConfig configures where audit entries are recorded. Output is
+// used unless postgres_storage is on, in which case PostgresDSN is used
+// instead — see Config.validate() and postgres_storage's flag gating.
 type AuditConfig struct {
-	Output string `yaml:"output"` // "stdout" or a file path
+	Output      string `yaml:"output"`       // "stdout" or a file path
+	PostgresDSN string `yaml:"postgres_dsn"` // only used when features.postgres_storage is true
 }
 
 // BudgetConfig configures the per-identity rate limiter. Only validated
@@ -100,7 +104,11 @@ func (c *Config) validate() error {
 	} else if c.PolicyBackend != "yaml" && c.PolicyBackend != "opa" {
 		problems = append(problems, fmt.Sprintf(`policy_backend must be "yaml" or "opa", got %q`, c.PolicyBackend))
 	}
-	if c.Audit.Output == "" {
+	if c.Features["postgres_storage"] {
+		if c.Audit.PostgresDSN == "" {
+			problems = append(problems, "audit.postgres_dsn must not be empty when features.postgres_storage is true")
+		}
+	} else if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty")
 	}
 	if c.Features["budget_enforcement"] {
