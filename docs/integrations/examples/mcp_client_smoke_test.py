@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -132,9 +133,17 @@ features: {{}}
                 result = await call_tool(wardline_port, "denied_tool")
                 print("UNEXPECTED SUCCESS:", result)
                 sys.exit(1)
-            except* Exception as eg:
+            except* httpx.HTTPStatusError as eg:
+                saw_403 = False
                 for e in eg.exceptions:
                     print("EXPECTED DENIAL:", type(e).__name__, str(e)[:200])
+                    if e.response.status_code == 403:
+                        saw_403 = True
+                if not saw_403:
+                    raise RuntimeError(
+                        "denied_tool call raised HTTPStatusError(s) but none was a 403 "
+                        "— this is not the policy denial we expected"
+                    )
 
             print("\nAll checks passed: handshake works, allowed tool succeeds, denied tool is still rejected.")
         finally:
