@@ -5,3 +5,4 @@
 /docs/superpowers/
 /.superpowers/
 __pycache__/
+.hugo_build.lock
