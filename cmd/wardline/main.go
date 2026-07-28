@@ -610,6 +610,7 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 	if err := os.Rename(tmpPath, output); err != nil {
+		_ = os.Remove(tmpPath)
 		logger.Error("failed to finalize output file", "error", err)
 		os.Exit(1)
 	}
