@@ -1106,3 +1106,34 @@ rbac:
 		t.Fatalf("expected 401 with no Authorization header, got %d", resp2.StatusCode)
 	}
 }
+
+// TestServeEndToEnd_CedarBackend proves the richer policy.Context (params,
+// not just identity/tool) survives a real HTTP request end-to-end through
+// the Cedar backend — a policy expressible with the YAML backend wouldn't
+// prove that.
+func TestServeEndToEnd_CedarBackend(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.cedar", `
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"read_file"
+) when {
+  context.params.arguments.path like "/safe/*"
+};
+`, "policy_backend: cedar")
+
+	allowResp := postToolCallWithPath(t, listenAddr, "agent-abc123", "read_file", "/safe/x")
+	if allowResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a /safe/ path, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+	}
+
+	unsafePathResp := postToolCallWithPath(t, listenAddr, "agent-abc123", "read_file", "/unsafe/x")
+	if unsafePathResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a /unsafe/ path, got %d (stderr: %s)", unsafePathResp.StatusCode, stderr.String())
+	}
+
+	denyResp := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
+	}
+}
