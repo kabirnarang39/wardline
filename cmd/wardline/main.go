@@ -24,6 +24,7 @@ import (
 	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
+	cedaradapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/cedar"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
@@ -352,7 +353,7 @@ func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) ht
 func runValidatePolicy(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("validate-policy", flag.ExitOnError)
 	path := fs.String("file", "policy.yaml", "path to policy file")
-	backend := fs.String("backend", "yaml", `policy backend: "yaml" or "opa"`)
+	backend := fs.String("backend", "yaml", `policy backend: "yaml", "opa", or "cedar"`)
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
 	if _, err := loadPolicyEngine(*backend, *path); err != nil {
@@ -363,19 +364,21 @@ func runValidatePolicy(logger *slog.Logger, args []string) {
 }
 
 // loadPolicyEngine picks the policy.Engine implementation named by
-// backend ("yaml" or "opa"; "" defaults to "yaml"). runServe only ever
-// passes a value config.Load has already validated, but runValidatePolicy
-// passes its raw, unvalidated -backend flag straight through, so any other
-// value is rejected explicitly here rather than silently falling back to
-// the YAML loader.
+// backend ("yaml", "opa", or "cedar"; "" defaults to "yaml"). runServe
+// only ever passes a value config.Load has already validated, but
+// runValidatePolicy passes its raw, unvalidated -backend flag straight
+// through, so any other value is rejected explicitly here rather than
+// silently falling back to the YAML loader.
 func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
 	switch backend {
 	case "opa":
 		return opaadapter.LoadRegoFile(path)
+	case "cedar":
+		return cedaradapter.LoadCedarFile(path)
 	case "yaml", "":
 		return policyadapter.LoadFile(path)
 	default:
-		return nil, fmt.Errorf("unknown policy backend %q (want \"yaml\" or \"opa\")", backend)
+		return nil, fmt.Errorf("unknown policy backend %q (want \"yaml\", \"opa\", or \"cedar\")", backend)
 	}
 }
 
