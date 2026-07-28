@@ -50,6 +50,12 @@ type CredentialConfig struct {
 	IdentitiesFile string `yaml:"identities_file"`
 }
 
+// RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
+// meaningful) when the rbac feature flag is on.
+type RBACConfig struct {
+	ConfigFile string `yaml:"config_file"`
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 — budget_enforcement and
 // otel_tracing are the two real ones so far; internal/platform/flags
@@ -63,6 +69,7 @@ type Config struct {
 	Budget        BudgetConfig     `yaml:"budget"`
 	Tracing       TracingConfig    `yaml:"tracing"`
 	Credential    CredentialConfig `yaml:"credential"`
+	RBAC          RBACConfig       `yaml:"rbac"`
 	Features      map[string]bool  `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
@@ -139,6 +146,9 @@ func (c *Config) validate() error {
 	}
 	if c.Features["credential_issuance"] && c.Credential.IdentitiesFile == "" {
 		problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+	}
+	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {
+		problems = append(problems, "rbac.config_file must not be empty when features.rbac is true")
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(problems, "\n  - "))
