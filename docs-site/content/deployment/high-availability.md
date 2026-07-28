@@ -4,8 +4,8 @@ weight: 30
 ---
 
 Running more than one Wardline replica behind a load balancer requires
-two decisions this guide walks through, plus three Helm primitives that
-are on by default once `replicaCount > 1`.
+three decisions this guide walks through, plus three Helm primitives
+that are on by default once `replicaCount > 1`.
 
 ## 1. Give every replica the same signing key
 
@@ -44,6 +44,35 @@ external dependency) and `/readyz` (readiness — 503 during graceful
 shutdown, and 503 if Postgres is unreachable when `postgres_storage` is
 on) are always registered, unconditionally. The Helm chart's
 `livenessProbe`/`readinessProbe` already point `httpGet` at these paths.
+
+## 4. Set a shutdown delay to protect against Endpoints-propagation lag
+
+`/readyz` flipping to 503 the instant SIGTERM arrives doesn't, by
+itself, buy meaningful time — Go's `http.Server.Shutdown()` closes the
+listener essentially synchronously once called, so there's only a
+narrow window for a *new* connection to actually observe the 503
+before the listener stops accepting traffic at all. The real
+zero-downtime gap this closes is Kubernetes' Endpoints controller
+needing time to propagate this pod's removal from Service routing
+*before* the container stops accepting connections.
+
+`shutdown_delay_seconds` (Helm value: `wardline.shutdownDelaySeconds`,
+chart default `5`, raw config default `0`) is an in-process substitute
+for a Kubernetes `preStop` sleep hook — Wardline's own published image
+is `distroless` with no shell, so a shell-based `preStop` hook can't
+run on it at all. When set, a replica keeps serving normally (and
+`/readyz` stays 200) for this long after receiving SIGTERM/SIGINT,
+*before* it begins draining:
+
+```yaml
+shutdown_delay_seconds: 5
+```
+
+This must stay comfortably smaller than `terminationGracePeriodSeconds`
+minus Wardline's own ~15s drain budget (10s HTTP drain + 5s tracing
+flush) — the Helm chart's own template refuses to render if the two
+numbers don't leave enough room, so misconfiguring this is caught at
+`helm install`/`helm template` time, not at runtime.
 
 ## What's still per-replica
 
