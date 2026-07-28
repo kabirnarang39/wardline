@@ -1,7 +1,7 @@
 listen: ":8080"
 upstream: "http://localhost:9000"
 policy_file: "./policy.yaml.example"
-# policy_backend: yaml   # or "opa" — see policy.rego.example and README.md
+# policy_backend: yaml   # "yaml", "opa", or "cedar" — see policy.rego.example, policy.cedar.example, and README.md
 audit:
   output: stdout
 features: {}

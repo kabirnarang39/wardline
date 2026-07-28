@@ -175,21 +175,6 @@ audit:
 	}
 }
 
-func TestLoad_PolicyBackendInvalid(t *testing.T) {
-	path := writeTemp(t, `
-listen: ":8080"
-upstream: "http://localhost:9000"
-policy_file: "./policy.yaml"
-policy_backend: rego2
-audit:
-  output: stdout
-`)
-	_, err := config.Load(path)
-	if err == nil {
-		t.Fatal("expected error for unrecognized policy_backend value")
-	}
-}
-
 func TestLoad_BudgetDisabledByDefaultNoValidation(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

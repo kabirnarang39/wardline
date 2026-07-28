@@ -177,6 +177,124 @@ func TestCedarEngine_MalformedParamsFailsClosedAtEvaluation(t *testing.T) {
 	}
 }
 
+// TestCedarEngine_ForbidWithErroringWhenClauseFailsClosed is the finding-#1
+// regression test: Cedar does NOT fail closed when a policy's when/unless
+// clause errors at evaluation time -- it drops the erroring policy from the
+// decision entirely. An erroring `forbid` (Cedar's denylist mechanism) must
+// not be silently discarded in favor of a separately-matching `permit`; the
+// engine must fail closed (deny) whenever diag.Errors is non-empty,
+// regardless of Cedar's own decision.
+const permitAndFragileForbidSource = `
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"read_file"
+);
+
+forbid(principal, action, resource) when {
+  context.params.arguments.path like "/etc/*"
+};
+`
+
+func TestCedarEngine_ForbidWithErroringWhenClauseFailsClosed(t *testing.T) {
+	e, err := cedar.NewCedarEngine("policy.cedar", []byte(permitAndFragileForbidSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Params omit "arguments" entirely, so the forbid's when clause
+	// (context.params.arguments.path) errors ("record does not have the
+	// attribute \"arguments\"") rather than evaluating to false. Cedar
+	// drops the forbid policy from the decision; without a fail-closed
+	// check, the unconditional permit above would win and this would be
+	// allowed -- an attacker bypassing a forbid-based denylist by simply
+	// omitting the field it inspects.
+	got := e.Evaluate(domain.Context{
+		Identity: "agent-abc123",
+		Tool:     "read_file",
+		Params:   []byte(`{"name":"read_file"}`),
+	})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("expected deny (fail closed on policy evaluation error), got %q (reason: %q)", got.Effect, got.Reason)
+	}
+	if got.Reason == "" || got.Reason == "cedar: no matching permit policy" {
+		t.Errorf("expected a specific evaluation-error reason, got generic/empty reason %q", got.Reason)
+	}
+}
+
+// TestCedarEngine_DenyReasonNamesTheForbidPolicy covers finding #4: a deny
+// caused by an explicit, unconditional (non-erroring) forbid policy must be
+// reported with the specific policy that caused it (via diag.Reasons), not
+// the generic "no matching permit policy" fallback that applies only when
+// nothing matched at all.
+const permitAndUnconditionalForbidSource = `
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"read_file"
+);
+
+forbid(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"read_file"
+);
+`
+
+func TestCedarEngine_DenyReasonNamesTheForbidPolicy(t *testing.T) {
+	e, err := cedar.NewCedarEngine("policy.cedar", []byte(permitAndUnconditionalForbidSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("expected deny (forbid overrides permit), got %q (reason: %q)", got.Effect, got.Reason)
+	}
+	if got.Reason == "" || got.Reason == "cedar: no matching permit policy" {
+		t.Errorf("expected the deny reason to name the matching forbid policy via diag.Reasons, got generic/empty reason %q", got.Reason)
+	}
+}
+
+// TestCedarEngine_FloatParamsDeniedNotCoerced pins finding #3: Cedar's type
+// system has no float and no null (and Long is a bounded 64-bit integer), so
+// decoding a JSON float, a JSON null, or an out-of-range integer into a
+// Cedar value fails and the adapter's existing fail-closed-on-decode-error
+// behavior denies the call outright -- regardless of any policy. This is a
+// deliberate, documented limitation (see README.md and policy.cedar.example),
+// not a bug; this test pins the behavior so a future change doesn't
+// silently alter it without updating those docs.
+func TestCedarEngine_FloatParamsDeniedNotCoerced(t *testing.T) {
+	e, err := cedar.NewCedarEngine("policy.cedar", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		params string
+	}{
+		{"json float", `{"name":"read_file","arguments":{"temperature":0.7}}`},
+		{"json null", `{"name":"read_file","arguments":{"optional":null}}`},
+		{"out-of-range integer", `{"name":"read_file","arguments":{"big":18446744073709551615}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := e.Evaluate(domain.Context{
+				Identity: "agent-abc123",
+				Tool:     "read_file",
+				Params:   []byte(tc.params),
+			})
+			if got.Effect != domain.EffectDeny {
+				t.Errorf("expected deny (fail closed on undecodable param type), got %q (reason: %q)", got.Effect, got.Reason)
+			}
+			if got.Reason == "" {
+				t.Error("expected a non-empty reason explaining the decode failure")
+			}
+		})
+	}
+}
+
 func TestNewCedarEngine_SyntaxError(t *testing.T) {
 	_, err := cedar.NewCedarEngine("bad.cedar", []byte(`this is not { valid cedar`))
 	if err == nil {

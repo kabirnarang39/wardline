@@ -36,7 +36,7 @@ resources: {}
 # wardline mirrors internal/platform/config.Config's YAML shape exactly.
 wardline:
   upstream: "http://your-mcp-server:9000"
-  policyBackend: yaml   # "yaml" or "opa" — see policy.rego.example in the main repo for the OPA shape
+  policyBackend: yaml   # "yaml", "opa", or "cedar" — see policy.rego.example / policy.cedar.example in the main repo for the OPA/Cedar shape
   # must be a YAML string (use a "|" block scalar) or --set-file — NOT a
   # nested map; Wardline's policy loader expects raw file content, and this
   # key is rendered verbatim into a ConfigMap.

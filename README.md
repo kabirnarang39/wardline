@@ -61,6 +61,20 @@ the config file (defaults to `yaml` if omitted):
   `policy.rego.example` for the same allow rule expressed in Rego, with
   access to the full request context — tool call parameters, timestamp,
   remote address, and user agent — not just identity and tool name.
+
+The Rego input (`input` in a policy) is the whole request context as JSON:
+
+```json
+{
+  "identity": "agent-abc123",
+  "tool": "read_file",
+  "params": {"name": "read_file", "arguments": {"path": "/tmp/x"}},
+  "timestamp": "2026-07-27T10:00:00Z",
+  "remote_addr": "10.0.0.5:54321",
+  "user_agent": "some-agent/1.0"
+}
+```
+
 - **`cedar`** — an embedded AWS Cedar evaluator
   (`github.com/cedar-policy/cedar-go`, no external process, no network
   hop). Cedar policies use `permit(...)` statements matching a fixed
@@ -76,27 +90,31 @@ the config file (defaults to `yaml` if omitted):
   calls) — evaluation terminates by construction, so Wardline doesn't
   need to wrap it in an evaluation timeout the way it does for OPA.
 
+  **Known limitation — no float/null support:** Cedar's type system has
+  no float type and no null, and its `Long` integer type is a bounded
+  64-bit value. A tool call whose JSON params contain a float (e.g.
+  `0.7` for a temperature), a `null` (e.g. an optional field), or an
+  integer outside Cedar's `Long` range will fail to decode into a Cedar
+  value — the adapter fails closed and denies the call (with a
+  decode-error line in the audit log), regardless of what any policy
+  says. This is a real behavioral divergence from the `yaml`/`opa`
+  backends for common MCP tool arguments (temperatures, coordinates,
+  prices, optional-null fields), and it is a deliberate, known
+  limitation of the current adapter, not a bug — no automatic
+  float/null coercion is performed. If your tools pass floats, nulls,
+  or very large integers as arguments, `cedar` is not yet a drop-in
+  replacement for `opa`/`yaml`.
+
 Both `opa` and `cedar` link their SDKs into every Wardline binary
 unconditionally (selected at runtime by `policy_backend`, not by build
-tag), which increases binary size versus `yaml` alone — the OPA SDK adds
-roughly 29MB; Cedar's SDK measured at roughly 44MB with both
-already linked in. An operator building a minimal-size image and using
-only `yaml` still pays this cost today; splitting policy backends into
-optional build tags is tracked as a future improvement, not solved by
-this cycle.
-
-The Rego input (`input` in a policy) is the whole request context as JSON:
-
-```json
-{
-  "identity": "agent-abc123",
-  "tool": "read_file",
-  "params": {"name": "read_file", "arguments": {"path": "/tmp/x"}},
-  "timestamp": "2026-07-27T10:00:00Z",
-  "remote_addr": "10.0.0.5:54321",
-  "user_agent": "some-agent/1.0"
-}
-```
+tag), which increases binary size versus `yaml` alone — the OPA SDK
+accounts for roughly 29MB of the total binary size; Cedar's SDK is much
+lighter, adding only roughly 1MB on top (measured as the size delta
+between a build immediately before the Cedar backend existed and a
+build with it present — not the total binary size). An operator
+building a minimal-size image and using only `yaml` still pays this
+cost today; splitting policy backends into optional build tags is
+tracked as a future improvement, not solved by this cycle.
 
 ```bash
 ./wardline validate-policy --file policy.rego.example --backend opa

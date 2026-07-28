@@ -69,6 +69,24 @@ func (e *CedarEngine) Evaluate(pc domain.Context) domain.Decision {
 	}
 
 	decision, diag := cedarsdk.Authorize(e.policySet, types.EntityMap{}, req)
+
+	// Cedar does NOT fail closed on a policy evaluation error: a policy
+	// whose when/unless clause errors at runtime (e.g. a missing JSON
+	// record key) is silently skipped and dropped from the decision
+	// entirely, not treated as a deny. That means an erroring `forbid`
+	// policy (Cedar's denylist mechanism — forbid overrides permit)
+	// simply vanishes, and any separately-matching `permit` would win,
+	// silently allowing a request the denylist was meant to block. So we
+	// must check diag.Errors FIRST, before looking at the decision at
+	// all, and fail closed regardless of what Cedar decided.
+	if len(diag.Errors) > 0 {
+		first := diag.Errors[0]
+		return domain.Decision{
+			Effect: domain.EffectDeny,
+			Reason: fmt.Sprintf("cedar: policy %q errored during evaluation, failing closed: %s", first.PolicyID, first.Message),
+		}
+	}
+
 	if bool(decision) {
 		reason := "cedar decision"
 		if len(diag.Reasons) > 0 {
@@ -77,8 +95,8 @@ func (e *CedarEngine) Evaluate(pc domain.Context) domain.Decision {
 		return domain.Decision{Effect: domain.EffectAllow, Reason: reason}
 	}
 
-	if len(diag.Errors) > 0 {
-		return domain.Decision{Effect: domain.EffectDeny, Reason: fmt.Sprintf("cedar: evaluation error: %s", diag.Errors[0].Message)}
+	if len(diag.Reasons) > 0 {
+		return domain.Decision{Effect: domain.EffectDeny, Reason: fmt.Sprintf("cedar: denied by policy %q", diag.Reasons[0].PolicyID)}
 	}
 	return domain.Decision{Effect: domain.EffectDeny, Reason: "cedar: no matching permit policy"}
 }
