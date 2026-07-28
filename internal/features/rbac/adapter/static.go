@@ -62,6 +62,10 @@ func LoadAuthorizer(path string) (*StaticAuthorizer, error) {
 	for name, r := range builtinRoles {
 		roles[name] = r
 	}
+	knownPermissions := map[string]bool{
+		"dashboard:view":    true,
+		"credential:revoke": true,
+	}
 	for _, rc := range f.Roles {
 		if rc.Name == "" {
 			return nil, fmt.Errorf("rbac file %s: a role entry is missing a name", path)
@@ -69,8 +73,14 @@ func LoadAuthorizer(path string) (*StaticAuthorizer, error) {
 		if _, isBuiltin := builtinRoles[rc.Name]; isBuiltin {
 			return nil, fmt.Errorf("rbac file %s: role %q collides with a built-in role name", path, rc.Name)
 		}
+		if _, isDuplicate := roles[rc.Name]; isDuplicate {
+			return nil, fmt.Errorf("rbac file %s: role %q is defined more than once", path, rc.Name)
+		}
 		perms := make([]domain.Permission, 0, len(rc.Permissions))
 		for _, p := range rc.Permissions {
+			if !knownPermissions[p] {
+				return nil, fmt.Errorf("rbac file %s: role %q has unknown permission %q (want one of: dashboard:view, credential:revoke)", path, rc.Name, p)
+			}
 			perms = append(perms, domain.Permission(p))
 		}
 		roles[rc.Name] = domain.Role{Name: rc.Name, Permissions: perms}
