@@ -13,6 +13,7 @@ features:
   anomaly_detection: true
 anomaly:
   output: stdout
+  window_seconds: 60
   rate_spike: {enabled: true, rate_multiplier: 5, min_calls: 10}
   novel_tool: {enabled: true}
   deny_rate_spike: {enabled: true, threshold: 0.5, min_calls: 10}
