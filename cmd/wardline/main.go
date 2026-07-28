@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
+	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
+	complianceusecase "github.com/kabirnarang39/wardline/internal/features/compliance/usecase"
 	credentialadapter "github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	credentialusecase "github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
@@ -79,7 +82,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if len(os.Args) < 2 {
-		logger.Error("usage: wardline <serve|validate-policy|validate-config> [flags]")
+		logger.Error("usage: wardline <serve|validate-policy|validate-config|export-evidence> [flags]")
 		os.Exit(1)
 	}
 
@@ -90,6 +93,8 @@ func main() {
 		runValidatePolicy(logger, os.Args[2:])
 	case "validate-config":
 		runValidateConfig(logger, os.Args[2:])
+	case "export-evidence":
+		runExportEvidence(logger, os.Args[2:])
 	default:
 		logger.Error("unknown command", "command", os.Args[1])
 		os.Exit(1)
@@ -468,6 +473,138 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		}
 	}
 	fmt.Println("config file is valid")
+}
+
+// runExportEvidence assembles a compliance evidence bundle covering
+// [-from, -to) from the audit trail, the anomaly log (if enabled), the
+// policy source, and rbac.yaml (if enabled), and writes it as a
+// checksum-verified .tar.gz. No feature flag gates this command -- like
+// validate-policy/validate-config, it's an explicitly-invoked offline
+// operation, not passive runtime behavior.
+func runExportEvidence(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("export-evidence", flag.ExitOnError)
+	configPath := fs.String("config", "wardline.yaml", "path to config file")
+	fromStr := fs.String("from", "", "start of the evidence range (RFC3339), required")
+	toStr := fs.String("to", "", "end of the evidence range (RFC3339), defaults to now")
+	outputPath := fs.String("output", "", "output bundle path, defaults to ./evidence-<from>-<to>.tar.gz")
+	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
+
+	if *fromStr == "" {
+		logger.Error("-from is required (RFC3339, e.g. 2026-07-01T00:00:00Z)")
+		os.Exit(1)
+	}
+	from, err := time.Parse(time.RFC3339, *fromStr)
+	if err != nil {
+		logger.Error("invalid -from", "error", err)
+		os.Exit(1)
+	}
+	to := time.Now()
+	if *toStr != "" {
+		to, err = time.Parse(time.RFC3339, *toStr)
+		if err != nil {
+			logger.Error("invalid -to", "error", err)
+			os.Exit(1)
+		}
+	}
+	if !from.Before(to) {
+		logger.Error("-from must be before -to")
+		os.Exit(1)
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+	featureFlags := flags.NewStaticProvider(cfg.Features)
+
+	var auditReader auditdomain.Reader
+	var jsonlReader *auditadapter.JSONLReader
+	if featureFlags.Enabled("postgres_storage") {
+		pw, err := auditadapter.NewPostgresWriter(cfg.Audit.PostgresDSN)
+		if err != nil {
+			logger.Error("failed to connect to postgres", "error", err)
+			os.Exit(1)
+		}
+		defer func() { _ = pw.Close() }()
+		auditReader = pw
+	} else if cfg.Audit.Output == "stdout" {
+		logger.Error("audit trail is not queryable when audit.output is stdout -- configure a file path or features.postgres_storage to use export-evidence")
+		os.Exit(1)
+	} else {
+		jsonlReader = auditadapter.NewJSONLReader(cfg.Audit.Output)
+		auditReader = jsonlReader
+	}
+
+	ctx := context.Background()
+	auditEntries, err := auditReader.Query(ctx, from, to)
+	if err != nil {
+		logger.Error("failed to query audit entries", "error", err)
+		os.Exit(1)
+	}
+	skippedAuditLines := 0
+	if jsonlReader != nil {
+		skippedAuditLines = jsonlReader.SkippedLines
+	}
+
+	var anomalies []anomalydomain.Anomaly
+	if featureFlags.Enabled("anomaly_detection") && cfg.Anomaly.Output != "" && cfg.Anomaly.Output != "stdout" {
+		anomalies, err = anomalyadapter.NewJSONLReader(cfg.Anomaly.Output).Query(ctx, from, to)
+		if err != nil {
+			logger.Error("failed to query anomaly entries", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	var policySource []byte
+	if cfg.PolicyFile != "" {
+		policySource, err = os.ReadFile(cfg.PolicyFile)
+		if err != nil {
+			logger.Error("failed to read policy file", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	var rbacSource []byte
+	if featureFlags.Enabled("rbac") && cfg.RBAC.ConfigFile != "" {
+		rbacSource, err = os.ReadFile(cfg.RBAC.ConfigFile)
+		if err != nil {
+			logger.Error("failed to read rbac file", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), cfg.Features, auditEntries, skippedAuditLines, anomalies)
+
+	output := *outputPath
+	if output == "" {
+		sanitize := func(s string) string { return strings.ReplaceAll(s, ":", "-") }
+		output = fmt.Sprintf("./evidence-%s-%s.tar.gz", sanitize(from.Format(time.RFC3339)), sanitize(to.Format(time.RFC3339)))
+	}
+
+	tmpPath := output + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		logger.Error("failed to create output file", "path", tmpPath, "error", err)
+		os.Exit(1)
+	}
+	if err := complianceadapter.WriteBundle(f, manifest, auditEntries, anomalies, policySource, cfg.PolicyBackend, rbacSource); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		logger.Error("failed to write evidence bundle", "error", err)
+		os.Exit(1)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		logger.Error("failed to close output file", "error", err)
+		os.Exit(1)
+	}
+	if err := os.Rename(tmpPath, output); err != nil {
+		logger.Error("failed to finalize output file", "error", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s: %d audit entries, %d anomalies\n", output, len(auditEntries), len(anomalies))
 }
 
 // buildAuditSink picks the audit Writer for the current postgres_storage
