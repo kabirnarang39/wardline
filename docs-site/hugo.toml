@@ -1,0 +1,42 @@
+baseURL = "https://kabirnarang39.github.io/wardline/docs/"
+languageCode = "en-us"
+title = "Wardline Docs"
+enableRobotsTXT = true
+canonifyURLs = true
+
+[markup.goldmark.renderer]
+  unsafe = false
+
+[params]
+  github = "https://github.com/kabirnarang39/wardline"
+  marketingSite = "https://kabirnarang39.github.io/wardline/"
+
+[[menu.main]]
+  name = "Getting Started"
+  url = "/getting-started/"
+  weight = 10
+
+[[menu.main]]
+  name = "Concepts"
+  url = "/concepts/"
+  weight = 20
+
+[[menu.main]]
+  name = "Features"
+  url = "/features/"
+  weight = 30
+
+[[menu.main]]
+  name = "Deployment"
+  url = "/deployment/"
+  weight = 40
+
+[[menu.main]]
+  name = "Reference"
+  url = "/reference/"
+  weight = 50
+
+[[menu.main]]
+  name = "Advanced"
+  url = "/advanced/"
+  weight = 60

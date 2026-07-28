@@ -1,0 +1,17 @@
+<nav class="sidebar" aria-label="Documentation sections">
+  <ul>
+    {{ range .Site.Menus.main }}
+    <li class="{{ if strings.HasPrefix $.RelPermalink .URL }}active{{ end }}">
+      <a href="{{ .URL | relLangURL }}">{{ .Name }}</a>
+      {{ $section := $.Site.GetPage (strings.TrimSuffix "/" .URL) }}
+      {{ if $section }}
+      <ul>
+        {{ range $section.Pages }}
+        <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+        {{ end }}
+      </ul>
+      {{ end }}
+    </li>
+    {{ end }}
+  </ul>
+</nav>
