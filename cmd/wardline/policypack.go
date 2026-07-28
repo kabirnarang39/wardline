@@ -24,7 +24,9 @@ func runPolicyPack(logger *slog.Logger, args []string) {
 	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
 	switch args[0] {
 	case "list":
-		runPolicyPackListTo(os.Stdout, logger, catalog)
+		if !runPolicyPackListTo(os.Stdout, logger, catalog) {
+			os.Exit(1)
+		}
 	case "show":
 		fs := flag.NewFlagSet("policy-pack show", flag.ExitOnError)
 		_ = fs.Parse(args[1:])
@@ -62,10 +64,23 @@ func runPolicyPack(logger *slog.Logger, args []string) {
 // flag.FlagSet.Parse stops parsing at the first non-flag argument, which
 // would otherwise leave a trailing "-output <path>" unparsed and silently
 // defaulted.
+//
+// valueFlags is a hand-maintained list of flag names (without leading
+// dashes) that consume a following token as their value -- kept in sync
+// with the FlagSet's own fs.String/fs.Bool calls at each call site. Only
+// one flag exists today (install's "-output"), so this is cheaper than
+// deriving it via fs.VisitAll; revisit if a second differently-shaped flag
+// (e.g. a bool) is ever added here.
 func reorderFlagsFirst(args []string, valueFlags map[string]bool) []string {
 	var flagTokens, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			// POSIX "end of flags" terminator: everything after it,
+			// including "--" itself, is positional.
+			positional = append(positional, args[i:]...)
+			break
+		}
 		if a == "-" || !strings.HasPrefix(a, "-") {
 			positional = append(positional, a)
 			continue
@@ -80,15 +95,20 @@ func reorderFlagsFirst(args []string, valueFlags map[string]bool) []string {
 	return append(flagTokens, positional...)
 }
 
-func runPolicyPackListTo(w io.Writer, logger *slog.Logger, catalog *policypackusecase.Catalog) {
+// runPolicyPackListTo returns false (and logs a clear error) when the
+// catalog fails to list -- the caller decides whether that means
+// os.Exit(1) (the real CLI) or a test assertion, same as its show/install
+// siblings.
+func runPolicyPackListTo(w io.Writer, logger *slog.Logger, catalog *policypackusecase.Catalog) bool {
 	packs, err := catalog.List()
 	if err != nil {
 		logger.Error("failed to list policy packs", "error", err)
-		os.Exit(1)
+		return false
 	}
 	for _, p := range packs {
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Backend, p.Description)
 	}
+	return true
 }
 
 // runPolicyPackShowTo returns false (and logs a clear error) when name is
