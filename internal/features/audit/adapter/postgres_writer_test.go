@@ -1,6 +1,7 @@
 package adapter_test
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"testing"
@@ -128,5 +129,63 @@ func TestPostgresWriter_WriteOnClosedConnectionReturnsError(t *testing.T) {
 	err = w.Write(domain.Entry{Timestamp: time.Now(), Identity: "x", Tool: "y", Decision: "allow"})
 	if err == nil {
 		t.Fatal("expected Write on a closed writer to return an error, not panic or succeed")
+	}
+}
+
+func TestPostgresWriter_QueryReturnsEntriesInRangeOrderedByTimestamp(t *testing.T) {
+	dsn := testDSN(t)
+	dropTable(t, dsn)
+
+	w, err := adapter.NewPostgresWriter(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	entries := []domain.Entry{
+		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Identity: "at-from", Tool: "read_file", Decision: "allow", LatencyMS: 1},
+		{Timestamp: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), Identity: "middle", Tool: "read_file", Decision: "deny", LatencyMS: 2, Reason: "denied by policy", TraceID: "trace-1"},
+		{Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Identity: "at-to", Tool: "read_file", Decision: "allow", LatencyMS: 3},
+	}
+	for _, e := range entries {
+		if err := w.Write(e); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+
+	got, err := w.Query(context.Background(),
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries (from-inclusive, to-exclusive), got %d: %+v", len(got), got)
+	}
+	if got[0].Identity != "at-from" || got[1].Identity != "middle" {
+		t.Fatalf("expected [at-from, middle] ordered by timestamp, got %+v", got)
+	}
+	if got[1].Reason != "denied by policy" || got[1].TraceID != "trace-1" {
+		t.Errorf("expected nullable columns (reason, trace_id) to round-trip, got %+v", got[1])
+	}
+}
+
+func TestPostgresWriter_QueryEmptyRangeReturnsNoRows(t *testing.T) {
+	dsn := testDSN(t)
+	dropTable(t, dsn)
+
+	w, err := adapter.NewPostgresWriter(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	got, err := w.Query(context.Background(), time.Now(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no entries, got %+v", got)
 	}
 }
