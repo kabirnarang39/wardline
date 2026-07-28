@@ -26,10 +26,11 @@ func NewRevocationList() *RevocationList {
 	return &RevocationList{entries: make(map[string]time.Time), now: time.Now}
 }
 
-func (r *RevocationList) Revoke(identity string, expiresAt time.Time) {
+func (r *RevocationList) Revoke(identity string, expiresAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[identity] = expiresAt
+	return nil
 }
 
 func (r *RevocationList) IsRevoked(identity string) bool {

@@ -10,7 +10,7 @@ func TestRevocationList_RevokedIdentityIsRevoked(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r.now = func() time.Time { return now }
 
-	r.Revoke("agent-abc123", now.Add(time.Hour))
+	_ = r.Revoke("agent-abc123", now.Add(time.Hour))
 	if !r.IsRevoked("agent-abc123") {
 		t.Error("expected agent-abc123 to be revoked")
 	}
@@ -27,7 +27,7 @@ func TestRevocationList_ExpiredRevocationSelfHeals(t *testing.T) {
 	r := NewRevocationList()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	r.now = func() time.Time { return now }
-	r.Revoke("agent-abc123", now.Add(time.Minute))
+	_ = r.Revoke("agent-abc123", now.Add(time.Minute))
 
 	if !r.IsRevoked("agent-abc123") {
 		t.Fatal("expected agent-abc123 to be revoked before its expiry")
@@ -44,7 +44,7 @@ func TestRevocationList_ConcurrentAccessIsSafe(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 1000; i++ {
-			r.Revoke("agent-a", time.Now().Add(time.Hour))
+			_ = r.Revoke("agent-a", time.Now().Add(time.Hour))
 		}
 		close(done)
 	}()

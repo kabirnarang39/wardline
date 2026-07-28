@@ -107,7 +107,15 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// token already issued to this identity — every outstanding and
 	// future-until-expiry token is rejected from this point on. See
 	// design doc "Error handling".
-	h.revocation.Revoke(req.Identity, h.now().Add(tokenTTL))
+	if err := h.revocation.Revoke(req.Identity, h.now().Add(tokenTTL)); err != nil {
+		// A 204 here would tell the caller a security action succeeded
+		// when it didn't -- an operator revoking a compromised identity
+		// needs to know the revocation was NOT persisted, not silently
+		// believe it took effect.
+		h.logger.Error("revocation failed to persist", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "revocation failed to persist")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

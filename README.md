@@ -514,6 +514,39 @@ some capabilities staying explicitly per-replica.
   Kubernetes readiness probe at `/readyz` — this is what lets a rolling
   deploy pull a draining pod out of rotation before it starts refusing
   connections, instead of dropping in-flight requests.
+  - **`/healthz` and `/readyz` are permanently reserved paths**, shadowed
+    from every deployment, in every configuration — if your upstream MCP
+    server exposes its own routes at these exact paths, they are no
+    longer reachable through the proxy. This is unconditional, not
+    gated by any feature flag.
+  - Registering these two routes means every deployment now routes
+    through Go's `http.ServeMux` internally, even one with every
+    optional feature off — previously that was only true once a feature
+    like the dashboard was enabled. `http.ServeMux` applies its own path
+    cleaning (collapsing `//`, resolving `..`) before a request reaches
+    the proxy handler; a client sending an already-unclean path now gets
+    a redirect it wouldn't have seen before this cycle. Low real-world
+    likelihood (MCP traffic is typically one clean path), but worth
+    knowing if you're debugging an unexpected redirect on an upgrade.
+  - `/readyz`'s Postgres check means a single shared-database blip takes
+    **every** replica out of rotation simultaneously when
+    `postgres_storage` is on — this is the same fail-closed posture the
+    rest of the codebase applies to a broken dependency, but a
+    `PodDisruptionBudget` does not protect against a readiness-driven
+    removal (only against a voluntary eviction), so all replicas can
+    still go unready together in this specific scenario.
+- **Shutdown delay** (`shutdown_delay_seconds`, default `0`, Helm default
+  `5`): how long a replica keeps serving normally after receiving
+  SIGTERM/SIGINT before it starts draining. This is an in-process
+  substitute for a Kubernetes `preStop` sleep — it exists because
+  Wardline's own published image is `distroless` and has no shell, so a
+  shell-based `preStop` hook (`sleep N`) cannot run on it at all. The
+  delay buys the same real-world value a `preStop` sleep would: time for
+  Kubernetes' Endpoints controller to propagate this pod's removal from
+  Service routing before the container actually stops accepting
+  connections, since `/readyz` flipping to `503` on its own does not
+  reliably achieve this (`http.Server.Shutdown()` closes the listener
+  essentially synchronously once called, confirmed by live testing).
 
 **Still per-replica, by design, not yet cluster-aware:**
 - **Budget enforcement** — each replica enforces the configured limit
@@ -557,11 +590,31 @@ helm install my-wardline charts/wardline \
 ```
 
 Most of `internal/platform/config.Config` is exposed under `values.yaml`'s
-`wardline:` key — feature flags, budget limits, tracing, and Postgres
-storage all work the same way they do outside Kubernetes. Two blocks are
-not yet exposed there: `credential:` (pre-existing gap) and `rbac:` — set
-either via a mounted/overridden config file if you need them on Kubernetes
-today; wiring them into `values.yaml` is deferred to a future chart cycle.
+`wardline:` key — feature flags, budget limits, tracing, Postgres
+storage, and (as of the HA-deployment cycle) `credential.signing_key_file`
+/ `credential.identities_file` and `shutdown_delay_seconds` all work the
+same way they do outside Kubernetes. One block is not yet exposed there:
+`rbac:` — set it via a mounted/overridden config file if you need it on
+Kubernetes today; wiring it into `values.yaml` is deferred to a future
+chart cycle.
+
+**Mounting a signing key or identities file:** `wardline.credentialSigningKeyFile`
+and `wardline.credentialIdentitiesFile` only set the config *paths* — you
+still need to get the actual files into the container yourself, via
+`extraVolumes`/`extraVolumeMounts`:
+
+```yaml
+extraVolumes:
+  - name: signing-key
+    secret:
+      secretName: wardline-signing-key
+extraVolumeMounts:
+  - name: signing-key
+    mountPath: /etc/wardline-secrets
+    readOnly: true
+wardline:
+  credentialSigningKeyFile: /etc/wardline-secrets/signing-key.pem
+```
 
 **Exposing the dashboard:** if you enable `features.web_ui` and also
 enable Ingress (or set `service.type` to something other than
@@ -585,10 +638,15 @@ which now includes every policy or config change, since the pod
 template carries a checksum annotation over both — each pod with its
 own independent budget counters reset to zero.
 
-**Health checks:** the chart's liveness/readiness probes use a TCP
-socket check against the listen port, not an HTTP health endpoint —
-Wardline doesn't have one yet. This proves the process is listening,
-not that policy/upstream/tracing are fully healthy.
+**Health checks and HA primitives:** the chart's liveness/readiness
+probes are real `httpGet` checks against `/healthz`/`/readyz` (see "HA
+deployment" above for what each actually verifies). With
+`replicaCount > 1`, the chart also renders a `PodDisruptionBudget`
+(`podDisruptionBudget.minAvailable`, default `1`) and soft pod
+anti-affinity (`podAntiAffinity.enabled`, default `true`) spreading
+replicas across nodes. `terminationGracePeriodSeconds` (default `30`)
+and `wardline.shutdownDelaySeconds` (default `5`) are both explicit
+`values.yaml` fields — see "HA deployment" above for how they relate.
 
 **Resources:** `values.yaml`'s `resources: {}` default ships no
 CPU/memory limits or requests — a commented-out example block is

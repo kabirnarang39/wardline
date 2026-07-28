@@ -19,11 +19,44 @@ import (
 	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
 )
 
-func TestBuildTopHandler_WebUIOff_DashboardPathGoesToProxy(t *testing.T) {
+// TestBuildTopHandler_EmptyMap_ProxyHandlesEverythingUnchanged exercises
+// buildTopHandler's genuinely-empty-map fast path directly -- runServe
+// itself never actually calls buildTopHandler with an empty map (health
+// routes are always registered), but the fast path is retained as a
+// real, useful contract of the function on its own: called with no
+// extra routes at all, it must return the bare proxy handler completely
+// unchanged, not wrap it in a mux.
+func TestBuildTopHandler_EmptyMap_ProxyHandlesEverythingUnchanged(t *testing.T) {
 	proxyHit := false
 	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxyHit = true })
 
 	h := buildTopHandler(proxy, map[string]http.Handler{})
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !proxyHit {
+		t.Error("expected the proxy handler to receive every request when extraRoutes is empty")
+	}
+}
+
+// TestBuildTopHandler_WebUIOff_DashboardPathGoesToProxy reflects what a
+// real "no optional features" deployment actually looks like since the
+// HA-deployment cycle: extraRoutes is never truly empty, because
+// /healthz and /readyz are always registered regardless of any feature
+// flag. /dashboard/ (unregistered here, web_ui off) must still reach the
+// proxy through the mux path, exactly as it did under the old
+// genuinely-empty-map fast path.
+func TestBuildTopHandler_WebUIOff_DashboardPathGoesToProxy(t *testing.T) {
+	proxyHit := false
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxyHit = true })
+	healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("health handler should not be reached for /dashboard/")
+	})
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/healthz": healthHandler,
+		"/readyz":  healthHandler,
+	})
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 

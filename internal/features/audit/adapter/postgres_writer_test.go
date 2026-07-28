@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,28 +14,51 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
 )
 
+// testSchema isolates this package's Postgres tests from every other
+// package's (internal/features/credential/adapter and cmd/wardline both
+// run their own real-Postgres tests against the same
+// WARDLINE_TEST_POSTGRES_DSN-pointed database, and go test ./...
+// schedules different packages' test binaries concurrently) -- without
+// this, a DROP TABLE from one package can race a live query/insert from
+// another against tables of the same name in the shared "public" schema.
+const testSchema = "wardline_test_audit"
+
 // testDSN returns the DSN to test against, skipping the test if no real
-// Postgres is available. Start one locally with:
+// Postgres is available, with search_path pinned to testSchema so every
+// table this package's tests create or drop stays confined to it. Start
+// a real Postgres locally with:
 //
 //	docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=wardline postgres:16
 //
 // and set WARDLINE_TEST_POSTGRES_DSN=postgres://postgres:wardline@localhost:5432/postgres?sslmode=disable
 //
-// WARNING: these tests DROP the audit_entries table at whatever DSN
-// WARDLINE_TEST_POSTGRES_DSN points at (see dropTable below). Point this
-// at a disposable database only — never at a real/shared one.
+// WARNING: these tests DROP the audit_entries table within testSchema
+// (see dropTable below). Point WARDLINE_TEST_POSTGRES_DSN at a
+// disposable database only — never at a real/shared one.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres integration test")
 	}
-	return dsn
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open to create test schema: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + testSchema); err != nil {
+		t.Fatalf("create test schema: %v", err)
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "search_path=" + testSchema
 }
 
 // dropTable removes the table between tests so each test starts clean —
-// tests share one real database (no per-test schema/database isolation
-// this cycle), so this keeps them independent of run order.
+// scoped to testSchema, so it can never touch another package's tables
+// of the same name.
 func dropTable(t *testing.T, dsn string) {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)

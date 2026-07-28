@@ -146,6 +146,26 @@ func writeTestRSAKey(t *testing.T) string {
 	return path
 }
 
+// writeTestRSAKeyPKCS1 mirrors writeTestRSAKey but encodes as PKCS1
+// ("RSA PRIVATE KEY") instead of PKCS8 -- this is what `openssl genrsa`
+// produces by default (the command this project's own README and Helm
+// chart tell operators to run), so it needs its own coverage that
+// doesn't depend on a real Postgres container to run.
+func writeTestRSAKeyPKCS1(t *testing.T, bits int) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, bits)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	der := x509.MarshalPKCS1PrivateKey(key)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
+	path := filepath.Join(t.TempDir(), "signing-key.pem")
+	if err := os.WriteFile(path, pemBytes, 0600); err != nil {
+		t.Fatalf("write test key: %v", err)
+	}
+	return path
+}
+
 func TestNewJWTIssuerVerifier_EmptyPathGeneratesFreshKeyAsToday(t *testing.T) {
 	j, err := NewJWTIssuerVerifier("")
 	if err != nil {
@@ -224,5 +244,72 @@ func TestNewJWTIssuerVerifier_MalformedKeyFileErrors(t *testing.T) {
 	_, err := NewJWTIssuerVerifier(path)
 	if err == nil {
 		t.Fatal("expected an error for a malformed key file")
+	}
+}
+
+func TestNewJWTIssuerVerifier_PKCS1KeyFile_RoundTrips(t *testing.T) {
+	keyPath := writeTestRSAKeyPKCS1(t, 2048)
+
+	iv, err := NewJWTIssuerVerifier(keyPath)
+	if err != nil {
+		t.Fatalf("NewJWTIssuerVerifier with a PKCS1-encoded key: %v", err)
+	}
+	token, err := iv.Issue("agent-abc123")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := iv.Verify(token); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestNewJWTIssuerVerifier_PKCS1SameKeyFile_TwoInstancesVerifyEachOthersTokens(t *testing.T) {
+	keyPath := writeTestRSAKeyPKCS1(t, 2048)
+
+	replicaA, err := NewJWTIssuerVerifier(keyPath)
+	if err != nil {
+		t.Fatalf("replicaA: %v", err)
+	}
+	replicaB, err := NewJWTIssuerVerifier(keyPath)
+	if err != nil {
+		t.Fatalf("replicaB: %v", err)
+	}
+
+	token, err := replicaA.Issue("agent-abc123")
+	if err != nil {
+		t.Fatalf("Issue on replicaA: %v", err)
+	}
+	if _, err := replicaB.Verify(token); err != nil {
+		t.Fatalf("expected replicaB to verify a PKCS1-key token issued by replicaA, got: %v", err)
+	}
+}
+
+func TestNewJWTIssuerVerifier_WeakPKCS1KeyRejected(t *testing.T) {
+	keyPath := writeTestRSAKeyPKCS1(t, 1024)
+
+	_, err := NewJWTIssuerVerifier(keyPath)
+	if err == nil {
+		t.Fatal("expected a 1024-bit PKCS1 key to be rejected as below the minimum key size")
+	}
+}
+
+func TestNewJWTIssuerVerifier_WeakPKCS8KeyRejected(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal test key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	path := filepath.Join(t.TempDir(), "signing-key.pem")
+	if err := os.WriteFile(path, pemBytes, 0600); err != nil {
+		t.Fatalf("write test key: %v", err)
+	}
+
+	_, err = NewJWTIssuerVerifier(path)
+	if err == nil {
+		t.Fatal("expected a 1024-bit PKCS8 key to be rejected as below the minimum key size")
 	}
 }

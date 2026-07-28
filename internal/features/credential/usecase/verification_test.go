@@ -20,13 +20,18 @@ func (f fakeVerifier) Verify(token string) (domain.Claims, error) {
 
 type fakeRevoker struct {
 	revoked map[string]bool
+	err     error // when set, Revoke returns this instead of recording
 }
 
-func (f *fakeRevoker) Revoke(identity string, expiresAt time.Time) {
+func (f *fakeRevoker) Revoke(identity string, expiresAt time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
 	if f.revoked == nil {
 		f.revoked = map[string]bool{}
 	}
 	f.revoked[identity] = true
+	return nil
 }
 
 func (f *fakeRevoker) IsRevoked(identity string) bool {

@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 	"github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 )
+
+var errRevokeBackendUnavailable = errors.New("revocation backend unavailable")
 
 type fakeHandlerBootstrapper struct{}
 
@@ -33,10 +36,15 @@ func (fakeHandlerIssuer) Issue(identity string) (string, error) {
 type recordingRevoker struct {
 	identity  string
 	expiresAt time.Time
+	err       error // when set, Revoke returns this instead of recording
 }
 
-func (r *recordingRevoker) Revoke(identity string, expiresAt time.Time) {
+func (r *recordingRevoker) Revoke(identity string, expiresAt time.Time) error {
+	if r.err != nil {
+		return r.err
+	}
 	r.identity, r.expiresAt = identity, expiresAt
+	return nil
 }
 func (r *recordingRevoker) IsRevoked(identity string) bool { return false }
 
@@ -127,6 +135,21 @@ func TestHandleRevoke_FromLoopbackRevokes(t *testing.T) {
 	}
 	if !revoker.expiresAt.After(time.Now()) {
 		t.Error("expected the revocation expiry to be in the future")
+	}
+}
+
+func TestHandleRevoke_PersistFailureReturns500NotFalse204(t *testing.T) {
+	revoker := &recordingRevoker{err: errRevokeBackendUnavailable}
+	h := newTestHandler(revoker)
+	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when the revocation fails to persist (never a false-positive 204), got %d", w.Code)
 	}
 }
 

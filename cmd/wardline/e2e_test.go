@@ -598,19 +598,14 @@ default: deny
 // WARDLINE_TEST_POSTGRES_DSN points at. Point this at a disposable
 // database only — never at a real/shared one.
 func TestServeEndToEnd_PostgresStorage(t *testing.T) {
-	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres e2e test")
-	}
+	dsn := testDSN(t)
+	dropAuditEntriesTableE2E(t, dsn)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open db for cleanup/verification: %v", err)
+		t.Fatalf("open db for verification: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
-		t.Fatalf("drop table before test: %v", err)
-	}
 
 	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
 rules:
@@ -819,19 +814,14 @@ credential:
 // the same Recorder.Record call, not just that each works when the others
 // are off.
 func TestServeEndToEnd_AllFeaturesCombined(t *testing.T) {
-	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping combined-features e2e test")
-	}
+	dsn := testDSN(t)
+	dropAuditEntriesTableE2E(t, dsn)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open db for cleanup/verification: %v", err)
+		t.Fatalf("open db for verification: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
-		t.Fatalf("drop table before test: %v", err)
-	}
 
 	var gotExport atomic.Bool
 	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1346,6 +1336,49 @@ anomaly:
 	}
 }
 
+// TestValidateConfigEndToEnd_SigningKeyFileIgnoredWhenCredentialIssuanceOff
+// proves validate-config's signing-key check is gated on
+// features.credential_issuance, matching the field's own runtime
+// behavior (main.go only loads it inside the credentialIssuanceEnabled
+// block) -- a stale signing_key_file left in a config template for a
+// deployment where the feature is off must not fail validation.
+func TestValidateConfigEndToEnd_SigningKeyFileIgnoredWhenCredentialIssuanceOff(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A deliberately invalid/nonexistent signing_key_file -- if this
+	// were still checked unconditionally, validate-config would fail.
+	config := fmt.Sprintf(`listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: %q
+audit:
+  output: stdout
+credential:
+  signing_key_file: %q
+`, policyPath, filepath.Join(dir, "does-not-exist.pem"))
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "validate-config", "--config", configPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("validate-config must not check signing_key_file when credential_issuance is off, got: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("config file is valid")) {
+		t.Fatalf("expected a valid verdict, got: %s", out)
+	}
+}
+
 // TestExportEvidenceEndToEnd_RenameFailureCleansUpTmpFile forces the
 // os.Rename(tmpPath, output) failure branch in runExportEvidence by
 // pointing -output at a path that already exists as a directory --
@@ -1821,13 +1854,41 @@ audit:
 	}
 }
 
+// testSchema isolates this package's real-Postgres e2e tests from the
+// audit and credential adapter packages' own Postgres tests --
+// internal/features/audit/adapter and internal/features/credential/adapter
+// each run against the same WARDLINE_TEST_POSTGRES_DSN-pointed database,
+// and go test ./... schedules different packages' test binaries
+// concurrently, so a DROP TABLE from one package could otherwise race a
+// live query/insert from another against tables of the same name in the
+// shared "public" schema.
+const testSchema = "wardline_test_e2e"
+
+// testDSN returns the DSN every real-Postgres test in this package
+// should use, skipping the test if none is configured. search_path is
+// pinned to testSchema so every table created by a real wardline serve
+// subprocess started with this DSN (audit.postgres_dsn or the
+// credential revoker's DSN) stays confined to it, same as
+// audit/adapter and credential/adapter's own testDSN helpers.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres HA integration test")
+		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres integration test")
 	}
-	return dsn
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open to create test schema: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + testSchema); err != nil {
+		t.Fatalf("create test schema: %v", err)
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "search_path=" + testSchema
 }
 
 func dropRevokedIdentitiesTableE2E(t *testing.T, dsn string) {
@@ -1840,6 +1901,15 @@ func dropRevokedIdentitiesTableE2E(t *testing.T, dsn string) {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS revoked_identities`); err != nil {
 		t.Fatalf("drop table for cleanup: %v", err)
 	}
+}
+
+func dropAuditEntriesTableE2E(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
 		t.Fatalf("drop table for cleanup: %v", err)
 	}

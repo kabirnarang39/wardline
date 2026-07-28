@@ -273,7 +273,7 @@ func runServe(logger *slog.Logger, args []string) {
 
 		var revoker credentialdomain.Revoker
 		if postgresStorageEnabled {
-			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN)
+			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres revoker", "error", err)
 				os.Exit(1)
@@ -389,6 +389,26 @@ func runServe(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	case <-ctx.Done():
+		// An in-process substitute for a Kubernetes preStop sleep -- see
+		// Config.ShutdownDelaySeconds' doc comment for why this exists
+		// instead of a shell-based lifecycle hook. Runs BEFORE
+		// SetDraining so the pod keeps serving and reporting ready for
+		// this long, exactly like a real preStop hook delaying SIGTERM:
+		// the point is to buy Endpoints-propagation time while nothing
+		// about this replica's behavior changes yet. This is the only
+		// thing allowed to run before SetDraining -- everything else in
+		// this branch keeps its original relative order (SetDraining,
+		// then stop(), then the log line, then Shutdown) since that
+		// ordering also controls how wide the window is for a readiness
+		// probe to actually observe a 503 before the listener closes;
+		// don't reorder those without re-verifying
+		// TestHealthEndToEnd_ReadyzFlipsToUnreadyDuringShutdown stays
+		// reliably green (moving stop() earlier once measurably shrank
+		// that window and made the test flake far more often).
+		if cfg.ShutdownDelaySeconds > 0 {
+			logger.Info("delaying shutdown drain", "seconds", cfg.ShutdownDelaySeconds)
+			time.Sleep(time.Duration(cfg.ShutdownDelaySeconds) * time.Second)
+		}
 		// Flip readiness before anything else: a polling Kubernetes
 		// readiness probe needs the pod out of Service endpoint
 		// rotation as early as possible in the drain window, not after
@@ -545,7 +565,7 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
-	if cfg.Credential.SigningKeyFile != "" {
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.SigningKeyFile != "" {
 		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile); err != nil {
 			logger.Error("failed to load credential signing key file", "error", err)
 			os.Exit(1)
