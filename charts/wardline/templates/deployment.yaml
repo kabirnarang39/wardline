@@ -17,6 +17,18 @@ spec:
       labels:
         {{- include "wardline.selectorLabels" . | nindent 8 }}
     spec:
+      {{- /*
+      wardline.shutdownDelaySeconds runs BEFORE main.go's own ~15s drain
+      budget (10s HTTP drain + 5s tracing flush), both inside the same
+      terminationGracePeriodSeconds window -- if the delay alone already
+      leaves no room for that fixed budget, SIGKILL lands mid-drain,
+      which is worse than not setting a delay at all (the in-flight-
+      request-drop this feature exists to prevent). Fail the render
+      rather than ship a config that silently defeats its own purpose.
+      */}}
+      {{- if ge (add (.Values.wardline.shutdownDelaySeconds | int) 15) (.Values.terminationGracePeriodSeconds | int) }}
+      {{- fail (printf "wardline.shutdownDelaySeconds (%d) + main.go's ~15s drain budget must be less than terminationGracePeriodSeconds (%d), or SIGKILL can land before the drain completes" (.Values.wardline.shutdownDelaySeconds | int) (.Values.terminationGracePeriodSeconds | int)) }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if and .Values.podAntiAffinity.enabled (gt (.Values.replicaCount | int) 1) }}
       affinity:
