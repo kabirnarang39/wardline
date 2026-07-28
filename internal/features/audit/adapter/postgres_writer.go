@@ -117,3 +117,38 @@ func (w *PostgresWriter) Write(e domain.Entry) error {
 func (w *PostgresWriter) Close() error {
 	return w.db.Close()
 }
+
+const querySQL = `
+SELECT timestamp, identity, tool, decision, latency_ms, reason, trace_id
+FROM audit_entries
+WHERE timestamp >= $1 AND timestamp < $2
+ORDER BY timestamp`
+
+// Query implements domain.Reader.
+func (w *PostgresWriter) Query(ctx context.Context, from, to time.Time) ([]domain.Entry, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	rows, err := w.db.QueryContext(queryCtx, querySQL, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query audit entries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []domain.Entry
+	for rows.Next() {
+		var e domain.Entry
+		var reason, traceID sql.NullString
+		if err := rows.Scan(&e.Timestamp, &e.Identity, &e.Tool, &e.Decision, &e.LatencyMS, &reason, &traceID); err != nil {
+			return nil, fmt.Errorf("scan audit entry: %w", err)
+		}
+		e.Reason = reason.String
+		e.TraceID = traceID.String
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit entries: %w", err)
+	}
+	return entries, nil
+}
+
+var _ domain.Reader = (*PostgresWriter)(nil)
