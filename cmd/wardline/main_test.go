@@ -224,6 +224,72 @@ func TestRunExportEvidence_NoFeaturesBlock_ManifestFeaturesIsEmptyMapNotNull(t *
 	}
 }
 
+// TestRunExportEvidence_MissingAnomalyFileIsZeroAnomaliesAndBundleIsOwnerOnly
+// covers two seams between the CLI wiring and the stores it reads:
+//
+//  1. anomaly.output only exists once serve has run with
+//     anomaly_detection on (buildAnomalyWriter's O_CREATE). An operator
+//     who flips the flag on and exports before restarting must get an
+//     empty-anomaly bundle, not "open anomaly file: no such file".
+//  2. The bundle aggregates the 0600 audit trail, the rbac bindings and
+//     the policy source into one artifact, so it must not land
+//     world-readable via os.Create's 0666&umask default.
+func TestRunExportEvidence_MissingAnomalyFileIsZeroAnomaliesAndBundleIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately never created.
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"features:\n  anomaly_detection: true\n" +
+		"anomaly:\n  output: \"" + anomalyPath + "\"\n  window_seconds: 60\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+	runExportEvidence(testLogger(), []string{
+		"-config", configPath,
+		"-from", "2020-01-01T00:00:00Z",
+		"-to", "2030-01-01T00:00:00Z",
+		"-output", outputPath,
+	})
+
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatalf("expected a bundle to be written despite the missing anomaly file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected the evidence bundle to be owner-only (0600), got %04o", perm)
+	}
+
+	manifestJSON := readBundleFile(t, outputPath, "manifest.json")
+	var manifest struct {
+		AnomalyEntryCount int `json:"anomaly_entry_count"`
+	}
+	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest.json: %v", err)
+	}
+	if manifest.AnomalyEntryCount != 0 {
+		t.Errorf("expected 0 anomalies, got %d", manifest.AnomalyEntryCount)
+	}
+	if !bytes.Contains(manifestJSON, []byte(`"unparsable_anomaly_lines_skipped": 0`)) {
+		t.Errorf("expected the anomaly skip counter in manifest.json, got:\n%s", manifestJSON)
+	}
+}
+
 // readBundleFile extracts one named file's contents from a gzip+tar
 // evidence bundle written by complianceadapter.WriteBundle.
 func readBundleFile(t *testing.T, bundlePath, name string) []byte {

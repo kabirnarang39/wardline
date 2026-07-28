@@ -1467,7 +1467,9 @@ audit:
 	})
 	// A bare TCP-dial readiness probe, not waitForServer's http.Get: an
 	// actual HTTP request would itself be proxied and audited (as a
-	// JSON-RPC parse-error decision, since it carries no body), throwing
+	// audit entry with Decision "error", since an empty body fails
+	// JSON-RPC parsing -- "error" is an audit Decision value, not the
+	// JSON-RPC -32700 "Parse error" code), throwing
 	// off the exact audit_entry_count/decision-count assertions below.
 	waitForListener(t, listenAddr)
 

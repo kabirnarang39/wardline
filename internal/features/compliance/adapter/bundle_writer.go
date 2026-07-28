@@ -29,7 +29,13 @@ type bundleFile struct {
 // written to w, in a fixed order (manifest.json, audit.jsonl,
 // anomalies.jsonl, policy_snapshot, policy_backend.txt, rbac_snapshot,
 // checksums.txt) so two exports of identical inputs produce
-// byte-identical archives. audit.jsonl/anomalies.jsonl are serialized by
+// byte-identical archives. "Identical inputs" includes manifest, whose
+// GeneratedAt differs on every real run -- two live `wardline
+// export-evidence` invocations over the same data are therefore NOT
+// byte-identical, by design. The determinism here is what makes the
+// bundle reproducible from a recorded Manifest and diffable in tests, not
+// a promise that re-exporting yields the same bytes.
+// audit.jsonl/anomalies.jsonl are serialized by
 // reusing audit/adapter.JSONLWriter and anomaly/adapter.JSONLWriter
 // directly (writing into an in-memory buffer instead of a file) so the
 // bundle's wire format can never drift from what those existing types
@@ -73,7 +79,14 @@ func WriteBundle(
 
 	if len(policySource) > 0 {
 		files = append(files, bundleFile{"policy_snapshot", policySource})
-		files = append(files, bundleFile{"policy_backend.txt", []byte(policyBackend + "\n")})
+		// Omit rather than ship a file containing just a newline: an
+		// auditor reading an empty policy_backend.txt would have no way to
+		// tell "unknown backend" from "the file is broken". Config
+		// validation defaults PolicyBackend to "yaml", so this is a
+		// guard against a future caller, not a reachable path today.
+		if policyBackend != "" {
+			files = append(files, bundleFile{"policy_backend.txt", []byte(policyBackend + "\n")})
+		}
 	}
 
 	if len(rbacSource) > 0 {

@@ -521,6 +521,20 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	var auditReader auditdomain.Reader
 	var jsonlReader *auditadapter.JSONLReader
 	if featureFlags.Enabled("postgres_storage") {
+		// Same precedence buildAuditSink applies for serve: postgres wins,
+		// audit.output is ignored. Logged here too because "my bundle is
+		// empty" against a config that has both set is otherwise silent --
+		// the operator can't tell which of the two stores was read.
+		if cfg.Audit.Output != "" {
+			logger.Info("audit.output is set but features.postgres_storage is on; exporting from postgres and ignoring audit.output",
+				"output", cfg.Audit.Output)
+		}
+		// NewPostgresWriter runs CREATE TABLE/INDEX IF NOT EXISTS on
+		// connect, so this read-only export needs the same DDL-capable DSN
+		// serve uses -- a SELECT-only compliance role can't run it. See
+		// README.md "Compliance evidence export"; a dedicated read-only
+		// connector is deferred (it also needs a separate DSN config field
+		// to be useful, which is a design change, not a bug fix).
 		pw, err := auditadapter.NewPostgresWriter(cfg.Audit.PostgresDSN)
 		if err != nil {
 			logger.Error("failed to connect to postgres", "error", err)
@@ -548,11 +562,27 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	}
 
 	var anomalies []anomalydomain.Anomaly
+	skippedAnomalyLines := 0
 	if featureFlags.Enabled("anomaly_detection") && cfg.Anomaly.Output != "" && cfg.Anomaly.Output != "stdout" {
-		anomalies, err = anomalyadapter.NewJSONLReader(cfg.Anomaly.Output).Query(ctx, from, to)
-		if err != nil {
+		anomalyReader := anomalyadapter.NewJSONLReader(cfg.Anomaly.Output)
+		anomalies, err = anomalyReader.Query(ctx, from, to)
+		switch {
+		// anomaly.output only exists once serve has started at least once
+		// with anomaly_detection on (buildAnomalyWriter's O_CREATE), so an
+		// operator who enables the flag and exports before restarting has
+		// no file yet. That's "no anomalies fired", not a failure -- the
+		// bundle already omits anomalies.jsonl for a zero-anomaly range.
+		// The audit file deliberately does NOT get this treatment: an
+		// absent audit trail must never quietly become a 0-entry evidence
+		// bundle.
+		case errors.Is(err, os.ErrNotExist):
+			logger.Warn("anomaly output file does not exist yet; exporting zero anomalies",
+				"path", cfg.Anomaly.Output)
+		case err != nil:
 			logger.Error("failed to query anomaly entries", "error", err)
 			os.Exit(1)
+		default:
+			skippedAnomalyLines = anomalyReader.SkippedLines
 		}
 	}
 
@@ -584,7 +614,7 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 		// shape the two count maps next to it always have.
 		manifestFeatures = map[string]bool{}
 	}
-	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), manifestFeatures, auditEntries, skippedAuditLines, anomalies)
+	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), manifestFeatures, auditEntries, skippedAuditLines, anomalies, skippedAnomalyLines)
 
 	output := *outputPath
 	if output == "" {
@@ -593,7 +623,11 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	}
 
 	tmpPath := output + ".tmp"
-	f, err := os.Create(tmpPath)
+	// 0600, not os.Create's 0666&umask: the bundle aggregates the whole
+	// audit trail (whose own file wardline opens 0600), the rbac bindings
+	// and the policy source into one artifact, so a world-readable default
+	// would widen access to evidence on any shared host.
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		logger.Error("failed to create output file", "path", tmpPath, "error", err)
 		os.Exit(1)

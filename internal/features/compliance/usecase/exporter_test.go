@@ -26,7 +26,7 @@ func TestBuildManifest_CountsAndHistogramsMixedInput(t *testing.T) {
 		{Kind: anomalydomain.KindRateSpike},
 	}
 
-	m := usecase.BuildManifest("0.6.0", from, to, generatedAt, features, auditEntries, 2, anomalies)
+	m := usecase.BuildManifest("0.6.0", from, to, generatedAt, features, auditEntries, 2, anomalies, 1)
 
 	if m.WardlineVersion != "0.6.0" {
 		t.Errorf("unexpected version: %q", m.WardlineVersion)
@@ -46,6 +46,9 @@ func TestBuildManifest_CountsAndHistogramsMixedInput(t *testing.T) {
 	if m.UnparsableAuditLinesSkipped != 2 {
 		t.Errorf("expected UnparsableAuditLinesSkipped 2, got %d", m.UnparsableAuditLinesSkipped)
 	}
+	if m.UnparsableAnomalyLinesSkipped != 1 {
+		t.Errorf("expected UnparsableAnomalyLinesSkipped 1, got %d", m.UnparsableAnomalyLinesSkipped)
+	}
 	if m.AnomalyEntryCount != 3 {
 		t.Errorf("expected AnomalyEntryCount 3, got %d", m.AnomalyEntryCount)
 	}
@@ -57,7 +60,7 @@ func TestBuildManifest_CountsAndHistogramsMixedInput(t *testing.T) {
 func TestBuildManifest_EmptyInputsProduceZeroCountsNoPanic(t *testing.T) {
 	from := time.Now()
 	to := from.Add(time.Hour)
-	m := usecase.BuildManifest("0.6.0", from, to, from, map[string]bool{}, nil, 0, nil)
+	m := usecase.BuildManifest("0.6.0", from, to, from, map[string]bool{}, nil, 0, nil, 0)
 
 	if m.AuditEntryCount != 0 || m.AnomalyEntryCount != 0 {
 		t.Errorf("expected zero counts for empty inputs, got %+v", m)

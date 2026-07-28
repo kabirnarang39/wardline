@@ -118,6 +118,15 @@ func (w *PostgresWriter) Close() error {
 	return w.db.Close()
 }
 
+// queryTimeout bounds Query, and is deliberately much larger than
+// writeTimeout: a write is a single-row INSERT on the request path, but a
+// Query is an operator-chosen range scan over the whole audit trail —
+// a quarter's evidence export on a busy proxy is millions of rows, which
+// a 5-second deadline aborts partway through for no good reason. This is
+// still a bound, not "no deadline": a blackholed connection must fail,
+// not hang the CLI forever.
+const queryTimeout = 5 * time.Minute
+
 const querySQL = `
 SELECT timestamp, identity, tool, decision, latency_ms, reason, trace_id
 FROM audit_entries
@@ -126,7 +135,7 @@ ORDER BY timestamp`
 
 // Query implements domain.Reader.
 func (w *PostgresWriter) Query(ctx context.Context, from, to time.Time) ([]domain.Entry, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 	rows, err := w.db.QueryContext(queryCtx, querySQL, from, to)
 	if err != nil {
