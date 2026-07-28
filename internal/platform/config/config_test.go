@@ -699,3 +699,46 @@ audit:
 		t.Fatalf("both streams on stdout must stay valid, got %v", err)
 	}
 }
+
+func TestLoad_CredentialSigningKeyFileUnsetNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "./credentials.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Credential.SigningKeyFile != "" {
+		t.Errorf("expected empty SigningKeyFile when unset, got %q", cfg.Credential.SigningKeyFile)
+	}
+}
+
+func TestLoad_CredentialSigningKeyFileSetPassesThrough(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "./credentials.yaml"
+  signing_key_file: "./signing-key.pem"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Credential.SigningKeyFile != "./signing-key.pem" {
+		t.Errorf("unexpected SigningKeyFile: %q", cfg.Credential.SigningKeyFile)
+	}
+}
