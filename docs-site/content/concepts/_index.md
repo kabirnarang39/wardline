@@ -2,6 +2,6 @@
 title: "Concepts"
 ---
 
-The mental model behind Wardline: how identity, policy, budget, and audit fit
-together as a control plane in front of AI agent traffic. Read this before
-diving into individual features if you want the "why", not just the "how".
+The mental model behind Wardline: how it's built, how identity and
+policy decisions work, which policy backend to pick, and where the audit
+trail goes. Read this once — every feature page after this assumes it.
