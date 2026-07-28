@@ -1,7 +1,13 @@
 package adapter
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +16,7 @@ import (
 )
 
 func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +40,7 @@ func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +60,7 @@ func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,8 +90,8 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
-	iv1, _ := NewJWTIssuerVerifier()
-	iv2, _ := NewJWTIssuerVerifier()
+	iv1, _ := NewJWTIssuerVerifier("")
+	iv2, _ := NewJWTIssuerVerifier("")
 	token, _ := iv1.Issue("agent-abc123")
 	_, err := iv2.Verify(token)
 	if !errors.Is(err, domain.ErrTokenInvalid) {
@@ -94,7 +100,7 @@ func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,12 +118,111 @@ func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_MalformedTokenFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier()
+	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	_, err = iv.Verify("not-a-jwt-at-all")
 	if !errors.Is(err, domain.ErrTokenInvalid) {
 		t.Errorf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+func writeTestRSAKey(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal test key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	path := filepath.Join(t.TempDir(), "signing-key.pem")
+	if err := os.WriteFile(path, pemBytes, 0600); err != nil {
+		t.Fatalf("write test key: %v", err)
+	}
+	return path
+}
+
+func TestNewJWTIssuerVerifier_EmptyPathGeneratesFreshKeyAsToday(t *testing.T) {
+	j, err := NewJWTIssuerVerifier("")
+	if err != nil {
+		t.Fatalf("NewJWTIssuerVerifier(\"\"): %v", err)
+	}
+	token, err := j.Issue("agent-abc123")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := j.Verify(token); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestNewJWTIssuerVerifier_SameKeyFile_TwoInstancesVerifyEachOthersTokens(t *testing.T) {
+	keyPath := writeTestRSAKey(t)
+
+	replicaA, err := NewJWTIssuerVerifier(keyPath)
+	if err != nil {
+		t.Fatalf("replicaA: %v", err)
+	}
+	replicaB, err := NewJWTIssuerVerifier(keyPath)
+	if err != nil {
+		t.Fatalf("replicaB: %v", err)
+	}
+
+	token, err := replicaA.Issue("agent-abc123")
+	if err != nil {
+		t.Fatalf("Issue on replicaA: %v", err)
+	}
+
+	claims, err := replicaB.Verify(token)
+	if err != nil {
+		t.Fatalf("expected replicaB to verify a token issued by replicaA (same key file), got: %v", err)
+	}
+	if claims.Subject != "agent-abc123" {
+		t.Errorf("unexpected subject: %q", claims.Subject)
+	}
+}
+
+func TestNewJWTIssuerVerifier_DifferentKeyFiles_TokenFromOneFailsOnTheOther(t *testing.T) {
+	keyPathA := writeTestRSAKey(t)
+	keyPathB := writeTestRSAKey(t)
+
+	replicaA, err := NewJWTIssuerVerifier(keyPathA)
+	if err != nil {
+		t.Fatalf("replicaA: %v", err)
+	}
+	replicaB, err := NewJWTIssuerVerifier(keyPathB)
+	if err != nil {
+		t.Fatalf("replicaB: %v", err)
+	}
+
+	token, err := replicaA.Issue("agent-abc123")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	if _, err := replicaB.Verify(token); err == nil {
+		t.Fatal("expected verification to fail across two different signing keys, got success")
+	}
+}
+
+func TestNewJWTIssuerVerifier_MissingKeyFileErrors(t *testing.T) {
+	_, err := NewJWTIssuerVerifier(filepath.Join(t.TempDir(), "does-not-exist.pem"))
+	if err == nil {
+		t.Fatal("expected an error for a missing key file")
+	}
+}
+
+func TestNewJWTIssuerVerifier_MalformedKeyFileErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad-key.pem")
+	if err := os.WriteFile(path, []byte("not a real key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewJWTIssuerVerifier(path)
+	if err == nil {
+		t.Fatal("expected an error for a malformed key file")
 	}
 }
