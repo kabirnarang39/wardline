@@ -2,6 +2,6 @@
 title: "Reference"
 ---
 
-Exact field-by-field documentation for Wardline's config file, CLI commands,
-and policy schema. Come here when you need the precise name, type, or default
-of a setting rather than a conceptual explanation.
+Exhaustive, table-driven field/flag references for every config file,
+policy backend, and CLI command — written for when you already know
+what you're configuring and just need the exact key.
