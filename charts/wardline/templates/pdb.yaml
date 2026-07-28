@@ -1,0 +1,13 @@
+{{- if gt (.Values.replicaCount | int) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wardline.fullname" . }}
+  labels:
+    {{- include "wardline.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "wardline.selectorLabels" . | nindent 6 }}
+{{- end }}
