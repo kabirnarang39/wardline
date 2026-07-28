@@ -6,11 +6,16 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 )
 
-// windowCounts tracks total calls and deny-decision calls within one
-// trailing window.
+// windowCounts tracks one identity's traffic within one trailing window.
+// total counts every audit entry (including MCP protocol-lifecycle
+// passthrough), because rate-spike is a volumetric signal over all of an
+// identity's traffic. toolCalls counts only policy-evaluated tool calls
+// and is deny-rate-spike's denominator -- see isToolCall in detector.go
+// for why protocol chatter must not dilute that ratio.
 type windowCounts struct {
-	total int
-	deny  int
+	total     int
+	toolCalls int
+	deny      int
 }
 
 // identityState is one identity's rolling behavioral history: known

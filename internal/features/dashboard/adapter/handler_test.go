@@ -44,7 +44,7 @@ type fakeAnomalySource struct {
 	entries []usecase.Alert
 }
 
-func (f fakeAnomalySource) Since(afterID int64, limit int) []usecase.Alert {
+func (f *fakeAnomalySource) Since(afterID int64, limit int) []usecase.Alert {
 	return f.entries
 }
 
@@ -232,7 +232,7 @@ func TestHandler_RootServesIndexHTML(t *testing.T) {
 }
 
 func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
-	anomalies := fakeAnomalySource{entries: []usecase.Alert{
+	anomalies := &fakeAnomalySource{entries: []usecase.Alert{
 		{ID: 1, Anomaly: anomalydomain.Anomaly{
 			Timestamp: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC),
 			Identity:  "alice",

@@ -1152,35 +1152,34 @@ default: allow
   anomaly_detection: true
 anomaly:
   output: "%s"
-  window_seconds: 1
+  window_seconds: 3
   rate_spike:
     enabled: true
     rate_multiplier: 2.0
     min_calls: 5`, anomalyPath))
 
 	doCall := func(identity string) {
-		req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/read_file", bytes.NewBufferString(`{}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("X-Wardline-Identity", identity)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		resp := postToolCall(t, listenAddr, identity, "read_file")
 		_ = resp.Body.Close()
 	}
 
-	// Baseline window: 5 calls.
+	// Baseline window: 5 calls. window_seconds is 3, not 1, purely for
+	// timing headroom: the burst below has to land inside a single window,
+	// and 11 sequential HTTP round-trips against a loaded CI runner can
+	// take longer than a 1s window, which would split the burst across two
+	// windows and silently stop it from ever exceeding the multiplier.
 	for i := 0; i < 5; i++ {
 		doCall("alice")
 	}
-	time.Sleep(1100 * time.Millisecond) // let the 1s window roll over
+	time.Sleep(3100 * time.Millisecond) // let the 3s window roll over
 	// Next window: 11 calls -- above both 5*2.0=10 and the min-calls floor.
 	for i := 0; i < 11; i++ {
 		doCall("alice")
 	}
-	time.Sleep(200 * time.Millisecond) // give the async LiveSink a moment to flush
+	// The whole path (Recorder -> MultiSink -> Detector -> JSONLWriter) is
+	// synchronous under the 11th request, so the anomaly line is already
+	// on disk by the time that request's response returns -- no sleep or
+	// polling needed here.
 
 	data, err := os.ReadFile(anomalyPath)
 	if err != nil {
@@ -1229,16 +1228,8 @@ default: allow
 `, "features:\n  web_ui: true\n")
 
 	for i := 0; i < 20; i++ {
-		req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/read_file", bytes.NewBufferString(`{}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("X-Wardline-Identity", "alice")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
+		callResp := postToolCall(t, listenAddr, "alice", "read_file")
+		_ = callResp.Body.Close()
 	}
 
 	resp, err := http.Get("http://" + listenAddr + "/dashboard/api/anomalies")
@@ -1248,5 +1239,89 @@ default: allow
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 from /dashboard/api/anomalies when anomaly_detection is off (web_ui on), got %d", resp.StatusCode)
+	}
+}
+
+// TestValidateConfigEndToEnd_AnomalyOutputNotCreated proves
+// `wardline validate-config` has no filesystem side effects: it must
+// report a valid anomaly block without creating anomaly.output, which an
+// earlier version did (O_CREATE on the real writer path) and which left a
+// stray empty file behind on every validation run.
+func TestValidateConfigEndToEnd_AnomalyOutputNotCreated(t *testing.T) {
+	dir := t.TempDir()
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf(`listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: %q
+audit:
+  output: stdout
+features:
+  anomaly_detection: true
+anomaly:
+  output: %q
+  window_seconds: 60
+`, policyPath, anomalyPath)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "validate-config", "--config", configPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("validate-config failed: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("config file is valid")) {
+		t.Fatalf("expected a valid verdict, got: %s", out)
+	}
+	if _, err := os.Stat(anomalyPath); !os.IsNotExist(err) {
+		t.Fatalf("validate-config must not create anomaly.output (%s), stat err = %v", anomalyPath, err)
+	}
+}
+
+// A bad anomaly.output directory is the one anomaly-output failure
+// validate-config still has to catch, since the operator otherwise only
+// learns about it when `serve` refuses to start.
+func TestValidateConfigEndToEnd_AnomalyOutputBadDirectoryFails(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf(`listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: %q
+audit:
+  output: stdout
+features:
+  anomaly_detection: true
+anomaly:
+  output: %q
+  window_seconds: 60
+`, policyPath, filepath.Join(dir, "no-such-dir", "anomaly.jsonl"))
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	if out, err := exec.Command(binPath, "validate-config", "--config", configPath).CombinedOutput(); err == nil {
+		t.Fatalf("expected a non-zero exit for an anomaly.output directory that doesn't exist, got: %s", out)
 	}
 }

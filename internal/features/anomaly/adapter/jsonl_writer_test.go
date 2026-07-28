@@ -56,4 +56,19 @@ func TestJSONLWriter_WritesOneJSONObjectPerLine(t *testing.T) {
 	if decoded["tool"] != "read_file" {
 		t.Errorf("expected the triggering entry's tool to be embedded, got %+v", decoded)
 	}
+
+	// a2 carries no triggering Entry (rate-spike is volumetric, not
+	// tool-scoped), so the omitempty-tagged fields must be absent from the
+	// line rather than present-and-empty -- a consumer distinguishes "this
+	// anomaly has no tool" from "the tool was the empty string".
+	var decoded2 map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &decoded2); err != nil {
+		t.Fatalf("line 2 is not valid JSON: %v", err)
+	}
+	if _, ok := decoded2["tool"]; ok {
+		t.Errorf("expected \"tool\" to be omitted for a zero-value Entry, got %+v", decoded2)
+	}
+	if _, ok := decoded2["decision"]; ok {
+		t.Errorf("expected \"decision\" to be omitted for a zero-value Entry, got %+v", decoded2)
+	}
 }

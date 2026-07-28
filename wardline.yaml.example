@@ -31,7 +31,12 @@ features: {}
 #   # required when features.rbac is true
 # anomaly:
 #   output: "./anomaly.jsonl"
-#   # required when features.anomaly_detection is true
+#   # required when features.anomaly_detection is true, and must not be the
+#   # same file as audit.output — the two streams have different schemas
+#   buffer_capacity: 1000        # optional — how many recent anomalies
+#                                # /dashboard/api/anomalies can serve; defaults to 1000
+#   gc_interval_seconds: 600     # optional — how often stale per-identity state is
+#                                # dropped (anything unseen for 2x this); defaults to 600
 #   window_seconds: 60
 #   rate_spike:
 #     enabled: true

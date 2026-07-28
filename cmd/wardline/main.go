@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -135,7 +136,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var anomalyBuffer *anomalyusecase.AlertBuffer
 	var anomalyGCStop chan struct{}
 	if anomalyDetectionEnabled {
-		anomalyWriter, err := buildAnomalyWriter(logger, cfg.Anomaly.Output)
+		anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
 		if err != nil {
 			logger.Error("failed to open anomaly output file", "path", cfg.Anomaly.Output, "error", err)
 			os.Exit(1)
@@ -158,6 +159,11 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
 	}
 
+	// Exhaustive over both flags rather than MultiSink{ringBuffer,
+	// anomalyDetector} with nil members: a nil *RingBuffer or *Detector
+	// placed in a LiveSink slot is a typed nil, which MultiSink's nil check
+	// cannot see, so it would be dispatched to and panic on the first
+	// request. Every sink reaching MultiSink here is already constructed.
 	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
 	switch {
 	case webUIEnabled && anomalyDetectionEnabled:
@@ -447,9 +453,17 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
-	if flags.NewStaticProvider(cfg.Features).Enabled("anomaly_detection") {
-		if _, err := buildAnomalyWriter(logger, cfg.Anomaly.Output); err != nil {
-			logger.Error("failed to open anomaly output", "path", cfg.Anomaly.Output, "error", err)
+	// Check that anomaly.output's parent directory exists rather than
+	// opening the file: validate-config must have no filesystem side
+	// effects, and buildAnomalyWriter's O_CREATE would leave a stray empty
+	// 0600 file (and a leaked descriptor) behind on every validation run.
+	// This catches the common failure -- a typo'd or not-yet-created
+	// directory -- which is the case runServe would otherwise only report
+	// at startup.
+	if flags.NewStaticProvider(cfg.Features).Enabled("anomaly_detection") && cfg.Anomaly.Output != "stdout" {
+		dir := filepath.Dir(cfg.Anomaly.Output)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			logger.Error("anomaly.output directory is not usable", "path", cfg.Anomaly.Output, "dir", dir, "error", err)
 			os.Exit(1)
 		}
 	}
@@ -504,7 +518,6 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 		DenyRateSpikeEnabled: cfg.DenyRateSpike.Enabled,
 		DenyRateThreshold:    cfg.DenyRateSpike.Threshold,
 		DenyRateMinCalls:     cfg.DenyRateSpike.MinCalls,
-		GCIntervalSeconds:    cfg.GCIntervalSeconds,
 	}
 }
 
@@ -513,9 +526,9 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 // as a separate function (not a parameter to buildAuditWriter) because
 // anomaly output is a distinct stream from the audit trail, opened only
 // when anomaly_detection is on, and returns an error instead of calling
-// os.Exit itself so the caller can log with its own context before
-// exiting.
-func buildAnomalyWriter(logger *slog.Logger, output string) (*anomalyadapter.JSONLWriter, error) {
+// os.Exit itself (hence no logger parameter, unlike buildAuditWriter) so
+// the caller can log with its own context before exiting.
+func buildAnomalyWriter(output string) (*anomalyadapter.JSONLWriter, error) {
 	if output == "stdout" {
 		return anomalyadapter.NewJSONLWriter(os.Stdout), nil
 	}

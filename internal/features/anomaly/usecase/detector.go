@@ -56,6 +56,29 @@ func (d *Detector) Publish(e auditdomain.Entry) {
 	}
 }
 
+// isToolCall reports whether e records a policy-evaluated tool call, as
+// opposed to the two other kinds of entry proxy/adapter.Handler writes:
+//
+//   - MCP protocol-lifecycle methods (decision "passthrough", Tool set to
+//     the method name -- "initialize", "notifications/initialized",
+//     "tools/list"). Every real MCP client sends these before its first
+//     tool call, so treating them as tools would flag three brand-new
+//     "novel tools" for every identity on every restart -- guaranteed
+//     false positives, exactly the alert fatigue a detect-and-log feature
+//     cannot afford.
+//   - Tool-less failures (decision "error", Tool "") recorded when the
+//     body is unreadable or the JSON-RPC envelope is unparsable. These
+//     would emit a novel_tool anomaly whose tool name is the empty string.
+//
+// Neither kind is a tool call, so neither may reach the novel-tool set or
+// deny-rate-spike's denominator (protocol chatter in that denominator
+// dilutes the deny ratio and can suppress a real deny spike). Both are
+// still counted in windowCounts.total: rate-spike is deliberately
+// volumetric over *all* of an identity's traffic.
+func isToolCall(e auditdomain.Entry) bool {
+	return e.Tool != "" && e.Decision != "passthrough"
+}
+
 func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -77,8 +100,11 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	}
 
 	st.cur.total++
-	if e.Decision == "deny" {
-		st.cur.deny++
+	if isToolCall(e) {
+		st.cur.toolCalls++
+		if e.Decision == "deny" {
+			st.cur.deny++
+		}
 	}
 
 	var toEmit []domain.Anomaly
@@ -135,6 +161,9 @@ func (d *Detector) checkRateSpike(e auditdomain.Entry, st *identityState) (domai
 // records it and fires, every later call to the same tool is a no-op --
 // no flaggedThisWindow bookkeeping needed.
 func (d *Detector) checkNovelTool(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
+	if !isToolCall(e) {
+		return domain.Anomaly{}, false
+	}
 	if _, seen := st.tools[e.Tool]; seen {
 		return domain.Anomaly{}, false
 	}
@@ -153,10 +182,14 @@ func (d *Detector) checkNovelTool(e auditdomain.Entry, st *identityState) (domai
 // st.flaggedThisWindow (keyed by KindDenyRateSpike) so a sustained deny
 // spike emits exactly one Anomaly per window, not one per deny call.
 func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
-	if st.cur.total < d.cfg.DenyRateMinCalls {
+	// toolCalls == 0 is checked separately from the floor: a
+	// DenyRateMinCalls of 0 (config validation rejects it, but Detector is
+	// constructible directly) would otherwise divide 0 by 0 into NaN, and
+	// "NaN <= threshold" is false -- i.e. it would flag on zero traffic.
+	if st.cur.toolCalls == 0 || st.cur.toolCalls < d.cfg.DenyRateMinCalls {
 		return domain.Anomaly{}, false
 	}
-	ratio := float64(st.cur.deny) / float64(st.cur.total)
+	ratio := float64(st.cur.deny) / float64(st.cur.toolCalls)
 	if ratio <= d.cfg.DenyRateThreshold {
 		return domain.Anomaly{}, false
 	}
