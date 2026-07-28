@@ -1607,6 +1607,10 @@ func TestPolicyPackEndToEnd_InstalledPackIsEnforcedByRealServe(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 
+	// "--output" (double dash) on purpose, even though the README documents
+	// "-output": Go's flag package treats both identically, and running the
+	// double-dash form through the real binary here covers the form the
+	// docs don't show.
 	installCmd := exec.Command(binPath, "policy-pack", "install", "read-only-single-identity", "--output", policyPath)
 	if out, err := installCmd.CombinedOutput(); err != nil {
 		t.Fatalf("policy-pack install failed: %v\n%s", err, out)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,13 @@ import (
 	policypackadapter "github.com/kabirnarang39/wardline/internal/features/policypack/adapter"
 	policypackusecase "github.com/kabirnarang39/wardline/internal/features/policypack/usecase"
 )
+
+// placeholderIdentityPrefix is what every shipped pack that names an
+// identity uses instead of a real one (REPLACE_WITH_YOUR_IDENTITY,
+// REPLACE_WITH_ADMIN_IDENTITY, ...). install greps the policy source for
+// it to decide whether to warn that the installed file still needs
+// editing before it will allow anything.
+const placeholderIdentityPrefix = "REPLACE_WITH_"
 
 // runPolicyPack dispatches wardline's "policy-pack" subcommand to its own
 // list/show/install sub-subcommands. No feature flag -- an explicitly-
@@ -132,18 +140,43 @@ func runPolicyPackInstallTo(w io.Writer, logger *slog.Logger, catalog *policypac
 		failUnknownPack(logger, catalog, name)
 		return false
 	}
-	if _, err := os.Stat(output); err == nil {
-		logger.Error("refusing to overwrite existing file", "path", output)
-		return false
-	} else if !os.IsNotExist(err) {
-		logger.Error("failed to check output path", "path", output, "error", err)
+	// O_CREATE|O_EXCL rather than os.Stat-then-os.WriteFile: open(2) with
+	// O_EXCL does not follow a final symlink, so it refuses a path that is
+	// a dangling symlink -- which os.Stat reports as "does not exist" and
+	// os.WriteFile would then follow, writing the policy file somewhere
+	// other than the -output path the operator asked for. It closes the
+	// stat/write race for free too.
+	f, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			logger.Error("refusing to overwrite existing file", "path", output)
+		} else {
+			logger.Error("failed to create policy file", "path", output, "error", err)
+		}
 		return false
 	}
-	if err := os.WriteFile(output, policySource, 0600); err != nil {
-		logger.Error("failed to write policy file", "path", output, "error", err)
+	_, writeErr := f.Write(policySource)
+	if closeErr := f.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		// Don't leave a truncated policy file behind for an operator to
+		// point wardline at.
+		_ = os.Remove(output)
+		logger.Error("failed to write policy file", "path", output, "error", writeErr)
 		return false
 	}
-	_, _ = fmt.Fprintf(w, "installed %q to %s\n\nAdd to your wardline.yaml:\n  policy_file: %s\n  policy_backend: %s\n", pack.Name, output, output, pack.Backend)
+
+	_, _ = fmt.Fprintf(w, "installed %q to %s\n", pack.Name, output)
+	if bytes.Contains(policySource, []byte(placeholderIdentityPrefix)) {
+		_, _ = fmt.Fprintf(w, "\nThis pack is a template, not a ready-to-serve policy: edit %s and replace\nevery %s* placeholder with a real identity first. Wardline's YAML\nengine matches identities exactly (no identity wildcard), so an unreplaced\nplaceholder matches nothing and every call falls through to the policy's\ndefault: deny.\n", output, placeholderIdentityPrefix)
+	}
+	// policy_backend is printed even though %q here is always the default
+	// ("yaml") today: an operator whose wardline.yaml already selects opa
+	// or cedar for other reasons needs to see that this pack won't load
+	// under that backend. Both keys are top-level in wardline.yaml, so
+	// they're printed unindented -- they're meant to be pasted as-is.
+	_, _ = fmt.Fprintf(w, "\nAdd these top-level keys to your wardline.yaml:\n\npolicy_file: %q\npolicy_backend: %q  # already the default, but this pack only loads under it\n", output, pack.Backend)
 	return true
 }
 

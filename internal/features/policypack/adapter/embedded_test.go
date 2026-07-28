@@ -2,9 +2,11 @@ package adapter_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	"github.com/kabirnarang39/wardline/internal/features/policypack/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/policypack/usecase"
 )
@@ -60,6 +62,46 @@ func TestPacks_EveryShippedPolicyFileParsesWithTheRealYAMLLoader(t *testing.T) {
 			if _, err := policyadapter.LoadFile(tmpFile); err != nil {
 				t.Errorf("policy.LoadFile rejected shipped pack %q: %v", p.Name, err)
 			}
+			// install prints "policy_backend: <backend>" for the operator
+			// to paste into wardline.yaml, so a pack's backend has to be a
+			// value config.validate actually accepts.
+			if p.Backend != "yaml" && p.Backend != "opa" && p.Backend != "cedar" {
+				t.Errorf("pack %q declares backend %q, which wardline.yaml won't accept", p.Name, p.Backend)
+			}
 		})
+	}
+}
+
+// TestPacks_AdminViewerSplit_SameIdentityForBothRolesFailsClosed pins the
+// rule ordering in admin-viewer-split. Nothing validates that an operator
+// renamed the two placeholder identities to two *different* strings, so
+// if they use one string for both, the collision must land on read-only
+// (the viewer block, which comes first) rather than silently granting
+// full access via the admin wildcard.
+func TestPacks_AdminViewerSplit_SameIdentityForBothRolesFailsClosed(t *testing.T) {
+	catalog := usecase.NewCatalog(adapter.Packs())
+	_, policySource, err := catalog.Get("admin-viewer-split")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	collided := strings.NewReplacer(
+		"REPLACE_WITH_ADMIN_IDENTITY", "same-identity",
+		"REPLACE_WITH_VIEWER_IDENTITY", "same-identity",
+	).Replace(string(policySource))
+
+	tmpFile := t.TempDir() + "/policy.yaml"
+	if err := os.WriteFile(tmpFile, []byte(collided), 0600); err != nil {
+		t.Fatalf("write temp policy file: %v", err)
+	}
+	matcher, err := policyadapter.LoadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	if got := matcher.Evaluate(policydomain.Context{Identity: "same-identity", Tool: "read_file"}).Effect; got != policydomain.EffectAllow {
+		t.Errorf("expected the collided identity to keep read access, got %q", got)
+	}
+	if got := matcher.Evaluate(policydomain.Context{Identity: "same-identity", Tool: "delete_file"}).Effect; got != policydomain.EffectDeny {
+		t.Errorf("renaming both placeholders to one identity silently granted it full access (got %q for a write tool) -- the admin wildcard rule must stay after the viewer block", got)
 	}
 }
