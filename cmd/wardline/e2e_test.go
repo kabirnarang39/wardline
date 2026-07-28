@@ -1813,8 +1813,11 @@ audit:
 		t.Fatalf("call replica B after revocation: %v", err)
 	}
 	_ = callResp2.Body.Close()
-	if callResp2.StatusCode != http.StatusUnauthorized && callResp2.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected the revoked token to be rejected by replica B (401 or 403), got %d (stderr: %s)", callResp2.StatusCode, stderrB.String())
+	// A revoked bearer token always fails at identityAuth.Authenticate and
+	// returns 401 specifically; 403 is only ever returned for a policy
+	// deny on an authenticated request, which can't happen here.
+	if callResp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected the revoked token to be rejected by replica B with 401, got %d (stderr: %s)", callResp2.StatusCode, stderrB.String())
 	}
 }
 
