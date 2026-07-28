@@ -1,7 +1,9 @@
 package main_test
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -187,6 +189,24 @@ func waitForServer(t *testing.T, addr string) {
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get(addr); err == nil {
 			_ = resp.Body.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("server at %s did not become ready", addr)
+}
+
+// waitForListener waits for a TCP listener at addr to accept connections,
+// without sending any request through it. Unlike waitForServer, this
+// never reaches wardline's proxy/audit path, so it's safe to use in tests
+// that assert exact audit-entry counts against the same server.
+func waitForListener(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			_ = conn.Close()
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -1380,5 +1400,190 @@ audit:
 	}
 	if _, statErr := os.Stat(tmpPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected %s to be cleaned up after a rename failure, stat err = %v", tmpPath, statErr)
+	}
+}
+
+// TestExportEvidenceEndToEnd_RealBundleFromRealBinary builds the real
+// wardline binary, runs `serve` against a file-backed audit output,
+// makes a couple of real proxied calls, stops the server, then runs
+// `export-evidence` as a second subprocess against the same config and
+// audit file, and inspects the resulting .tar.gz for the expected
+// contents.
+//
+// This test is self-contained (does not reuse startWardline, since that
+// helper doesn't expose the built binary path or config path needed to
+// invoke a second export-evidence subprocess against the same audit
+// file, and readBundleFile in main_test.go lives in package main, not
+// package main_test, so it isn't reachable from this file).
+func TestExportEvidenceEndToEnd_RealBundleFromRealBinary(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: "%s"
+`, listenAddr, upstream.URL, policyPath, auditPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	serveCmd := exec.Command(binPath, "serve", "--config", configPath)
+	var serveStderr safeBuffer
+	serveCmd.Stderr = &serveStderr
+	if err := serveCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	serveWaiter := waitFor(serveCmd)
+	t.Cleanup(func() {
+		_ = serveCmd.Process.Kill()
+		<-serveWaiter.done
+	})
+	// A bare TCP-dial readiness probe, not waitForServer's http.Get: an
+	// actual HTTP request would itself be proxied and audited (as a
+	// JSON-RPC parse-error decision, since it carries no body), throwing
+	// off the exact audit_entry_count/decision-count assertions below.
+	waitForListener(t, listenAddr)
+
+	before := time.Now().Add(-time.Minute)
+	allowResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if allowResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (stderr: %s)", allowResp.StatusCode, serveStderr.String())
+	}
+	denyResp := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d (stderr: %s)", denyResp.StatusCode, serveStderr.String())
+	}
+	after := time.Now().Add(time.Minute)
+
+	_ = serveCmd.Process.Kill()
+	<-serveWaiter.done
+
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+	exportCmd := exec.Command(binPath, "export-evidence",
+		"--config", configPath,
+		"--from", before.UTC().Format(time.RFC3339),
+		"--to", after.UTC().Format(time.RFC3339),
+		"--output", outputPath,
+	)
+	exportOut, err := exportCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("export-evidence failed: %v\n%s", err, exportOut)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("failed to read evidence bundle: %v", err)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	tr := tar.NewReader(gz)
+	files := map[string][]byte{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read: %v", err)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[hdr.Name] = content
+	}
+
+	var manifest struct {
+		AuditEntryCount     int            `json:"audit_entry_count"`
+		AuditDecisionCounts map[string]int `json:"audit_decision_counts"`
+	}
+	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
+		t.Fatalf("manifest.json is not valid JSON: %v", err)
+	}
+	if manifest.AuditEntryCount != 2 {
+		t.Errorf("expected 2 audit entries, got %d", manifest.AuditEntryCount)
+	}
+	if manifest.AuditDecisionCounts["allow"] != 1 || manifest.AuditDecisionCounts["deny"] != 1 {
+		t.Errorf("unexpected decision counts: %+v", manifest.AuditDecisionCounts)
+	}
+	if !bytes.Contains(files["audit.jsonl"], []byte(`"identity":"agent-abc123"`)) {
+		t.Errorf("expected audit.jsonl to contain the real audit entries, got %s", files["audit.jsonl"])
+	}
+	if _, ok := files["checksums.txt"]; !ok {
+		t.Error("expected checksums.txt in the bundle")
+	}
+}
+
+// TestExportEvidenceEndToEnd_StdoutAuditOutputFailsLoud proves
+// export-evidence refuses to run (and writes nothing) when the audit
+// trail isn't queryable.
+func TestExportEvidenceEndToEnd_StdoutAuditOutputFailsLoud(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: ":0"
+upstream: "http://127.0.0.1:1"
+policy_file: "%s"
+audit:
+  output: stdout
+`, policyPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	exportCmd := exec.Command(binPath, "export-evidence",
+		"--config", configPath,
+		"--from", "2020-01-01T00:00:00Z",
+		"--output", outputPath,
+	)
+	out, err := exportCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected export-evidence to fail when audit.output is stdout, got success: %s", out)
+	}
+	if !bytes.Contains(out, []byte("not queryable")) {
+		t.Errorf("expected a clear \"not queryable\" message, got: %s", out)
+	}
+	if _, err := os.Stat(outputPath); err == nil {
+		t.Error("expected no output file to be written on failure")
 	}
 }

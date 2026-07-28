@@ -254,6 +254,43 @@ rest of the dashboard, when `rbac` is on). ML-based detection is a
 tracked future direction, not part of this version: everything here is
 interpretable, rule/statistics-based, and needs no training data.
 
+## Compliance evidence export
+
+`wardline export-evidence -config wardline.yaml -from <RFC3339> [-to <RFC3339>] [-output <path>]`
+assembles a time-ranged evidence bundle for an auditor — no feature flag,
+this is an explicitly-invoked offline command like `validate-policy`/
+`validate-config`, not passive runtime behavior.
+
+`-from` is required (no "since forever" default); `-to` defaults to now;
+`-output` defaults to `./evidence-<from>-<to>.tar.gz`.
+
+The bundle is a `.tar.gz` containing:
+
+- `manifest.json` — Wardline version, the requested range, which feature
+  flags were enabled, and audit/anomaly entry counts with a
+  decision/kind breakdown.
+- `audit.jsonl` — every audit entry in range.
+- `anomalies.jsonl` — every anomaly in range, when `anomaly_detection`
+  is on and its output isn't `stdout` (omitted otherwise, not empty).
+- `policy_snapshot` and `policy_backend.txt` — the policy file's raw
+  source and which backend evaluates it (already exposed
+  unauthenticated via the dashboard, so this discloses nothing new).
+- `rbac_snapshot` — `rbac.yaml`'s raw source, when `rbac` is on (no
+  secrets live in that file's schema).
+- `checksums.txt` — a `sha256sum`-compatible listing of every other
+  file in the bundle; verify with `sha256sum -c checksums.txt`.
+
+**Never included:** `credentials.yaml` or any credential-issuance
+material in any form, the full parsed config, or any DSN. Only the
+files listed above.
+
+**Requires a queryable audit trail.** `audit.output: stdout` has
+nothing to read back — point `audit.output` at a file, or turn on
+`features.postgres_storage`, to use this command. See
+`docs/superpowers/specs/2026-07-28-compliance-evidence-export-design.md`
+for the full design, including what's deliberately deferred (bundle
+signing, a live evidence-browsing API, redacted identity inclusion).
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`
