@@ -56,6 +56,40 @@ type RBACConfig struct {
 	ConfigFile string `yaml:"config_file"`
 }
 
+// RateSpikeConfig configures the rate-spike heuristic. Shares
+// AnomalyConfig.WindowSeconds with DenyRateSpikeConfig -- see
+// docs/superpowers/specs/2026-07-28-anomaly-detection-design.md "Config".
+type RateSpikeConfig struct {
+	Enabled    bool    `yaml:"enabled"`
+	Multiplier float64 `yaml:"rate_multiplier"`
+	MinCalls   int     `yaml:"min_calls"`
+}
+
+// NovelToolConfig configures the novel-tool heuristic. No numeric
+// parameters -- it has no threshold, only an on/off switch.
+type NovelToolConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// DenyRateSpikeConfig configures the deny-rate-spike heuristic.
+type DenyRateSpikeConfig struct {
+	Enabled   bool    `yaml:"enabled"`
+	Threshold float64 `yaml:"threshold"`
+	MinCalls  int     `yaml:"min_calls"`
+}
+
+// AnomalyConfig configures anomaly detection. Only validated (and only
+// meaningful) when the anomaly_detection feature flag is on.
+type AnomalyConfig struct {
+	Output            string              `yaml:"output"`
+	BufferCapacity    int                 `yaml:"buffer_capacity"`
+	GCIntervalSeconds int                 `yaml:"gc_interval_seconds"`
+	WindowSeconds     int                 `yaml:"window_seconds"`
+	RateSpike         RateSpikeConfig     `yaml:"rate_spike"`
+	NovelTool         NovelToolConfig     `yaml:"novel_tool"`
+	DenyRateSpike     DenyRateSpikeConfig `yaml:"deny_rate_spike"`
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 — budget_enforcement and
 // otel_tracing are the two real ones so far; internal/platform/flags
@@ -70,6 +104,7 @@ type Config struct {
 	Tracing       TracingConfig    `yaml:"tracing"`
 	Credential    CredentialConfig `yaml:"credential"`
 	RBAC          RBACConfig       `yaml:"rbac"`
+	Anomaly       AnomalyConfig    `yaml:"anomaly"`
 	Features      map[string]bool  `yaml:"features"`
 
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
@@ -149,6 +184,26 @@ func (c *Config) validate() error {
 	}
 	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {
 		problems = append(problems, "rbac.config_file must not be empty when features.rbac is true")
+	}
+	if c.Features["anomaly_detection"] {
+		if c.Anomaly.Output == "" {
+			problems = append(problems, "anomaly.output must not be empty when features.anomaly_detection is true")
+		}
+		if c.Anomaly.WindowSeconds <= 0 {
+			problems = append(problems, "anomaly.window_seconds must be > 0 when features.anomaly_detection is true")
+		}
+		if c.Anomaly.RateSpike.Enabled && c.Anomaly.RateSpike.Multiplier <= 0 {
+			problems = append(problems, "anomaly.rate_spike.rate_multiplier must be > 0 when anomaly.rate_spike.enabled is true")
+		}
+		if c.Anomaly.RateSpike.Enabled && c.Anomaly.RateSpike.MinCalls <= 0 {
+			problems = append(problems, "anomaly.rate_spike.min_calls must be > 0 when anomaly.rate_spike.enabled is true")
+		}
+		if c.Anomaly.DenyRateSpike.Enabled && (c.Anomaly.DenyRateSpike.Threshold <= 0 || c.Anomaly.DenyRateSpike.Threshold > 1) {
+			problems = append(problems, "anomaly.deny_rate_spike.threshold must be in (0, 1] when anomaly.deny_rate_spike.enabled is true")
+		}
+		if c.Anomaly.DenyRateSpike.Enabled && c.Anomaly.DenyRateSpike.MinCalls <= 0 {
+			problems = append(problems, "anomaly.deny_rate_spike.min_calls must be > 0 when anomaly.deny_rate_spike.enabled is true")
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(problems, "\n  - "))
