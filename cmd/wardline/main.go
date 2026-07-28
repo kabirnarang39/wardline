@@ -206,18 +206,27 @@ func runServe(logger *slog.Logger, args []string) {
 
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 	var healthPinger func(ctx context.Context) error
+	var healthDB *sql.DB
 	if postgresStorageEnabled {
-		// A short-lived ping connection, independent of the audit
-		// writer's own pool -- /readyz proves Postgres is reachable
-		// right now, it doesn't need to share the audit path's
-		// connections or its longer queryTimeout.
+		// One small, long-lived pool dedicated to /readyz pings --
+		// independent of the audit writer's own pool (different
+		// lifecycle, doesn't need to share its longer queryTimeout),
+		// but shared across every poll rather than opening a fresh
+		// connection (a full TCP+auth handshake) on every single
+		// probe, which a ~10s Kubernetes probe cadence would otherwise
+		// pay on every request. sql.Open itself doesn't dial -- the
+		// pool connects lazily on first PingContext.
+		db, err := sql.Open("pgx", cfg.Audit.PostgresDSN)
+		if err != nil {
+			logger.Error("failed to open health-check database pool", "error", err)
+			os.Exit(1)
+		}
+		db.SetMaxOpenConns(2)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(5 * time.Minute)
+		healthDB = db
 		healthPinger = func(ctx context.Context) error {
-			db, err := sql.Open("pgx", cfg.Audit.PostgresDSN)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = db.Close() }()
-			return db.PingContext(ctx)
+			return healthDB.PingContext(ctx)
 		}
 	}
 	healthHandler := healthadapter.NewHandler(healthPinger)
@@ -246,6 +255,7 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	var credentialHandler *credentialadapter.Handler
+	var revokerCloser io.Closer
 	if credentialIssuanceEnabled {
 		bootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
 		if err != nil {
@@ -262,7 +272,6 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 
 		var revoker credentialdomain.Revoker
-		var revokerCloser io.Closer
 		if postgresStorageEnabled {
 			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN)
 			if err != nil {
@@ -275,9 +284,6 @@ func runServe(logger *slog.Logger, args []string) {
 		} else {
 			revoker = credentialadapter.NewRevocationList()
 			logger.Warn("credential revocation is in-process only; safe for exactly one replica -- enable features.postgres_storage to share revocation across replicas")
-		}
-		if revokerCloser != nil {
-			defer func() { _ = revokerCloser.Close() }()
 		}
 
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
@@ -367,6 +373,16 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("audit writer shutdown failed", "error", err)
 				}
 			}
+			if revokerCloser != nil {
+				if err := revokerCloser.Close(); err != nil {
+					logger.Error("revoker shutdown failed", "error", err)
+				}
+			}
+			if healthDB != nil {
+				if err := healthDB.Close(); err != nil {
+					logger.Error("health-check database pool shutdown failed", "error", err)
+				}
+			}
 			if anomalyGCStop != nil {
 				close(anomalyGCStop)
 			}
@@ -401,6 +417,16 @@ func runServe(logger *slog.Logger, args []string) {
 	if auditCloser != nil {
 		if err := auditCloser.Close(); err != nil {
 			logger.Error("audit writer shutdown failed", "error", err)
+		}
+	}
+	if revokerCloser != nil {
+		if err := revokerCloser.Close(); err != nil {
+			logger.Error("revoker shutdown failed", "error", err)
+		}
+	}
+	if healthDB != nil {
+		if err := healthDB.Close(); err != nil {
+			logger.Error("health-check database pool shutdown failed", "error", err)
 		}
 	}
 	if anomalyGCStop != nil {
@@ -446,15 +472,19 @@ func newRevokeAuthorizer(identityAuth *proxyadapter.IdentityAuthenticator, check
 }
 
 // buildTopHandler routes each key of extraRoutes to its handler, and
-// everything else to proxy. A route is only ever present in the map when
-// its owning feature flag is on — this is the one place that decision is
-// made, not scattered through request handling. Called with an empty map,
-// it returns the bare proxy handler unchanged (same as v0.1's
-// proxy-handles-everything behavior, and identical to today's behavior
-// when no optional feature is enabled). Any non-empty map routes through
-// an http.ServeMux, which applies stdlib path cleaning/redirects (e.g.
-// collapsing "//tool" or resolving "..") that do not happen when the map
-// is empty and the bare proxy handler receives the raw path.
+// everything else to proxy. Every route except /healthz and /readyz is
+// only ever present in the map when its owning feature flag is on — this
+// is the one place that decision is made, not scattered through request
+// handling. The empty-map fast path below (bare proxy handler, byte-for-
+// byte v0.1 pass-through with no path cleaning at all) is retained for
+// callers/tests that construct a map without the two unconditional health
+// routes, but runServe itself always registers /healthz and /readyz, so
+// in every real deployment extraRoutes is never empty and the mux branch
+// always runs. That means stdlib path cleaning/redirects (e.g. collapsing
+// "//tool" or resolving "..") now apply to every deployment, not only
+// ones with dashboard/credential/rbac routes on as before this cycle —
+// an accepted, necessary trade-off of giving health/readiness checks real
+// routes rather than special-casing them inside the proxy handler itself.
 func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) http.Handler {
 	if len(extraRoutes) == 0 {
 		return proxy
