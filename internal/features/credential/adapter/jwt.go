@@ -3,9 +3,12 @@ package adapter
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
@@ -24,22 +27,63 @@ const tokenTTL = 15 * time.Minute
 // 2048 is the current minimum considered secure for RS256.
 const rsaKeyBits = 2048
 
-// JWTIssuerVerifier signs and verifies RS256 JWTs with an RSA keypair
-// generated once at construction — restarting the process invalidates
-// every outstanding token, an accepted consequence of the "no shared
-// state across restarts" posture already true of the budget limiter and
-// dashboard ring buffer (see design doc "Config").
+// JWTIssuerVerifier signs and verifies RS256 JWTs with an RSA keypair.
+// When keyPath is empty, the keypair is generated fresh at construction
+// -- restarting the process (or running a second replica) invalidates
+// every outstanding token, since no two processes share it. When keyPath
+// names a PEM-encoded RSA private key (PKCS1 or PKCS8), every process
+// loading the same file signs and verifies with the identical keypair --
+// a token issued by one replica verifies correctly on another, since
+// they're mounted from the same Kubernetes Secret. See the design doc's
+// "Config" section for the full HA rationale and the operator-facing
+// warning logged when keyPath is empty (cmd/wardline/main.go).
 type JWTIssuerVerifier struct {
 	privateKey *rsa.PrivateKey
 	now        func() time.Time
 }
 
-func NewJWTIssuerVerifier() (*JWTIssuerVerifier, error) {
-	key, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
+func NewJWTIssuerVerifier(keyPath string) (*JWTIssuerVerifier, error) {
+	if keyPath == "" {
+		key, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
+		if err != nil {
+			return nil, fmt.Errorf("generate signing keypair: %w", err)
+		}
+		return &JWTIssuerVerifier{privateKey: key, now: time.Now}, nil
+	}
+
+	data, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("generate signing keypair: %w", err)
+		return nil, fmt.Errorf("read signing key file %s: %w", keyPath, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("signing key file %s: no PEM block found", keyPath)
+	}
+	key, err := parseRSAPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("signing key file %s: %w", keyPath, err)
 	}
 	return &JWTIssuerVerifier{privateKey: key, now: time.Now}, nil
+}
+
+// parseRSAPrivateKey accepts both PKCS1 ("RSA PRIVATE KEY") and PKCS8
+// ("PRIVATE KEY") PEM encodings -- openssl genrsa produces PKCS1 by
+// default, but PKCS8 is the more modern/general encoding, so both are
+// worth accepting rather than forcing an operator to know which their
+// tool produced.
+func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("not a valid PKCS1 or PKCS8 RSA private key: %w", err)
+	}
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("key is not an RSA private key (got %T)", parsed)
+	}
+	return rsaKey, nil
 }
 
 func (j *JWTIssuerVerifier) Issue(identity string) (string, error) {
