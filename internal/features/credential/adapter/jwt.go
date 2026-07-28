@@ -70,20 +70,36 @@ func NewJWTIssuerVerifier(keyPath string) (*JWTIssuerVerifier, error) {
 // ("PRIVATE KEY") PEM encodings -- openssl genrsa produces PKCS1 by
 // default, but PKCS8 is the more modern/general encoding, so both are
 // worth accepting rather than forcing an operator to know which their
-// tool produced.
+// tool produced. Every key returned from here, however it was encoded,
+// is checked against rsaKeyBits -- unlike the generated-fresh path
+// (which always produces a 2048-bit key by construction), an
+// operator-supplied key file could be anything, and a long-lived,
+// cross-replica-shared signing key is exactly the wrong place to
+// silently accept one weaker than what this project generates itself.
 func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
-	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
-		return key, nil
+	pkcs1Key, pkcs1Err := x509.ParsePKCS1PrivateKey(der)
+	if pkcs1Err == nil {
+		return checkRSAKeySize(pkcs1Key)
 	}
-	parsed, err := x509.ParsePKCS8PrivateKey(der)
-	if err != nil {
-		return nil, fmt.Errorf("not a valid PKCS1 or PKCS8 RSA private key: %w", err)
+	parsed, pkcs8Err := x509.ParsePKCS8PrivateKey(der)
+	if pkcs8Err != nil {
+		return nil, fmt.Errorf("not a valid PKCS1 (%v) or PKCS8 (%w) RSA private key", pkcs1Err, pkcs8Err)
 	}
 	rsaKey, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("key is not an RSA private key (got %T)", parsed)
 	}
-	return rsaKey, nil
+	return checkRSAKeySize(rsaKey)
+}
+
+// checkRSAKeySize rejects an operator-supplied key weaker than
+// rsaKeyBits -- the same floor this package already enforces on the
+// keypair it generates itself when keyPath is empty.
+func checkRSAKeySize(key *rsa.PrivateKey) (*rsa.PrivateKey, error) {
+	if bits := key.N.BitLen(); bits < rsaKeyBits {
+		return nil, fmt.Errorf("RSA key is %d bits, minimum %d required for RS256 signing", bits, rsaKeyBits)
+	}
+	return key, nil
 }
 
 func (j *JWTIssuerVerifier) Issue(identity string) (string, error) {

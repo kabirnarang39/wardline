@@ -3,7 +3,9 @@ package adapter
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -40,15 +42,18 @@ SELECT expires_at FROM revoked_identities WHERE identity = $1`
 // audit/adapter.PostgresWriter's connection-pool and idempotent-table
 // pattern exactly.
 type PostgresRevoker struct {
-	db  *sql.DB
-	now func() time.Time
+	db     *sql.DB
+	now    func() time.Time
+	logger *slog.Logger
 }
 
 // NewPostgresRevoker opens a connection pool to dsn, creates the
 // revoked_identities table if it doesn't already exist, and pings the
 // connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first revocation check.
-func NewPostgresRevoker(dsn string) (*PostgresRevoker, error) {
+// construction time, not on the first revocation check. logger is used
+// to surface IsRevoked query failures that would otherwise be
+// indistinguishable from a genuine "not revoked" result (see IsRevoked).
+func NewPostgresRevoker(dsn string, logger *slog.Logger) (*PostgresRevoker, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres connection: %w", err)
@@ -72,27 +77,36 @@ func NewPostgresRevoker(dsn string) (*PostgresRevoker, error) {
 		return nil, fmt.Errorf("create revoked_identities table: %w", err)
 	}
 
-	return &PostgresRevoker{db: db, now: time.Now}, nil
+	return &PostgresRevoker{db: db, now: time.Now, logger: logger}, nil
 }
 
-// Revoke implements domain.Revoker. Errors are deliberately not returned
-// (the interface has no error return) -- same posture as RevocationList's
-// Revoke, which also cannot fail short of an out-of-memory condition; a
-// Postgres write failure here is logged by nothing today, matching the
-// interface's existing contract, not a regression introduced by this
-// adapter.
-func (r *PostgresRevoker) Revoke(identity string, expiresAt time.Time) {
+// Revoke implements domain.Revoker. Unlike RevocationList's Revoke (an
+// in-memory map write that cannot fail), a Postgres write genuinely can
+// fail -- the error is returned so a caller (ultimately
+// /credentials/revoke's HTTP handler) can tell an operator the
+// revocation did NOT take effect, instead of returning success for a
+// security action that never happened.
+func (r *PostgresRevoker) Revoke(identity string, expiresAt time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
-	_, _ = r.db.ExecContext(ctx, upsertRevocationSQL, identity, expiresAt)
+	if _, err := r.db.ExecContext(ctx, upsertRevocationSQL, identity, expiresAt); err != nil {
+		return fmt.Errorf("write revocation for %q: %w", identity, err)
+	}
+	return nil
 }
 
-// IsRevoked implements domain.Revoker. A query error or a not-found row
-// is treated identically to "not revoked" -- fail-open would be the wrong
-// call for a security check, but a transient Postgres blip making every
-// identity look revoked (fail-closed) would take down the whole proxy
-// over a database hiccup, which is a worse outcome for an adapter that
-// exists to make credential issuance HA-safe, not less available.
+// IsRevoked implements domain.Revoker. A genuinely not-found row
+// (sql.ErrNoRows) is the real, silent "not revoked" case and is never
+// logged -- that's the expected, high-frequency result for every
+// non-revoked identity on every request. Any OTHER query error (a
+// connection failure, a timeout, etc.) is logged at Warn before falling
+// back to "not revoked": fail-open is still the right call here (a
+// transient Postgres blip making every identity look revoked would take
+// down the whole proxy over a database hiccup), but a fail-open decision
+// that's indistinguishable in the logs from the ordinary case is a
+// silent security gap, not an acceptable trade-off -- an operator
+// investigating "why did a revoked token still work" needs to be able to
+// find this in the logs.
 func (r *PostgresRevoker) IsRevoked(identity string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
@@ -100,6 +114,9 @@ func (r *PostgresRevoker) IsRevoked(identity string) bool {
 	var expiresAt time.Time
 	err := r.db.QueryRowContext(ctx, selectRevocationSQL, identity).Scan(&expiresAt)
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) && r.logger != nil {
+			r.logger.Warn("revocation check failed open: treating as not-revoked", "identity", identity, "error", err)
+		}
 		return false
 	}
 	return r.now().Before(expiresAt)

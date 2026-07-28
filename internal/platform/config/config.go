@@ -120,6 +120,19 @@ type Config struct {
 	Anomaly       AnomalyConfig    `yaml:"anomaly"`
 	Features      map[string]bool  `yaml:"features"`
 
+	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
+	// requests normally after receiving SIGTERM/SIGINT before it begins
+	// its own drain sequence (marking /readyz unready, then
+	// srv.Shutdown). This is an in-process substitute for a Kubernetes
+	// preStop hook: it buys the same real-world propagation time (for
+	// kube-proxy/the Endpoints controller to remove this pod from
+	// Service routing before it stops accepting connections) without
+	// depending on a shell existing in the container -- Wardline's own
+	// published image is distroless and has none. Zero (the default)
+	// preserves today's shutdown behavior exactly: draining begins the
+	// instant the signal arrives.
+	ShutdownDelaySeconds int `yaml:"shutdown_delay_seconds"`
+
 	// UpstreamURL is the parsed and validated form of Upstream, populated by
 	// validate(). Callers (cmd/wardline/main.go) should use this instead of
 	// re-parsing Upstream themselves.
@@ -226,6 +239,9 @@ func (c *Config) validate() error {
 		if c.Anomaly.DenyRateSpike.Enabled && c.Anomaly.DenyRateSpike.MinCalls <= 0 {
 			problems = append(problems, "anomaly.deny_rate_spike.min_calls must be > 0 when anomaly.deny_rate_spike.enabled is true")
 		}
+	}
+	if c.ShutdownDelaySeconds < 0 {
+		problems = append(problems, fmt.Sprintf("shutdown_delay_seconds must be >= 0, got %d", c.ShutdownDelaySeconds))
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config:\n  - %s", strings.Join(problems, "\n  - "))
