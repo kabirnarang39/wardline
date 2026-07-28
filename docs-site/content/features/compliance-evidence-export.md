@@ -1,7 +1,7 @@
 ---
 title: "Compliance Evidence Export"
 weight: 60
-summary: "Point-in-time signed-checksum evidence bundle export."
+summary: "Point-in-time checksum-verified evidence bundle export."
 ---
 
 A CLI command that exports a point-in-time evidence bundle (audit
@@ -9,8 +9,15 @@ entries, anomaly log, checksums) for a given time range, for compliance
 review:
 
 ```bash
-./wardline export-evidence --config wardline.yaml --from 2026-07-01 --to 2026-07-31 --output evidence.zip
+./wardline export-evidence --config wardline.yaml \
+  --from 2026-07-01T00:00:00Z --to 2026-07-31T00:00:00Z \
+  --output evidence.tar.gz
 ```
+
+`--from`/`--to` must be RFC3339 timestamps; `--output` defaults to
+`./evidence-<from>-<to>.tar.gz` if omitted. The bundle is a real
+`tar.gz` archive (stdlib `archive/tar` + `compress/gzip`), not a ZIP
+file — extract it with `tar xzf`, not `unzip`.
 
 ## Known limitations
 
