@@ -15,3 +15,16 @@ type LiveEntry struct {
 	Reason    string
 	TraceID   string
 }
+
+// AnomalyEntry is the dashboard's JSON view of one flagged anomaly --
+// deliberately its own type (not a reuse of anomaly/usecase.Alert)
+// so the dashboard's JSON wire shape doesn't silently change if that
+// usecase type's fields change for internal reasons.
+type AnomalyEntry struct {
+	ID        int64  `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Identity  string `json:"identity"`
+	Kind      string `json:"kind"`
+	Detail    string `json:"detail"`
+	Tool      string `json:"tool,omitempty"`
+}

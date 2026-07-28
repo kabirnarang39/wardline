@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 )
 
@@ -24,6 +25,15 @@ type StatusSource interface {
 	Status() domain.StatusInfo
 }
 
+// AnomalySource is the subset of anomaly/usecase.AlertBuffer's behavior
+// Handler depends on -- a narrow interface so tests can supply a fake
+// without importing the real usecase package, matching AuditSource's
+// pattern. anomaliesJSON below adapts its []usecase.Alert return value
+// into this package's own domain.AnomalyEntry wire shape.
+type AnomalySource interface {
+	Since(afterID int64, limit int) []anomalyusecase.Alert
+}
+
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
 // limit query parameter: a missing or invalid value defaults to 100; any
 // requested value above 1000 (the ring buffer's own capacity — see
@@ -39,23 +49,28 @@ const (
 // all read-only by construction — it has no dependency on any policy,
 // budget, or proxy domain type, so it cannot influence a proxied request.
 type Handler struct {
-	audit  AuditSource
-	status StatusSource
-	policy domain.PolicyInfo
-	mux    *http.ServeMux
+	audit     AuditSource
+	status    StatusSource
+	policy    domain.PolicyInfo
+	anomalies AnomalySource
+	mux       *http.ServeMux
 }
 
 // NewHandler expects the returned *Handler to be mounted at exactly
 // "/dashboard/" — its internal routes ("/dashboard/api/audit", etc.) are
 // absolute, not relative, so mounting it anywhere else (or via
-// http.StripPrefix) will break routing.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy}
+// http.StripPrefix) will break routing. anomalies may be nil (the
+// anomaly_detection feature is off) -- /dashboard/api/anomalies then
+// answers 404, the same "not wired" posture as
+// credential/adapter.Handler's nil RevokeAuthorizer.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
 	mux.HandleFunc("/dashboard/api/policy", h.handlePolicy)
 	mux.HandleFunc("/dashboard/api/status", h.handleStatus)
+	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -103,6 +118,41 @@ func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
 	entries := h.audit.Since(after, limit)
 	if entries == nil {
 		entries = []domain.LiveEntry{}
+	}
+	writeJSON(w, entries)
+}
+
+func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.anomalies == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	if err != nil {
+		after = 0
+	}
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		limit = defaultAuditLimit
+	}
+	if limit > maxAuditLimit {
+		limit = maxAuditLimit
+	}
+
+	alerts := h.anomalies.Since(after, limit)
+	entries := make([]domain.AnomalyEntry, 0, len(alerts))
+	for _, a := range alerts {
+		entries = append(entries, domain.AnomalyEntry{
+			ID:        a.ID,
+			Timestamp: a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Identity:  a.Identity,
+			Kind:      string(a.Kind),
+			Detail:    a.Detail,
+			Tool:      a.Entry.Tool,
+		})
 	}
 	writeJSON(w, entries)
 }
