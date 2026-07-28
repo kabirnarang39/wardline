@@ -13,6 +13,7 @@ import (
 
 	policypackadapter "github.com/kabirnarang39/wardline/internal/features/policypack/adapter"
 	policypackusecase "github.com/kabirnarang39/wardline/internal/features/policypack/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/config"
 )
 
 func discardLogger() *slog.Logger {
@@ -91,6 +92,11 @@ func TestReorderFlagsFirst(t *testing.T) {
 			want: []string{"-bogus", "deny-all-baseline"},
 		},
 		{
+			name: "double-dash --output after positional (the form e2e uses)",
+			args: []string{"deny-all-baseline", "--output", "/tmp/x.yaml"},
+			want: []string{"--output", "/tmp/x.yaml", "deny-all-baseline"},
+		},
+		{
 			name: "-- terminator makes everything after it positional",
 			args: []string{"--", "-output", "deny-all-baseline"},
 			want: []string{"--", "-output", "deny-all-baseline"},
@@ -145,6 +151,87 @@ func TestRunPolicyPackInstall_WritesFile(t *testing.T) {
 	}
 	if string(data) != "rules: []\ndefault: deny\n" {
 		t.Errorf("unexpected written content: %q", data)
+	}
+}
+
+func TestRunPolicyPackInstall_TemplatePack_WarnsAboutPlaceholderIdentities(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	var out bytes.Buffer
+
+	if !runPolicyPackInstallTo(&out, discardLogger(), catalog, "single-identity-full-access", filepath.Join(t.TempDir(), "policy.yaml")) {
+		t.Fatal("expected install to succeed")
+	}
+	if !strings.Contains(out.String(), placeholderIdentityPrefix) {
+		t.Errorf("expected a placeholder-identity warning for a template pack, got:\n%s", out.String())
+	}
+
+	// deny-all-baseline names no identity, so it needs no such warning.
+	out.Reset()
+	if !runPolicyPackInstallTo(&out, discardLogger(), catalog, "deny-all-baseline", filepath.Join(t.TempDir(), "policy.yaml")) {
+		t.Fatal("expected install to succeed")
+	}
+	if strings.Contains(out.String(), placeholderIdentityPrefix) {
+		t.Errorf("deny-all-baseline has no placeholders and should not be warned about, got:\n%s", out.String())
+	}
+}
+
+// TestRunPolicyPackInstall_PrintedSnippetIsValidTopLevelWardlineYAML pastes
+// install's printed snippet into a real config and loads it, so the
+// guidance can't drift into something an operator can't actually use.
+func TestRunPolicyPackInstall_PrintedSnippetIsValidTopLevelWardlineYAML(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	var out bytes.Buffer
+	if !runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs()), "deny-all-baseline", policyPath) {
+		t.Fatal("expected install to succeed")
+	}
+
+	var snippet []string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "policy_file:") || strings.HasPrefix(line, "policy_backend:") {
+			snippet = append(snippet, line)
+		}
+	}
+	if len(snippet) != 2 {
+		t.Fatalf("expected two unindented top-level config lines, got %v in:\n%s", snippet, out.String())
+	}
+
+	configPath := filepath.Join(dir, "wardline.yaml")
+	body := "listen: \"127.0.0.1:0\"\nupstream: \"http://127.0.0.1:1\"\naudit:\n  output: stdout\n" + strings.Join(snippet, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("install's printed snippet does not load as wardline.yaml: %v\n%s", err, body)
+	}
+	if cfg.PolicyFile != policyPath {
+		t.Errorf("expected policy_file %q, got %q", policyPath, cfg.PolicyFile)
+	}
+	if cfg.PolicyBackend != "yaml" {
+		t.Errorf("expected policy_backend %q, got %q", "yaml", cfg.PolicyBackend)
+	}
+}
+
+// TestRunPolicyPackInstall_RefusesToFollowADanglingSymlink guards the
+// reason install uses O_EXCL instead of os.Stat-then-os.WriteFile:
+// os.Stat reports a dangling symlink as "does not exist", and
+// os.WriteFile would then follow it and write the policy file outside
+// the requested -output path.
+func TestRunPolicyPackInstall_RefusesToFollowADanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.yaml")
+	outputPath := filepath.Join(dir, "policy.yaml")
+	if err := os.Symlink(target, outputPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	var out bytes.Buffer
+
+	if runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs()), "deny-all-baseline", outputPath) {
+		t.Fatal("expected install to refuse a path that is a dangling symlink")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("install wrote through the symlink to %s, outside the requested -output path", target)
 	}
 }
 

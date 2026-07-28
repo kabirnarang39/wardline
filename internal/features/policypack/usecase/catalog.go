@@ -31,6 +31,16 @@ func NewCatalog(fsys fs.FS) *Catalog {
 }
 
 // List returns every pack found in fsys, sorted by name.
+//
+// One unreadable pack fails the whole listing rather than being skipped
+// with a warning. That's deliberate: fsys is the fixed catalog Wardline
+// itself owns, ships inside its own binary, and covers with a test that
+// loads every pack through the real policy loader -- a broken pack there
+// is a Wardline build defect that should be loud, not a third-party pack
+// that shouldn't be allowed to take down `list` for everyone else. If
+// this ever loads packs Wardline doesn't own (a live registry, an
+// operator-supplied directory), skip-and-warn becomes the right
+// behaviour instead.
 func (c *Catalog) List() ([]domain.Pack, error) {
 	entries, err := fs.ReadDir(c.fsys, ".")
 	if err != nil {

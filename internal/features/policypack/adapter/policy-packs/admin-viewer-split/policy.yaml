@@ -1,11 +1,17 @@
 # Rename REPLACE_WITH_ADMIN_IDENTITY and REPLACE_WITH_VIEWER_IDENTITY to
-# your real identities, and edit the viewer's tool list to match what your
-# MCP server actually exposes -- read_file/list_files/get_status are
-# examples, not universal tool names.
+# your real identities -- they MUST be two DIFFERENT strings. Also edit
+# the viewer's tool list to match what your MCP server actually exposes
+# -- read_file/list_files/get_status are examples, not universal tool
+# names.
+#
+# The viewer's rules come first on purpose. Matching is first-match-wins
+# per identity, so with two distinct identities the order between the two
+# blocks changes nothing. But if both placeholders get renamed to the SAME
+# identity by mistake, viewer-first leaves that identity read-only instead
+# of silently granting it full access via the admin wildcard -- nothing
+# validates that the two identities differ, so this is the safe way to be
+# wrong.
 rules:
-  - identity: "REPLACE_WITH_ADMIN_IDENTITY"
-    tool: "*"
-    effect: allow
   - identity: "REPLACE_WITH_VIEWER_IDENTITY"
     tool: "read_file"
     effect: allow
@@ -18,4 +24,7 @@ rules:
   - identity: "REPLACE_WITH_VIEWER_IDENTITY"
     tool: "*"
     effect: deny
+  - identity: "REPLACE_WITH_ADMIN_IDENTITY"
+    tool: "*"
+    effect: allow
 default: deny

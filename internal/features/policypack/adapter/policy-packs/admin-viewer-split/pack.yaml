@@ -1,4 +1,4 @@
 name: admin-viewer-split
-description: "Two roles in one policy file: an admin identity with full access, a viewer identity limited to read/list tools. The policy-file analog of RBAC's built-in admin/viewer roles."
+description: "Two roles in one policy file: an admin identity with full access, a viewer identity limited to read/list tools. The policy-file analog of RBAC's built-in admin/viewer roles. Rename both placeholder identities to two DIFFERENT real identities before use."
 backend: yaml
 policy_file: policy.yaml
