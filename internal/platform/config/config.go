@@ -48,6 +48,17 @@ type TracingConfig struct {
 // flag is on.
 type CredentialConfig struct {
 	IdentitiesFile string `yaml:"identities_file"`
+
+	// SigningKeyFile optionally points at a PEM-encoded RSA private key
+	// (PKCS1 or PKCS8) every replica loads identically -- required for
+	// credential issuance to work correctly across more than one
+	// replica (see README.md "HA deployment"). Empty (the default)
+	// preserves the existing single-process generate-fresh-in-process
+	// behavior. Presence is not checked here (matching every other
+	// optional file-based config field in this struct) -- the real
+	// load-and-parse happens at wardline serve/validate-config
+	// construction time via credentialadapter.NewJWTIssuerVerifier.
+	SigningKeyFile string `yaml:"signing_key_file"`
 }
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
