@@ -478,6 +478,60 @@ any pruning/retention of the `audit_entries` table over time is not
 managed automatically — plan for both if you expect a long-running,
 high-volume deployment.
 
+## HA deployment
+
+Running more than one replica behind a load balancer is supported, with
+some capabilities staying explicitly per-replica.
+
+**Fully HA-safe today:**
+- **Audit trail**, when `features.postgres_storage` is on — every
+  replica writes to the same shared database (`audit.output`'s
+  JSONL-file mode is NOT shared across replicas; each replica would
+  write its own separate file).
+- **Credential issuance**, when `credential.signing_key_file` points at
+  a PEM RSA private key mounted identically on every replica (e.g. the
+  same Kubernetes `Secret`) — without it, every replica generates its
+  own signing keypair at startup, and a token issued by one replica
+  fails verification on another. Generate one with:
+  ```
+  openssl genrsa -out signing-key.pem 2048
+  ```
+- **Credential revocation**, when both `credential_issuance` and
+  `postgres_storage` are on — revocation is stored in the same shared
+  Postgres database instead of an in-memory map, so a revocation issued
+  against one replica is honored by every other replica on its very
+  next check.
+- **RBAC and policy**, as long as every replica is given the same
+  `rbac.yaml`/policy file (the same ConfigMap/Secret mount) and rolled
+  together on any change — there's no hot-reload, a config change needs
+  a restart on every replica, same as a single-replica deployment.
+- **Health and readiness**: `GET /healthz` (liveness — always `200` once
+  the process has started; deliberately never depends on an external
+  dependency) and `GET /readyz` (readiness — `503` for the entire
+  duration of graceful shutdown, and, when `postgres_storage` is on,
+  `503` if Postgres is unreachable). Neither route is proxied to the
+  upstream or recorded in the audit trail. Point a load balancer or
+  Kubernetes readiness probe at `/readyz` — this is what lets a rolling
+  deploy pull a draining pod out of rotation before it starts refusing
+  connections, instead of dropping in-flight requests.
+
+**Still per-replica, by design, not yet cluster-aware:**
+- **Budget enforcement** — each replica enforces the configured limit
+  independently, so the effective global limit scales with the number
+  of replicas behind the load balancer (2 replicas ≈ 2× the configured
+  per-window limit). A shared/distributed counter store is a larger
+  design left for a future cycle.
+- **Anomaly detection** — each replica's heuristics only see the
+  fraction of an identity's traffic that lands on that replica, so a
+  real spike split evenly across replicas may not cross any single
+  replica's threshold. Same "future cycle" caveat as budget enforcement.
+- **The dashboard's live audit view** — `/dashboard/api/audit` reflects
+  only the traffic that landed on the specific replica answering that
+  request, not a cluster-wide view.
+
+See `docs/superpowers/specs/2026-07-29-ha-deployment-design.md` for the
+full design and rationale.
+
 ## Kubernetes / Helm
 
 A Helm chart is available at `charts/wardline/` for deploying Wardline

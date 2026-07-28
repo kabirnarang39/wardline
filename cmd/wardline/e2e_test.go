@@ -1665,3 +1665,306 @@ audit:
 		t.Fatalf("expected 403 for a different identity (pack's default: deny), got %d (stderr: %s)", otherIdentityResp.StatusCode, serveStderr.String())
 	}
 }
+
+// TestHAEndToEnd_TwoReplicasShareSigningKeyAndRevocation is the actual
+// "does HA work" proof for this cycle: two real wardline serve
+// subprocesses, started with the SAME signing key file and the SAME
+// postgres_storage DSN, simulating two replicas behind a load balancer.
+// A token issued by hitting replica A's /credentials/token is used
+// successfully against replica B (proving cross-replica signature
+// verification), then a revocation issued against replica A is honored
+// by replica B on the very next call (proving cross-replica revocation
+// propagation through the shared Postgres table).
+func TestHAEndToEnd_TwoReplicasShareSigningKeyAndRevocation(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTableE2E(t, dsn)
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	keyPath := filepath.Join(dir, "signing-key.pem")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	genKey := exec.Command("openssl", "genrsa", "-out", keyPath, "2048")
+	if out, err := genKey.CombinedOutput(); err != nil {
+		t.Fatalf("generate test signing key: %v\n%s", err, out)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	addrA := reserveAddr(t)
+	addrB := reserveAddr(t)
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: agent-abc123
+    secret: "test-secret-at-least-this-long"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	startReplica := func(listenAddr string) (*exec.Cmd, *cmdWaiter, *safeBuffer) {
+		configPath := filepath.Join(dir, listenAddr+"-wardline.yaml")
+		if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  credential_issuance: true
+  postgres_storage: true
+credential:
+  identities_file: "%s"
+  signing_key_file: "%s"
+audit:
+  postgres_dsn: "%s"
+`, listenAddr, upstream.URL, policyPath, credentialsPath, keyPath, dsn)), 0644); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binPath, "serve", "--config", configPath)
+		stderr := &safeBuffer{}
+		cmd.Stderr = stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start replica at %s: %v", listenAddr, err)
+		}
+		waiter := waitFor(cmd)
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			<-waiter.done
+		})
+		waitForListener(t, listenAddr)
+		return cmd, waiter, stderr
+	}
+
+	_, _, stderrA := startReplica(addrA)
+	_, _, stderrB := startReplica(addrB)
+
+	// Issue a token against replica A.
+	tokenResp, err := http.Post("http://"+addrA+"/credentials/token", "application/json",
+		strings.NewReader(`{"identity":"agent-abc123","secret":"test-secret-at-least-this-long"}`))
+	if err != nil {
+		t.Fatalf("issue token against replica A: %v", err)
+	}
+	defer func() { _ = tokenResp.Body.Close() }()
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 issuing token from replica A, got %d (stderr: %s)", tokenResp.StatusCode, stderrA.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty token")
+	}
+
+	// Use that token against replica B -- proves cross-replica signature
+	// verification (same signing key file).
+	callReq, err := http.NewRequest(http.MethodPost, "http://"+addrB, strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callReq.Header.Set("Authorization", "Bearer "+tokenBody.Token)
+	callResp, err := http.DefaultClient.Do(callReq)
+	if err != nil {
+		t.Fatalf("call replica B with replica A's token: %v", err)
+	}
+	_ = callResp.Body.Close()
+	if callResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 calling replica B with replica A's token, got %d (stderr: %s)", callResp.StatusCode, stderrB.String())
+	}
+
+	// Revoke the identity against replica A.
+	revokeReq, err := http.NewRequest(http.MethodPost, "http://"+addrA+"/credentials/revoke", strings.NewReader(`{"identity":"agent-abc123"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeResp, err := http.DefaultClient.Do(revokeReq)
+	if err != nil {
+		t.Fatalf("revoke against replica A: %v", err)
+	}
+	_ = revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 revoking against replica A, got %d (stderr: %s)", revokeResp.StatusCode, stderrA.String())
+	}
+
+	// The SAME token, now used against replica B again, must be rejected
+	// -- proves cross-replica revocation propagation through the shared
+	// Postgres table.
+	callReq2, err := http.NewRequest(http.MethodPost, "http://"+addrB, strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callReq2.Header.Set("Authorization", "Bearer "+tokenBody.Token)
+	callResp2, err := http.DefaultClient.Do(callReq2)
+	if err != nil {
+		t.Fatalf("call replica B after revocation: %v", err)
+	}
+	_ = callResp2.Body.Close()
+	if callResp2.StatusCode != http.StatusUnauthorized && callResp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected the revoked token to be rejected by replica B (401 or 403), got %d (stderr: %s)", callResp2.StatusCode, stderrB.String())
+	}
+}
+
+func testDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("WARDLINE_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WARDLINE_TEST_POSTGRES_DSN not set, skipping real-Postgres HA integration test")
+	}
+	return dsn
+}
+
+func dropRevokedIdentitiesTableE2E(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS revoked_identities`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+}
+
+// TestHealthEndToEnd_ReadyzFlipsToUnreadyDuringShutdown proves the real
+// zero-downtime-rolling-deploy behavior: /readyz answers 503 starting the
+// instant SIGTERM is sent, well before the process actually exits, so a
+// polling Kubernetes readiness probe has time to pull the pod out of
+// rotation during the drain window.
+func TestHealthEndToEnd_ReadyzFlipsToUnreadyDuringShutdown(t *testing.T) {
+	listenAddr, _, stderr, cmd, waiter := startWardline(t, "policy.yaml", `default: allow`, "")
+
+	readyResp, err := http.Get("http://" + listenAddr + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz before shutdown: %v", err)
+	}
+	_ = readyResp.Body.Close()
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /readyz before shutdown, got %d (stderr: %s)", readyResp.StatusCode, stderr.String())
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM: %v", err)
+	}
+
+	// srv.Shutdown closes the listener to new connections essentially the
+	// moment it's called, right after SetDraining(true) -- the window in
+	// which a *new* connection can still land a 503 read is a handful of
+	// scheduler ticks wide, not the whole shutdown-timeout duration (that
+	// duration bounds draining *existing* in-flight connections instead).
+	// A 20ms poll interval is too coarse to reliably land inside that
+	// window under load (observed flaking in a full `go test ./...` run
+	// alongside many other subprocess-spawning tests); 2ms gives ~2500
+	// attempts over the 5s deadline instead of ~250, without changing
+	// what's being asserted.
+	deadline := time.Now().Add(5 * time.Second)
+	sawUnready := false
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + listenAddr + "/readyz")
+		if err != nil {
+			break // server has finished shutting down
+		}
+		code := resp.StatusCode
+		_ = resp.Body.Close()
+		if code == http.StatusServiceUnavailable {
+			sawUnready = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !sawUnready {
+		t.Fatalf("expected /readyz to return 503 at some point during the shutdown drain, never observed it (stderr: %s)", stderr.String())
+	}
+
+	<-waiter.done // drain the process exit so t.Cleanup's own Kill+Wait doesn't race this test's explicit SIGTERM
+}
+
+// TestHealthEndToEnd_HealthzAndReadyzAreNotAuditedOrProxied is self-contained
+// (does not reuse startWardline) because startWardline's own readiness
+// probe (waitForServer) is a bare http.Get through the real proxy path,
+// which itself lands an "error"-decision audit entry before this test's
+// body even runs -- defeating the "zero audit entries" assertion below
+// deterministically, not flakily. Same reasoning as
+// TestExportEvidenceEndToEnd_RealBundleFromRealBinary's use of
+// waitForListener over waitForServer.
+func TestHealthEndToEnd_HealthzAndReadyzAreNotAuditedOrProxied(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: "%s"
+`, listenAddr, upstream.URL, policyPath, auditPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	stderr := &safeBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wardline: %v", err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForListener(t, listenAddr)
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		resp, err := http.Get("http://" + listenAddr + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 from %s, got %d (stderr: %s)", path, resp.StatusCode, stderr.String())
+		}
+	}
+
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit file: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("expected /healthz and /readyz to produce zero audit entries, got: %s", data)
+	}
+}
