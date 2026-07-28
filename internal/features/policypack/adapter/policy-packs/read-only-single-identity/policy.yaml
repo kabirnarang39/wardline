@@ -1,0 +1,17 @@
+# Rename REPLACE_WITH_YOUR_IDENTITY to your real identity, and edit the
+# tool names below to match what your MCP server actually exposes --
+# read_file/list_files/get_status are examples, not universal tool names.
+rules:
+  - identity: "REPLACE_WITH_YOUR_IDENTITY"
+    tool: "read_file"
+    effect: allow
+  - identity: "REPLACE_WITH_YOUR_IDENTITY"
+    tool: "list_files"
+    effect: allow
+  - identity: "REPLACE_WITH_YOUR_IDENTITY"
+    tool: "get_status"
+    effect: allow
+  - identity: "REPLACE_WITH_YOUR_IDENTITY"
+    tool: "*"
+    effect: deny
+default: deny
