@@ -26,8 +26,8 @@ var builtinRoles = map[string]domain.Role{
 
 // allPermissions is the allowlist of grantable permission strings, built
 // from the domain constants rather than duplicated as literals — a new
-// domain.Permission constant is automatically recognized here without an
-// adapter-level edit.
+// domain.Permission constant still needs adding here, but at least it's
+// a single line, not a separate hand-copied string.
 var allPermissions = []domain.Permission{domain.PermissionDashboardView, domain.PermissionCredentialRevoke}
 
 func knownPermission(p string) bool {
