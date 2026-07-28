@@ -3,6 +3,7 @@ module github.com/kabirnarang39/wardline
 go 1.25.3
 
 require (
+	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/lestrrat-go/jwx/v3 v3.1.1
 	github.com/open-policy-agent/opa v1.18.2
@@ -49,6 +50,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
