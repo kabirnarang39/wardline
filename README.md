@@ -1,5 +1,7 @@
 # Wardline
 
+[Docs](https://kabirnarang39.github.io/wardline/docs/) · [Website](https://kabirnarang39.github.io/wardline/) · [Apache 2.0](LICENSE)
+
 Open source control-plane proxy for AI agents: identity, policy, budget, and
 audit for MCP and beyond.
 
