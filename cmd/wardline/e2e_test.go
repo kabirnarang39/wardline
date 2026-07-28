@@ -1589,3 +1589,75 @@ audit:
 		t.Error("expected no output file to be written on failure")
 	}
 }
+
+// TestPolicyPackEndToEnd_InstalledPackIsEnforcedByRealServe builds the
+// real wardline binary, installs the read-only-single-identity pack to a
+// temp path via a real "policy-pack install" subprocess, then starts a
+// real "serve" pointed at that installed file and proves the installed
+// rules are genuinely enforced: the placeholder identity can call a
+// tool the pack allows and is denied a tool it doesn't, and a completely
+// different identity is denied by the pack's own default.
+func TestPolicyPackEndToEnd_InstalledPackIsEnforcedByRealServe(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "installed-policy.yaml")
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	installCmd := exec.Command(binPath, "policy-pack", "install", "read-only-single-identity", "--output", policyPath)
+	if out, err := installCmd.CombinedOutput(); err != nil {
+		t.Fatalf("policy-pack install failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Fatalf("expected the installed policy file to exist: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	realListenAddr := reserveAddr(t)
+	configPath := filepath.Join(dir, "wardline.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: stdout
+`, realListenAddr, upstream.URL, policyPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	serveCmd := exec.Command(binPath, "serve", "--config", configPath)
+	var serveStderr safeBuffer
+	serveCmd.Stderr = &serveStderr
+	if err := serveCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(serveCmd)
+	t.Cleanup(func() {
+		_ = serveCmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+realListenAddr)
+
+	allowedResp := postToolCall(t, realListenAddr, "REPLACE_WITH_YOUR_IDENTITY", "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the pack's allowed tool, got %d (stderr: %s)", allowedResp.StatusCode, serveStderr.String())
+	}
+
+	deniedResp := postToolCall(t, realListenAddr, "REPLACE_WITH_YOUR_IDENTITY", "delete_file")
+	if deniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a tool the pack doesn't allow, got %d (stderr: %s)", deniedResp.StatusCode, serveStderr.String())
+	}
+
+	otherIdentityResp := postToolCall(t, realListenAddr, "someone-else", "read_file")
+	if otherIdentityResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a different identity (pack's default: deny), got %d (stderr: %s)", otherIdentityResp.StatusCode, serveStderr.String())
+	}
+}

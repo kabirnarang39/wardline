@@ -305,6 +305,36 @@ nothing to read back — point `audit.output` at a file, or turn on
 for the full design, including what's deliberately deferred (bundle
 signing, a live evidence-browsing API, redacted identity inclusion).
 
+## Policy packs
+
+`wardline policy-pack list` shows four starter policy files embedded in
+the binary itself — no network fetch, no separate download:
+
+- `deny-all-baseline` — denies everything; the safest starting point.
+- `single-identity-full-access` — one identity, full access, everything
+  else denied.
+- `read-only-single-identity` — one identity limited to read/list-shaped
+  tools, everything else denied.
+- `admin-viewer-split` — two roles in one file: an admin identity with
+  full access, a viewer identity limited to read/list tools.
+
+`wardline policy-pack show <name>` prints a pack's full policy source
+before you install it. `wardline policy-pack install <name> [-output
+<path>]` writes it to `<path>` (default `./policy.yaml`) — it refuses to
+overwrite an existing file, and never edits `wardline.yaml` itself; it
+prints the `policy_file`/`policy_backend` lines to add yourself.
+
+**Every pack except `deny-all-baseline` names a placeholder identity**
+(`REPLACE_WITH_YOUR_IDENTITY`, etc.) you're expected to rename to your
+own before using the installed file — Wardline's YAML policy engine
+matches identities exactly, with no wildcard, so no pack can express "any
+identity" the way its tool-matching rules can with `"*"`. Treat every
+installed pack as a starting template to edit, not a policy to apply
+verbatim. See
+`docs/superpowers/specs/2026-07-28-policy-pack-marketplace-design.md` for
+the full design, including why this ships as an embedded catalog rather
+than a live registry.
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`
