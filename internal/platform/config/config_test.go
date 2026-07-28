@@ -459,3 +459,57 @@ audit:
 		t.Fatal("expected error when credential_issuance is on but credential.identities_file is unset")
 	}
 }
+
+func TestLoad_RBACDisabledByDefaultNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RBAC.ConfigFile != "" {
+		t.Errorf("expected empty RBAC.ConfigFile when unset, got %q", cfg.RBAC.ConfigFile)
+	}
+}
+
+func TestLoad_RBACEnabledValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  rbac: true
+rbac:
+  config_file: "./rbac.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RBAC.ConfigFile != "./rbac.yaml" {
+		t.Errorf("unexpected RBAC.ConfigFile: %q", cfg.RBAC.ConfigFile)
+	}
+}
+
+func TestLoad_RBACEnabledMissingConfigFile(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  rbac: true
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when rbac is on but rbac.config_file is unset")
+	}
+}

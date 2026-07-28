@@ -28,6 +28,9 @@ import (
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+	rbacadapter "github.com/kabirnarang39/wardline/internal/features/rbac/adapter"
+	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
+	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
@@ -142,6 +145,35 @@ func runServe(logger *slog.Logger, args []string) {
 
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
+
+	rbacEnabled := featureFlags.Enabled("rbac")
+	var rbacChecker *rbacusecase.Checker
+	if rbacEnabled {
+		authorizer, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile)
+		if err != nil {
+			logger.Error("failed to load rbac file", "error", err)
+			os.Exit(1)
+		}
+		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
+		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
+	}
+	// revokeAuthorizer closes over identityAuth by reference: it's
+	// declared above (still HeaderIdentity{} at this point) and only
+	// reassigned to bearerIdentity inside the credentialIssuanceEnabled
+	// block below, but the closure is never invoked until a real request
+	// arrives, long after that reassignment has already happened -- so it
+	// always sees identityAuth's final value.
+	var revokeAuthorizer credentialadapter.RevokeAuthorizer
+	if rbacEnabled {
+		revokeAuthorizer = revokeAuthorizerFunc(func(r *http.Request) bool {
+			who, err := identityAuth.Authenticate(r)
+			if err != nil {
+				return false
+			}
+			return rbacChecker.Check(who, "default", rbacdomain.PermissionCredentialRevoke)
+		})
+	}
+
 	var credentialHandler *credentialadapter.Handler
 	if credentialIssuanceEnabled {
 		bootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
@@ -158,7 +190,7 @@ func runServe(logger *slog.Logger, args []string) {
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revocationList)
 		revocation := credentialusecase.NewRevocationService(revocationList)
-		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger)
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer)
 		identityAuth = proxyadapter.NewBearerIdentity(verification)
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
@@ -180,7 +212,11 @@ func runServe(logger *slog.Logger, args []string) {
 			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
 		)
 
-		extraRoutes["/dashboard/"] = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
+		if rbacEnabled {
+			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute)
+		}
+		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
 	}
 	if credentialIssuanceEnabled {
@@ -270,6 +306,12 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
 }
 
+// revokeAuthorizerFunc adapts a plain function to credentialadapter.RevokeAuthorizer,
+// so the closure built in runServe doesn't need its own named type there.
+type revokeAuthorizerFunc func(r *http.Request) bool
+
+func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
+
 // buildTopHandler routes each key of extraRoutes to its handler, and
 // everything else to proxy. A route is only ever present in the map when
 // its owning feature flag is on — this is the one place that decision is
@@ -327,9 +369,16 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 	path := fs.String("config", "wardline.yaml", "path to config file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
-	if _, err := config.Load(*path); err != nil {
+	cfg, err := config.Load(*path)
+	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
+	}
+	if cfg.Features["rbac"] {
+		if _, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile); err != nil {
+			logger.Error("failed to load rbac file", "error", err)
+			os.Exit(1)
+		}
 	}
 	fmt.Println("config file is valid")
 }
