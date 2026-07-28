@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wardline — Identity, policy, budget, and audit for every AI agent call</title>
+<meta name="description" content="Open source control-plane proxy for AI agents: identity, policy, budget, and audit for MCP and beyond.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site-header container">
+  <strong>Wardline</strong>
+  <nav>
+    <a href="https://github.com/kabirnarang39/wardline">GitHub</a>
+    <a href="/docs/">Docs</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero container">
+    <h1>Identity, policy, budget, and audit for every AI agent call</h1>
+    <p class="subhead">Wardline sits between your AI agents and everything they call — MCP servers, LLM providers, other agents — and enforces who's allowed to do what, how much, and logs every decision.</p>
+    <div class="cta-row">
+      <a class="primary" href="/docs/getting-started/quickstart/">Get started →</a>
+      <a href="https://github.com/kabirnarang39/wardline">View on GitHub →</a>
+    </div>
+    <pre class="terminal"><code>go build -o wardline ./cmd/wardline
+./wardline validate-policy --file policy.yaml.example
+./wardline validate-config --config wardline.yaml.example
+./wardline serve --config wardline.yaml.example
+
+# in another terminal
+curl -X POST http://localhost:8080 \
+  -H "X-Wardline-Identity: agent-abc123" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}'
+# -> allowed, forwarded upstream, and written to the audit log</code></pre>
+  </section>
+
+  <section class="numbered container">
+    <div class="num">01</div>
+    <h2>Without a control plane, every agent call is a trust decision you're not making</h2>
+    <div class="compare">
+      <div class="col without">
+        <strong>Without Wardline</strong>
+        <p>Any agent with network access to your MCP server can call any tool, with no per-identity limit, no audit trail, and no record of what happened after the fact.</p>
+      </div>
+      <div class="col">
+        <strong>With Wardline</strong>
+        <p>Every call carries an identity, is matched against an explicit allow/deny policy, counted against a budget, and written to a structured audit log — before it ever reaches your upstream server.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="numbered container">
+    <div class="num">02</div>
+    <h2>How it works</h2>
+    <img src="assets/diagram-flow.svg" alt="Request flow: Agent calls Wardline, which checks policy, then forwards to the upstream MCP server while writing to the audit log" width="760" height="140">
+    <pre class="terminal"><code># policy.yaml
+rules:
+  - identity: agent-abc123
+    tool: read_file
+    effect: allow</code></pre>
+  </section>
+
+  <section class="numbered container">
+    <div class="num">03</div>
+    <h2>What's inside</h2>
+    <ul class="feature-index">
+      <li><span class="tag">baseline</span><br><a href="/docs/features/baseline-proxy-policy-audit/">Proxy + policy + audit</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/credential-issuance/">Credential issuance</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/rbac/">RBAC</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/budget-enforcement/">Budget enforcement</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/anomaly-detection/">Anomaly detection</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/compliance-evidence-export/">Compliance evidence export</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/policy-pack-marketplace/">Policy-pack marketplace</a></li>
+      <li><span class="tag">optional</span><br><a href="/docs/features/ha-deployment/">HA deployment</a></li>
+    </ul>
+  </section>
+
+  <section class="numbered container">
+    <div class="num">04</div>
+    <h2>Production-ready</h2>
+    <p>Real <code>/healthz</code>/<code>/readyz</code> endpoints, a <code>PodDisruptionBudget</code>, pod anti-affinity, Postgres-backed shared revocation, and a persistent signing key so credential issuance is correct across replicas — not just possible. See the <a href="/docs/deployment/high-availability/">HA deployment guide</a>.</p>
+  </section>
+
+  <section class="numbered container">
+    <div class="num">05</div>
+    <h2>Get started</h2>
+    <pre class="terminal"><code>go build -o wardline ./cmd/wardline
+./wardline serve --config wardline.yaml.example</code></pre>
+    <p><a href="/docs/">Read the full docs →</a></p>
+  </section>
+</main>
+
+<footer class="site-footer container">
+  <div class="links">
+    <a href="/docs/">Docs</a>
+    <a href="https://github.com/kabirnarang39/wardline">GitHub</a>
+    <a href="https://github.com/kabirnarang39/wardline/blob/main/LICENSE">Apache 2.0</a>
+    <a href="https://github.com/kabirnarang39/wardline/issues">Issues</a>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
