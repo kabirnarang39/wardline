@@ -12,6 +12,7 @@ features: {}
 #   postgres_storage: true     # off by default — see README.md "Postgres storage"
 #   credential_issuance: true  # off by default — see README.md "Credential issuance"
 #   rbac: true                 # off by default — see README.md "RBAC"
+#   anomaly_detection: true    # off by default — see README.md "Anomaly detection"
 # audit:
 #   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
 #   # only used when features.postgres_storage is true; audit.output is
@@ -28,3 +29,17 @@ features: {}
 # rbac:
 #   config_file: "./rbac.yaml.example"
 #   # required when features.rbac is true
+# anomaly:
+#   output: "./anomaly.jsonl"
+#   # required when features.anomaly_detection is true
+#   window_seconds: 60
+#   rate_spike:
+#     enabled: true
+#     rate_multiplier: 3.0
+#     min_calls: 10
+#   novel_tool:
+#     enabled: true
+#   deny_rate_spike:
+#     enabled: true
+#     threshold: 0.5
+#     min_calls: 5

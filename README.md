@@ -216,6 +216,36 @@ same disclaimer as budget enforcement's: pair it with `credential_issuance`
 for real security value, or it's only as trustworthy as the
 unauthenticated `X-Wardline-Identity` header.
 
+## Anomaly detection
+
+Off by default. Opt in with `features.anomaly_detection: true` plus an
+`anomaly:` block (`output`, a JSONL file path or `"stdout"`, required when
+the flag is on).
+
+Three non-ML, rule/statistics heuristics run over the live audit stream,
+each independently toggleable:
+
+- **Rate spike** — an identity's call count in the current
+  `window_seconds` exceeds `rate_spike.rate_multiplier` times its own
+  previous window, with a `rate_spike.min_calls` floor so small absolute
+  jumps never fire. Self-baselining per identity, not a global threshold.
+- **Novel tool** — an identity's first-ever call to a given tool.
+- **Deny-rate spike** — an identity's deny-decision ratio within the
+  current window exceeds `deny_rate_spike.threshold`, with a
+  `deny_rate_spike.min_calls` floor.
+
+`rate_spike` and `deny_rate_spike` share one `window_seconds` — both are
+volumetric counts over the same identity traffic, so this deliberately
+uses one trailing window per identity rather than two independently-sized
+ones.
+
+**Detect-and-log only — never auto-block.** A flagged anomaly is written
+to `anomaly.output` as a JSON line and, when `web_ui` is also on, appears
+via `GET /dashboard/api/anomalies` (subject to the same RBAC gate as the
+rest of the dashboard, when `rbac` is on). ML-based detection is a
+tracked future direction, not part of this version — see
+`docs/superpowers/specs/2026-07-28-anomaly-detection-design.md`.
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`
