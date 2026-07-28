@@ -1137,3 +1137,116 @@ permit(
 		t.Fatalf("expected 403 for denied call, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
 	}
 }
+
+// TestServeEndToEnd_AnomalyDetectionRateSpike proves a real burst of
+// calls from one identity produces a JSONL anomaly line and shows up via
+// /dashboard/api/anomalies, through the real binary end to end.
+func TestServeEndToEnd_AnomalyDetectionRateSpike(t *testing.T) {
+	dir := t.TempDir()
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, fmt.Sprintf(`features:
+  web_ui: true
+  anomaly_detection: true
+anomaly:
+  output: "%s"
+  window_seconds: 1
+  rate_spike:
+    enabled: true
+    rate_multiplier: 2.0
+    min_calls: 5`, anomalyPath))
+
+	doCall := func(identity string) {
+		req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/read_file", bytes.NewBufferString(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Wardline-Identity", identity)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Baseline window: 5 calls.
+	for i := 0; i < 5; i++ {
+		doCall("alice")
+	}
+	time.Sleep(1100 * time.Millisecond) // let the 1s window roll over
+	// Next window: 11 calls -- above both 5*2.0=10 and the min-calls floor.
+	for i := 0; i < 11; i++ {
+		doCall("alice")
+	}
+	time.Sleep(200 * time.Millisecond) // give the async LiveSink a moment to flush
+
+	data, err := os.ReadFile(anomalyPath)
+	if err != nil {
+		t.Fatalf("failed to read anomaly output: %v (stderr: %s)", err, stderr.String())
+	}
+	if !bytes.Contains(data, []byte(`"kind":"rate_spike"`)) {
+		t.Fatalf("expected a rate_spike anomaly line in %s, got: %s", anomalyPath, data)
+	}
+
+	resp, err := http.Get("http://" + listenAddr + "/dashboard/api/anomalies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /dashboard/api/anomalies, got %d", resp.StatusCode)
+	}
+	var entries []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e["kind"] == "rate_spike" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a rate_spike entry via /dashboard/api/anomalies, got %+v", entries)
+	}
+}
+
+// TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput proves the
+// parent flag off means zero anomaly behavior, even under the same
+// burst that triggers a flag-on detection above. web_ui stays on (so the
+// dashboard route itself is mounted, isolating what this test targets)
+// while anomaly_detection is off, exercising the handler's documented
+// nil-AnomalySource posture (see the NewHandler doc comment in
+// internal/features/dashboard/adapter/handler.go: "anomalies may be nil
+// ... /dashboard/api/anomalies then answers 404") rather than the
+// unrelated "dashboard not mounted at all" case already covered by
+// TestServeEndToEnd_DashboardNotMountedWhenDisabled.
+func TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput(t *testing.T) {
+	listenAddr, _, _, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, "features:\n  web_ui: true\n")
+
+	for i := 0; i < 20; i++ {
+		req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/read_file", bytes.NewBufferString(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Wardline-Identity", "alice")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	resp, err := http.Get("http://" + listenAddr + "/dashboard/api/anomalies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 from /dashboard/api/anomalies when anomaly_detection is off (web_ui on), got %d", resp.StatusCode)
+	}
+}
