@@ -1325,3 +1325,60 @@ anomaly:
 		t.Fatalf("expected a non-zero exit for an anomaly.output directory that doesn't exist, got: %s", out)
 	}
 }
+
+// TestExportEvidenceEndToEnd_RenameFailureCleansUpTmpFile forces the
+// os.Rename(tmpPath, output) failure branch in runExportEvidence by
+// pointing -output at a path that already exists as a directory --
+// renaming a file onto an existing directory fails ("file exists"/"is a
+// directory") without needing to fake disk-full or cross-device errors.
+// Asserts the leftover tmpPath (output + ".tmp") is cleaned up, matching
+// the WriteBundle-failure and f.Close-failure branches right above it.
+func TestExportEvidenceEndToEnd_RenameFailureCleansUpTmpFile(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "wardline.yaml")
+	config := fmt.Sprintf(`listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: %q
+audit:
+  output: %q
+`, policyPath, auditPath)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := filepath.Join(dir, "evidence-output")
+	if err := os.Mkdir(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := outputDir + ".tmp"
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "export-evidence",
+		"--config", configPath,
+		"-from", "2020-01-01T00:00:00Z",
+		"-to", "2030-01-01T00:00:00Z",
+		"-output", outputDir,
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected export-evidence to fail when -output collides with an existing directory, got no error; output: %s", out)
+	}
+	if !bytes.Contains(out, []byte("failed to finalize output file")) {
+		t.Fatalf("expected the rename-failure log message, got: %s", out)
+	}
+	if _, statErr := os.Stat(tmpPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected %s to be cleaned up after a rename failure, stat err = %v", tmpPath, statErr)
+	}
+}
