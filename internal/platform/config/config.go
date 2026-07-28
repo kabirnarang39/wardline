@@ -64,7 +64,7 @@ type Config struct {
 	Listen        string           `yaml:"listen"`
 	Upstream      string           `yaml:"upstream"`
 	PolicyFile    string           `yaml:"policy_file"`
-	PolicyBackend string           `yaml:"policy_backend"` // "yaml" (default) or "opa"
+	PolicyBackend string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
 	Audit         AuditConfig      `yaml:"audit"`
 	Budget        BudgetConfig     `yaml:"budget"`
 	Tracing       TracingConfig    `yaml:"tracing"`
@@ -116,8 +116,8 @@ func (c *Config) validate() error {
 	}
 	if c.PolicyBackend == "" {
 		c.PolicyBackend = "yaml"
-	} else if c.PolicyBackend != "yaml" && c.PolicyBackend != "opa" {
-		problems = append(problems, fmt.Sprintf(`policy_backend must be "yaml" or "opa", got %q`, c.PolicyBackend))
+	} else if c.PolicyBackend != "yaml" && c.PolicyBackend != "opa" && c.PolicyBackend != "cedar" {
+		problems = append(problems, fmt.Sprintf(`policy_backend must be "yaml", "opa", or "cedar", got %q`, c.PolicyBackend))
 	}
 	if c.Features["postgres_storage"] {
 		if c.Audit.PostgresDSN == "" {
