@@ -39,9 +39,13 @@ type RevokeAuthorizer interface {
 
 // Handler serves the credential-issuance HTTP surface: POST
 // /credentials/token (agent-facing, network-reachable) and POST
-// /credentials/revoke (operator-facing, loopback-only — see design doc
-// "Error handling": an unauthenticated, network-exposed revoke endpoint
-// would itself be the class of gap this feature exists to close).
+// /credentials/revoke (operator-facing, loopback-only by default — see
+// design doc "Error handling": an unauthenticated, network-exposed revoke
+// endpoint would itself be the class of gap this feature exists to
+// close). When a RevokeAuthorizer is wired (rbac feature on), a
+// non-loopback caller may also reach /credentials/revoke, provided it
+// authenticates and holds credential:revoke — see
+// docs/superpowers/specs/2026-07-28-rbac-design.md.
 type Handler struct {
 	issuance         *usecase.IssuanceService
 	revocation       *usecase.RevocationService

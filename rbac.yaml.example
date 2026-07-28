@@ -1,9 +1,30 @@
+# Kubernetes-shaped RBAC: roles are named permission sets, bindings grant a
+# role to a subject (an identity string, resolved the same way the proxy
+# resolves identity — see README.md "RBAC"). Two built-in roles always
+# exist regardless of what's below: "viewer" (dashboard:view) and "admin"
+# (dashboard:view, credential:revoke) — a custom role below may not reuse
+# either name.
+
 roles:
+  # Custom role: only the two permissions that currently exist are
+  # grantable — "dashboard:view" and "credential:revoke".
   - name: auditor
     permissions: ["dashboard:view"]
+
 bindings:
+  # No "tenant" key -> ClusterRoleBinding: alice holds "admin" (including
+  # credential:revoke) globally, across every tenant.
+  #
+  # CAUTION: identity here is only as trustworthy as whatever resolves it.
+  # With features.credential_issuance off, identity is the raw, caller-set
+  # X-Wardline-Identity header — anyone can claim to be "alice" simply by
+  # setting that header, trivially granting themselves credential:revoke.
+  # Only rely on an rbac.yaml binding like this once credential_issuance
+  # (or another real identity authenticator) is also on.
   - subject: alice
     role: admin
+  # "tenant" set -> RoleBinding: bob holds "viewer" only within the
+  # "default" tenant (today's only tenant — see README.md "RBAC").
   - subject: bob
     role: viewer
     tenant: default

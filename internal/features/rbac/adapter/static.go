@@ -1,8 +1,12 @@
 package adapter
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -18,6 +22,31 @@ var builtinRoles = map[string]domain.Role{
 		domain.PermissionDashboardView,
 		domain.PermissionCredentialRevoke,
 	}},
+}
+
+// allPermissions is the allowlist of grantable permission strings, built
+// from the domain constants rather than duplicated as literals — a new
+// domain.Permission constant is automatically recognized here without an
+// adapter-level edit.
+var allPermissions = []domain.Permission{domain.PermissionDashboardView, domain.PermissionCredentialRevoke}
+
+func knownPermission(p string) bool {
+	for _, kp := range allPermissions {
+		if string(kp) == p {
+			return true
+		}
+	}
+	return false
+}
+
+// permissionListForError renders allPermissions for a load-error message,
+// e.g. "dashboard:view, credential:revoke".
+func permissionListForError() string {
+	names := make([]string, len(allPermissions))
+	for i, p := range allPermissions {
+		names[i] = string(p)
+	}
+	return strings.Join(names, ", ")
 }
 
 type roleConfig struct {
@@ -54,17 +83,20 @@ func LoadAuthorizer(path string) (*StaticAuthorizer, error) {
 		return nil, fmt.Errorf("read rbac file %s: %w", path, err)
 	}
 	var f rbacFile
-	if err := yaml.Unmarshal(data, &f); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+		// io.EOF means the file was empty (or all-comments) — an empty
+		// rbac.yaml is valid (built-in roles only, zero bindings), same as
+		// yaml.Unmarshal's prior behavior on an empty byte slice. Any other
+		// decode error (including an unknown field, e.g. a "tenant" typo)
+		// fails loudly instead of silently zero-valuing the field.
 		return nil, fmt.Errorf("parse rbac file %s: %w", path, err)
 	}
 
 	roles := make(map[string]domain.Role, len(builtinRoles)+len(f.Roles))
 	for name, r := range builtinRoles {
-		roles[name] = r
-	}
-	knownPermissions := map[string]bool{
-		"dashboard:view":    true,
-		"credential:revoke": true,
+		roles[name] = domain.Role{Name: r.Name, Permissions: append([]domain.Permission{}, r.Permissions...)}
 	}
 	for _, rc := range f.Roles {
 		if rc.Name == "" {
@@ -78,8 +110,8 @@ func LoadAuthorizer(path string) (*StaticAuthorizer, error) {
 		}
 		perms := make([]domain.Permission, 0, len(rc.Permissions))
 		for _, p := range rc.Permissions {
-			if !knownPermissions[p] {
-				return nil, fmt.Errorf("rbac file %s: role %q has unknown permission %q (want one of: dashboard:view, credential:revoke)", path, rc.Name, p)
+			if !knownPermission(p) {
+				return nil, fmt.Errorf("rbac file %s: role %q has unknown permission %q (want one of: %s)", path, rc.Name, p, permissionListForError())
 			}
 			perms = append(perms, domain.Permission(p))
 		}

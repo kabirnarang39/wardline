@@ -157,21 +157,16 @@ func runServe(logger *slog.Logger, args []string) {
 		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
 		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
 	}
-	// revokeAuthorizer closes over identityAuth by reference: it's
-	// declared above (still HeaderIdentity{} at this point) and only
+	// newRevokeAuthorizer is handed a pointer to the identityAuth variable:
+	// it's declared above (still HeaderIdentity{} at this point) and only
 	// reassigned to bearerIdentity inside the credentialIssuanceEnabled
-	// block below, but the closure is never invoked until a real request
-	// arrives, long after that reassignment has already happened -- so it
+	// block below, but the returned RevokeAuthorizer is never invoked
+	// until a real request arrives, long after that reassignment has
+	// already happened -- so dereferencing the pointer at that point
 	// always sees identityAuth's final value.
 	var revokeAuthorizer credentialadapter.RevokeAuthorizer
 	if rbacEnabled {
-		revokeAuthorizer = revokeAuthorizerFunc(func(r *http.Request) bool {
-			who, err := identityAuth.Authenticate(r)
-			if err != nil {
-				return false
-			}
-			return rbacChecker.Check(who, "default", rbacdomain.PermissionCredentialRevoke)
-		})
+		revokeAuthorizer = newRevokeAuthorizer(&identityAuth, rbacChecker, logger)
 	}
 
 	var credentialHandler *credentialadapter.Handler
@@ -214,7 +209,7 @@ func runServe(logger *slog.Logger, args []string) {
 
 		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets())
 		if rbacEnabled {
-			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute)
+			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
@@ -312,6 +307,26 @@ type revokeAuthorizerFunc func(r *http.Request) bool
 
 func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 
+// newRevokeAuthorizer builds the RevokeAuthorizer wired into
+// /credentials/revoke when rbac is on: a non-loopback caller is allowed
+// through only if identity resolves and the resolved identity holds
+// credential:revoke. identityAuth is a pointer so the returned
+// RevokeAuthorizer -- not invoked until a real request arrives, well
+// after runServe finishes wiring -- always sees identityAuth's final
+// value even though it's built before credential_issuance's later
+// reassignment of that variable (see the comment at this function's call
+// site in runServe).
+func newRevokeAuthorizer(identityAuth *proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker, logger *slog.Logger) credentialadapter.RevokeAuthorizer {
+	return revokeAuthorizerFunc(func(r *http.Request) bool {
+		who, err := (*identityAuth).Authenticate(r)
+		if err != nil {
+			logger.Warn("rbac revoke authorization: identity resolution failed", "remote_addr", r.RemoteAddr)
+			return false
+		}
+		return checker.Check(who, "default", rbacdomain.PermissionCredentialRevoke)
+	})
+}
+
 // buildTopHandler routes each key of extraRoutes to its handler, and
 // everything else to proxy. A route is only ever present in the map when
 // its owning feature flag is on — this is the one place that decision is
@@ -374,7 +389,7 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
-	if cfg.Features["rbac"] {
+	if flags.NewStaticProvider(cfg.Features).Enabled("rbac") {
 		if _, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile); err != nil {
 			logger.Error("failed to load rbac file", "error", err)
 			os.Exit(1)
