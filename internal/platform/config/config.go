@@ -57,8 +57,10 @@ type RBACConfig struct {
 }
 
 // RateSpikeConfig configures the rate-spike heuristic. Shares
-// AnomalyConfig.WindowSeconds with DenyRateSpikeConfig -- see
-// docs/superpowers/specs/2026-07-28-anomaly-detection-design.md "Config".
+// AnomalyConfig.WindowSeconds with DenyRateSpikeConfig: both are
+// volumetric counts over the same identity traffic, so one trailing
+// window per identity is deliberate rather than two independently-sized
+// ones (see README.md "Anomaly detection").
 type RateSpikeConfig struct {
 	Enabled    bool    `yaml:"enabled"`
 	Multiplier float64 `yaml:"rate_multiplier"`
@@ -188,6 +190,15 @@ func (c *Config) validate() error {
 	if c.Features["anomaly_detection"] {
 		if c.Anomaly.Output == "" {
 			problems = append(problems, "anomaly.output must not be empty when features.anomaly_detection is true")
+		}
+		// Anomaly records carry their own schema (kind/detail, no latency or
+		// trace fields) and would break every audit-log consumer's assumption
+		// that Decision is one of Entry's five documented values. Sharing
+		// "stdout" is fine and intended -- the two streams stay
+		// distinguishable there -- but sharing a file silently interleaves
+		// two schemas into one JSONL trail.
+		if c.Anomaly.Output != "" && c.Anomaly.Output != "stdout" && c.Anomaly.Output == c.Audit.Output {
+			problems = append(problems, fmt.Sprintf("anomaly.output must not be the same file as audit.output (both %q) — anomaly records use a different schema and would corrupt the audit trail", c.Anomaly.Output))
 		}
 		if c.Anomaly.WindowSeconds <= 0 {
 			problems = append(problems, "anomaly.window_seconds must be > 0 when features.anomaly_detection is true")

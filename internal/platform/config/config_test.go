@@ -662,3 +662,40 @@ audit:
 		t.Fatal("expected error when anomaly_detection is on but window_seconds is non-positive")
 	}
 }
+
+func TestLoad_AnomalyOutputSameFileAsAuditOutputErrors(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./wardline.jsonl"
+  window_seconds: 60
+audit:
+  output: "./wardline.jsonl"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when anomaly.output and audit.output name the same file")
+	}
+}
+
+func TestLoad_AnomalyAndAuditBothStdoutIsValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: stdout
+  window_seconds: 60
+audit:
+  output: stdout
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("both streams on stdout must stay valid, got %v", err)
+	}
+}

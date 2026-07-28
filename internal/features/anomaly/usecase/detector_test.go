@@ -365,3 +365,133 @@ func TestDetector_RateSpike_IsolatedPerIdentity(t *testing.T) {
 		}
 	}
 }
+
+// The proxy records more than tool calls on the same audit stream the
+// Detector consumes: MCP protocol-lifecycle methods land as decision
+// "passthrough" with Tool set to the method name, and unparsable bodies
+// land as decision "error" with Tool "". Neither is a tool call, and
+// neither may reach the novel-tool set -- otherwise every identity's
+// first handshake produces three guaranteed false positives.
+func TestDetector_NovelTool_IgnoresProtocolPassthroughAndToollessEntries(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: true}
+	d := usecase.NewDetector(cfg, writer, nil, nil, clock.now)
+
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "initialize", Decision: "passthrough"})
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "notifications/initialized", Decision: "passthrough"})
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "", Decision: "error"})
+
+	if len(writer.anomalies) != 0 {
+		t.Fatalf("expected no anomalies from protocol/tool-less entries, got %+v", writer.anomalies)
+	}
+
+	// A real tool call on the same identity must still flag.
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	if len(writer.anomalies) != 1 || writer.anomalies[0].Kind != domain.KindNovelTool {
+		t.Fatalf("expected the real tool call to still flag novel_tool, got %+v", writer.anomalies)
+	}
+}
+
+// Protocol passthrough entries must stay out of deny-rate-spike's
+// denominator: counting them dilutes the ratio and can suppress a real
+// deny spike (4 denies out of 5 tool calls is 0.8, but 4 out of 5 tool
+// calls plus 3 handshake entries is 0.5 -- at, not above, a 0.5
+// threshold).
+func TestDetector_DenyRateSpike_ProtocolPassthroughDoesNotDiluteRatio(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, clock.now)
+
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "initialize", Decision: "passthrough"})
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "notifications/initialized", Decision: "passthrough"})
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
+	for i := 0; i < 4; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "delete_file", Decision: "deny"})
+	}
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	found := false
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindDenyRateSpike {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a deny_rate_spike anomaly (4 denies of 5 tool calls = 0.8), got %+v", writer.anomalies)
+	}
+}
+
+// Rate spike stays volumetric over *all* of an identity's traffic, so
+// protocol passthrough still counts toward the window totals -- a flood
+// of handshake or unparsable requests is still a rate spike.
+func TestDetector_RateSpike_CountsProtocolPassthroughInWindowTotals(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, clock.now)
+
+	for i := 0; i < 10; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
+	}
+	clock.t = clock.t.Add(61 * time.Second)
+	for i := 0; i < 31; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
+	}
+
+	found := false
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindRateSpike {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a rate_spike anomaly from passthrough traffic alone, got %+v", writer.anomalies)
+	}
+}
+
+// Both volumetric heuristics latch on the same flaggedThisWindow map,
+// keyed by their own Kind. Firing one must not suppress the other, and a
+// window rotation must clear both.
+func TestDetector_RateAndDenySpikeLatchesDoNotCrossContaminate(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	cfg := baseCfg()
+	cfg.DenyRateSpikeEnabled = true
+	cfg.DenyRateThreshold = 0.5
+	cfg.DenyRateMinCalls = 5
+	d := usecase.NewDetector(cfg, writer, nil, nil, clock.now)
+
+	// Baseline window: 10 allows.
+	for i := 0; i < 10; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	}
+	clock.t = clock.t.Add(61 * time.Second)
+	// Spike window: 31 denies trips both the rate multiplier (10*3) and
+	// the deny ratio (1.0), each exactly once.
+	for i := 0; i < 31; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
+	}
+
+	counts := map[domain.Kind]int{}
+	for _, a := range writer.anomalies {
+		counts[a.Kind]++
+	}
+	if counts[domain.KindRateSpike] != 1 || counts[domain.KindDenyRateSpike] != 1 {
+		t.Fatalf("expected exactly one of each volumetric kind, got %+v", counts)
+	}
+
+	// Rotate: both latches must clear, so the same sustained pattern fires
+	// once more in the new window.
+	clock.t = clock.t.Add(61 * time.Second)
+	for i := 0; i < 100; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
+	}
+	counts = map[domain.Kind]int{}
+	for _, a := range writer.anomalies {
+		counts[a.Kind]++
+	}
+	if counts[domain.KindRateSpike] != 2 || counts[domain.KindDenyRateSpike] != 2 {
+		t.Fatalf("expected each latch to reset on window rotation, got %+v", counts)
+	}
+}

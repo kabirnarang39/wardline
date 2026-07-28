@@ -20,6 +20,4 @@ type HeuristicConfig struct {
 	DenyRateSpikeEnabled bool
 	DenyRateThreshold    float64
 	DenyRateMinCalls     int
-
-	GCIntervalSeconds int
 }

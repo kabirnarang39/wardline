@@ -26,10 +26,13 @@ type StatusSource interface {
 }
 
 // AnomalySource is the subset of anomaly/usecase.AlertBuffer's behavior
-// Handler depends on -- a narrow interface so tests can supply a fake
-// without importing the real usecase package, matching AuditSource's
-// pattern. anomaliesJSON below adapts its []usecase.Alert return value
-// into this package's own domain.AnomalyEntry wire shape.
+// Handler depends on -- one method, matching AuditSource's pattern.
+// Unlike AuditSource it does name the foreign usecase type in its
+// signature (usecase.Alert is the ID-plus-Anomaly pair AlertBuffer
+// allocates, and there is no dashboard-owned equivalent to return
+// instead), so a fake must import that package too. handleAnomalies
+// still converts to this package's own domain.AnomalyEntry before
+// writing, so the endpoint's wire shape is not tied to that type.
 type AnomalySource interface {
 	Since(afterID int64, limit int) []anomalyusecase.Alert
 }
@@ -99,21 +102,31 @@ func methodNotAllowed(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
-	if methodNotAllowed(w, r) {
-		return
-	}
+// pagination parses the after/limit query params shared by every
+// buffer-backed endpoint. A missing or unparsable value is not an error:
+// both endpoints treat bad input as "start from the beginning, default
+// page size" rather than 400, so a hand-typed URL degrades instead of
+// failing.
+func pagination(r *http.Request) (after int64, limit int) {
 	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	if err != nil {
 		after = 0
 	}
-	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, err = strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil || limit <= 0 {
 		limit = defaultAuditLimit
 	}
 	if limit > maxAuditLimit {
 		limit = maxAuditLimit
 	}
+	return after, limit
+}
+
+func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	after, limit := pagination(r)
 
 	entries := h.audit.Since(after, limit)
 	if entries == nil {
@@ -130,17 +143,7 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	if err != nil {
-		after = 0
-	}
-	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
-	if err != nil || limit <= 0 {
-		limit = defaultAuditLimit
-	}
-	if limit > maxAuditLimit {
-		limit = maxAuditLimit
-	}
+	after, limit := pagination(r)
 
 	alerts := h.anomalies.Since(after, limit)
 	entries := make([]domain.AnomalyEntry, 0, len(alerts))

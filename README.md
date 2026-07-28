@@ -180,8 +180,8 @@ token, the same "no shared state across restarts" posture already true of
 the budget limiter and dashboard ring buffer.
 
 mTLS/SPIFFE-style bootstrap and IdP federation (Okta, Entra, generic
-OIDC) are explicitly out of scope for this version — see
-`docs/superpowers/specs/2026-07-27-credential-issuance-design.md`.
+OIDC) are explicitly out of scope for this version: identities are
+bootstrapped from the static `credential.identities_file` only.
 
 ## RBAC
 
@@ -208,8 +208,8 @@ This cycle's tenant model is real but only one tenant exists:
 `RoleBinding`s are matched against the literal tenant `"default"`
 everywhere in Wardline today — true multi-tenant data isolation (a
 separate policy/audit/budget per tenant) is a larger, separate future
-change, not part of this version. See
-`docs/superpowers/specs/2026-07-28-rbac-design.md`.
+change, not part of this version — treat the tenant field as reserved
+for it rather than as a working isolation boundary.
 
 RBAC is only as strong as whatever resolves the caller's identity — the
 same disclaimer as budget enforcement's: pair it with `credential_issuance`
@@ -220,7 +220,9 @@ unauthenticated `X-Wardline-Identity` header.
 
 Off by default. Opt in with `features.anomaly_detection: true` plus an
 `anomaly:` block (`output`, a JSONL file path or `"stdout"`, required when
-the flag is on).
+the flag is on — and, when it's a file, it must not be the same file as
+`audit.output`: anomaly records carry a different schema and would corrupt
+the audit trail for anything parsing it).
 
 Three non-ML, rule/statistics heuristics run over the live audit stream,
 each independently toggleable:
@@ -229,22 +231,28 @@ each independently toggleable:
   `window_seconds` exceeds `rate_spike.rate_multiplier` times its own
   previous window, with a `rate_spike.min_calls` floor so small absolute
   jumps never fire. Self-baselining per identity, not a global threshold.
-- **Novel tool** — an identity's first-ever call to a given tool.
+- **Novel tool** — an identity's first-ever call to a given tool. Scoped
+  to real tool calls: MCP protocol-lifecycle methods (`initialize`,
+  `tools/list`, …) and unparsable requests are not tools, so a client's
+  handshake never registers as three novel tools.
 - **Deny-rate spike** — an identity's deny-decision ratio within the
   current window exceeds `deny_rate_spike.threshold`, with a
-  `deny_rate_spike.min_calls` floor.
+  `deny_rate_spike.min_calls` floor. Also tool-call-scoped, so protocol
+  chatter can't dilute the ratio out of range.
 
 `rate_spike` and `deny_rate_spike` share one `window_seconds` — both are
 volumetric counts over the same identity traffic, so this deliberately
 uses one trailing window per identity rather than two independently-sized
-ones.
+ones. Unlike the other two, `rate_spike` counts *all* of an identity's
+traffic, protocol methods and malformed requests included — a flood is a
+flood whatever shape it takes.
 
 **Detect-and-log only — never auto-block.** A flagged anomaly is written
 to `anomaly.output` as a JSON line and, when `web_ui` is also on, appears
 via `GET /dashboard/api/anomalies` (subject to the same RBAC gate as the
 rest of the dashboard, when `rbac` is on). ML-based detection is a
-tracked future direction, not part of this version — see
-`docs/superpowers/specs/2026-07-28-anomaly-detection-design.md`.
+tracked future direction, not part of this version: everything here is
+interpretable, rule/statistics-based, and needs no training data.
 
 ## Tracing
 
@@ -448,5 +456,5 @@ under node memory pressure) and will be rejected outright by a
 namespace `ResourceQuota` that requires requests — set `resources`
 explicitly if either applies to you.
 
-See `docs/superpowers/specs/2026-07-26-wardline-v0.1-design.md` for the full
-design and `CLAUDE.md` for engineering conventions.
+See `CLAUDE.md` for the architecture and engineering conventions this
+codebase is built to.
