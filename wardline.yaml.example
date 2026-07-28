@@ -11,6 +11,7 @@ features: {}
 #   web_ui: true               # off by default — see README.md "Dashboard"
 #   postgres_storage: true     # off by default — see README.md "Postgres storage"
 #   credential_issuance: true  # off by default — see README.md "Credential issuance"
+#   rbac: true                 # off by default — see README.md "RBAC"
 # audit:
 #   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
 #   # only used when features.postgres_storage is true; audit.output is
@@ -24,3 +25,6 @@ features: {}
 # credential:
 #   identities_file: "./credentials.yaml.example"
 #   # required when features.credential_issuance is true
+# rbac:
+#   config_file: "./rbac.yaml.example"
+#   # required when features.rbac is true

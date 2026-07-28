@@ -146,6 +146,39 @@ mTLS/SPIFFE-style bootstrap and IdP federation (Okta, Entra, generic
 OIDC) are explicitly out of scope for this version — see
 `docs/superpowers/specs/2026-07-27-credential-issuance-design.md`.
 
+## RBAC
+
+Off by default. Opt in with `features.rbac: true` plus an `rbac:` block
+(`config_file`, pointing at an `rbac.yaml` defining custom roles and
+bindings — see `rbac.yaml.example`).
+
+Modeled directly on Kubernetes RBAC: a `Role` is a named set of
+permissions; a `ClusterRoleBinding` grants a subject a role globally,
+a `RoleBinding` grants it scoped to one tenant. Two built-in roles are
+always available regardless of `rbac.yaml`'s content — `viewer`
+(`dashboard:view`) and `admin` (`dashboard:view`, `credential:revoke`) —
+and a custom role may not reuse either name.
+
+When on, every dashboard request must resolve an identity (via whichever
+`IdentityAuthenticator` `credential_issuance` has selected — the raw
+`X-Wardline-Identity` header, or a verified bearer token) and that
+identity must hold `dashboard:view`, else `403`. `POST
+/credentials/revoke` keeps its existing loopback-only path completely
+unchanged; RBAC only *adds* a second path — a non-loopback caller may
+also succeed if authorized for `credential:revoke`.
+
+This cycle's tenant model is real but only one tenant exists:
+`RoleBinding`s are matched against the literal tenant `"default"`
+everywhere in Wardline today — true multi-tenant data isolation (a
+separate policy/audit/budget per tenant) is a larger, separate future
+change, not part of this version. See
+`docs/superpowers/specs/2026-07-28-rbac-design.md`.
+
+RBAC is only as strong as whatever resolves the caller's identity — the
+same disclaimer as budget enforcement's: pair it with `credential_issuance`
+for real security value, or it's only as trustworthy as the
+unauthenticated `X-Wardline-Identity` header.
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`

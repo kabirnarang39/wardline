@@ -955,3 +955,154 @@ audit:
 		t.Errorf("dashboard root body missing SPA shell marker: %s", shellBody)
 	}
 }
+
+// TestServeEndToEnd_RBACDashboard proves rbac gates the dashboard over a
+// real HTTP request through the real binary: an identity with no
+// binding gets 403, an identity bound to "viewer" gets in.
+func TestServeEndToEnd_RBACDashboard(t *testing.T) {
+	dir := t.TempDir()
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: alice
+    role: viewer
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  web_ui: true
+  rbac: true
+rbac:
+  config_file: "%s"`, rbacPath))
+
+	// alice, bound to viewer, reaches the dashboard.
+	req, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alice (bound viewer), got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	// bob, unbound, is forbidden.
+	req2, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Header.Set("X-Wardline-Identity", "bob")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for bob (unbound), got %d", resp2.StatusCode)
+	}
+}
+
+// TestServeEndToEnd_RBACWithCredentialIssuance proves rbac's dashboard
+// middleware genuinely resolves identity through credential_issuance's
+// bearer/JWT IdentityAuthenticator (bearerIdentity) when both flags are on
+// — not just through the raw X-Wardline-Identity header, which
+// credential_issuance stops trusting entirely (see
+// TestServeEndToEnd_CredentialIssuance). A real bootstrapped token for
+// alice, bound to "viewer" in rbac.yaml, must authorize the dashboard; a
+// missing/invalid Authorization header must be rejected with 401 by the
+// same middleware, proving a failed bearer resolution doesn't silently
+// fall back to the header.
+func TestServeEndToEnd_RBACWithCredentialIssuance(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: alice
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: alice
+    role: viewer
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  web_ui: true
+  credential_issuance: true
+  rbac: true
+credential:
+  identities_file: "%s"
+rbac:
+  config_file: "%s"`, credentialsPath, rbacPath))
+
+	// Bootstrap a real bearer token for alice.
+	tokenResp := postCredentialsToken(t, listenAddr, "a-long-random-registration-secret")
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a valid secret, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty token")
+	}
+
+	// The bearer token, resolved through bearerIdentity (not
+	// X-Wardline-Identity), authorizes the dashboard via alice's viewer
+	// binding.
+	req, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tokenBody.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alice's bearer token (bound viewer), got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	// A missing/invalid Authorization header fails identity resolution and
+	// is rejected outright — it must not silently fall back to
+	// X-Wardline-Identity.
+	req2, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with no Authorization header, got %d", resp2.StatusCode)
+	}
+}
