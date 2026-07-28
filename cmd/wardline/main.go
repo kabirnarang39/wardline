@@ -574,7 +574,17 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 		}
 	}
 
-	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), cfg.Features, auditEntries, skippedAuditLines, anomalies)
+	manifestFeatures := cfg.Features
+	if manifestFeatures == nil {
+		// cfg.Features is nil whenever the operator's wardline.yaml omits
+		// the features: block entirely (yaml.v3 leaves an absent mapping
+		// key as a nil map, not an empty one). BuildManifest passes it
+		// straight through, so without this it would serialize the
+		// manifest as "features": null instead of the guaranteed-{}
+		// shape the two count maps next to it always have.
+		manifestFeatures = map[string]bool{}
+	}
+	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), manifestFeatures, auditEntries, skippedAuditLines, anomalies)
 
 	output := *outputPath
 	if output == "" {

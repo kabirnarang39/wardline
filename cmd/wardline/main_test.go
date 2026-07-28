@@ -1,11 +1,17 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
@@ -162,5 +168,94 @@ func TestNewRevokeAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t 
 	authz := newRevokeAuthorizer(&identityAuth, checker, testLogger())
 	if authz.Allowed(httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil)) {
 		t.Error("expected Allowed to return false when identity resolution fails")
+	}
+}
+
+// TestRunExportEvidence_NoFeaturesBlock_ManifestFeaturesIsEmptyMapNotNull
+// covers a real operator-facing bug: a wardline.yaml with no top-level
+// features: key decodes cfg.Features as a nil map (yaml.v3's behavior for
+// an absent mapping key), and BuildManifest passes that map straight
+// through with no nil-guard (unlike AuditDecisionCounts/AnomalyKindCounts,
+// which it always initializes via make()). Without runExportEvidence
+// substituting an empty map for nil, the exported manifest.json would
+// contain "features": null instead of "features": {}.
+func TestRunExportEvidence_NoFeaturesBlock_ManifestFeaturesIsEmptyMapNotNull(t *testing.T) {
+	dir := t.TempDir()
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately no "features:" key at all.
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+	runExportEvidence(testLogger(), []string{
+		"-config", configPath,
+		"-from", "2020-01-01T00:00:00Z",
+		"-to", "2030-01-01T00:00:00Z",
+		"-output", outputPath,
+	})
+
+	manifestJSON := readBundleFile(t, outputPath, "manifest.json")
+	var manifest struct {
+		Features map[string]bool `json:"features"`
+	}
+	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest.json: %v", err)
+	}
+	if manifest.Features == nil {
+		t.Error("expected manifest.json's features to unmarshal as {} (empty map), got null")
+	}
+	if !bytes.Contains(manifestJSON, []byte(`"features": {}`)) {
+		t.Errorf("expected manifest.json to contain literal \"features\": {}, got:\n%s", manifestJSON)
+	}
+}
+
+// readBundleFile extracts one named file's contents from a gzip+tar
+// evidence bundle written by complianceadapter.WriteBundle.
+func readBundleFile(t *testing.T, bundlePath, name string) []byte {
+	t.Helper()
+	f, err := os.Open(bundlePath)
+	if err != nil {
+		t.Fatalf("open bundle: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			t.Fatalf("bundle has no file named %q", name)
+		}
+		if err != nil {
+			t.Fatalf("tar read: %v", err)
+		}
+		if hdr.Name != name {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read %q from bundle: %v", name, err)
+		}
+		return data
 	}
 }
