@@ -1,0 +1,4 @@
+name: read-only-single-identity
+description: "Template for one identity allowed only read/list-shaped tools; everything else denied. Rename the placeholder identity and edit the tool list for your MCP server before use."
+backend: yaml
+policy_file: policy.yaml

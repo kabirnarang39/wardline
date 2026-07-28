@@ -1,0 +1,4 @@
+name: deny-all-baseline
+description: "Denies every call by default. The safest possible starting point -- add rules as you grant specific access."
+backend: yaml
+policy_file: policy.yaml

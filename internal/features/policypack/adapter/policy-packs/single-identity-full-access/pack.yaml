@@ -1,0 +1,4 @@
+name: single-identity-full-access
+description: "Template for the simplest real deployment: one identity, full access, everything else denied. Rename the placeholder identity before use."
+backend: yaml
+policy_file: policy.yaml
