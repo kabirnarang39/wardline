@@ -17,6 +17,27 @@ spec:
       labels:
         {{- include "wardline.selectorLabels" . | nindent 8 }}
     spec:
+      # Explicit rather than relying on Kubernetes' default (which
+      # happens to also be 30s): the preStop sleep below
+      # (podAntiAffinity.preStopSleepSeconds, 5s default) plus
+      # cmd/wardline/main.go's own shutdown sequence (10s HTTP drain +
+      # 5s tracing-flush, 15s total) is 20s, fitting inside this grace
+      # period with headroom. Making the number explicit here means a
+      # future change to any of the three values is visible in the same
+      # review instead of independent defaults silently agreeing by
+      # coincidence.
+      terminationGracePeriodSeconds: 30
+      {{- if and .Values.podAntiAffinity.enabled (gt (.Values.replicaCount | int) 1) }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "wardline.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -40,15 +61,21 @@ spec:
             - name: http
               containerPort: {{ .Values.containerPort }}
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: http
             initialDelaySeconds: 2
             periodSeconds: 10
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: http
             initialDelaySeconds: 1
             periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

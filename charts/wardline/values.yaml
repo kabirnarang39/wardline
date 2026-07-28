@@ -14,6 +14,31 @@ imagePullSecrets: []
 
 replicaCount: 1
 
+# A PodDisruptionBudget is only rendered when replicaCount > 1 (see
+# templates/pdb.yaml) -- minAvailable here only takes effect at that
+# point.
+podDisruptionBudget:
+  minAvailable: 1
+
+# Soft (preferred, not required) anti-affinity spreading replicas across
+# nodes -- only applied when replicaCount > 1, and "preferred" rather
+# than "required" so the chart stays schedulable on a single-node dev
+# cluster, a common way this chart gets tried out first.
+podAntiAffinity:
+  enabled: true
+
+# Seconds the container sleeps in its preStop hook before SIGTERM is
+# delivered -- buys time for Kubernetes' Endpoints controller to
+# propagate this pod's removal from Service routing (kube-proxy rule
+# updates lag pod-termination-start by a real, non-zero amount that
+# main.go's own /readyz-flips-to-503-on-SIGTERM behavior cannot shrink,
+# since Go's http.Server.Shutdown closes the listener essentially
+# synchronously once called -- confirmed by live testing). Set to 0 to
+# disable (e.g. for fast local iteration); terminationGracePeriodSeconds
+# above must stay comfortably larger than this value plus the existing
+# 15s (10s HTTP drain + 5s tracing-flush) shutdown budget.
+preStopSleepSeconds: 5
+
 service:
   type: ClusterIP
   port: 8080
@@ -37,6 +62,16 @@ resources: {}
 wardline:
   upstream: "http://your-mcp-server:9000"
   policyBackend: yaml   # "yaml", "opa", or "cedar" — see policy.rego.example / policy.cedar.example in the main repo for the OPA/Cedar shape
+  # Required for features.credential_issuance to work correctly across
+  # more than one replica -- mount a PEM RSA private key (e.g. via
+  # `openssl genrsa -out signing-key.pem 2048`) as its own Secret and
+  # point this at its mounted path; empty leaves every replica
+  # generating its own key (single-replica only). See README.md "HA
+  # deployment". Not wired into this chart's own Secret/volume mounts
+  # this cycle -- an operator enabling this sets it after mounting the
+  # key themselves via an additional volume, same posture as any other
+  # not-yet-chart-templated config value.
+  credentialSigningKeyFile: ""
   # must be a YAML string (use a "|" block scalar) or --set-file — NOT a
   # nested map; Wardline's policy loader expects raw file content, and this
   # key is rendered verbatim into a ConfigMap.
