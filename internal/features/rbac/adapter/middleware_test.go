@@ -20,10 +20,13 @@ func (f fakeIdentityResolver) Authenticate(r *http.Request) (string, error) {
 }
 
 type fakeChecker struct {
-	verdict bool
+	identity, tenant string
+	perm             domain.Permission
+	verdict          bool
 }
 
-func (f fakeChecker) Check(identity, tenant string, perm domain.Permission) bool {
+func (f *fakeChecker) Check(identity, tenant string, perm domain.Permission) bool {
+	f.identity, f.tenant, f.perm = identity, tenant, perm
 	return f.verdict
 }
 
@@ -31,7 +34,7 @@ func TestRequirePermission_IdentityResolutionFailureReturns401(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, "default", domain.PermissionDashboardView, next)
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, "default", domain.PermissionDashboardView, next)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -47,7 +50,7 @@ func TestRequirePermission_UnauthorizedReturns403(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next)
+	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -66,7 +69,7 @@ func TestRequirePermission_AuthorizedCallsNext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := adapter.RequirePermission(fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next)
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -75,5 +78,29 @@ func TestRequirePermission_AuthorizedCallsNext(t *testing.T) {
 	}
 	if !nextCalled {
 		t.Error("expected next to be called when authorized")
+	}
+}
+
+func TestRequirePermission_ThreadsResolvedIdentityToChecker(t *testing.T) {
+	checker := &fakeChecker{verdict: true}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	resolvedIdentity := "bob"
+	tenant := "acme"
+	perm := domain.PermissionDashboardView
+
+	h := adapter.RequirePermission(checker, fakeIdentityResolver{identity: resolvedIdentity}, tenant, perm, next)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if checker.identity != resolvedIdentity {
+		t.Errorf("expected checker called with identity %q, got %q", resolvedIdentity, checker.identity)
+	}
+	if checker.tenant != tenant {
+		t.Errorf("expected checker called with tenant %q, got %q", tenant, checker.tenant)
+	}
+	if checker.perm != perm {
+		t.Errorf("expected checker called with perm %v, got %v", perm, checker.perm)
 	}
 }
