@@ -2,6 +2,5 @@
 title: "Getting Started"
 ---
 
-Get Wardline installed and running in front of your first MCP server or agent
-workload. This section covers installation, the minimal config to get a proxy
-serving traffic, and your first policy decision end to end.
+Zero to a working Wardline deployment: what it is, how to install it, and
+how to get your first request through it.
