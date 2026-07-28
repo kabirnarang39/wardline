@@ -29,11 +29,6 @@ type revokeRequest struct {
 	Identity string `json:"identity"`
 }
 
-// Handler serves the credential-issuance HTTP surface: POST
-// /credentials/token (agent-facing, network-reachable) and POST
-// /credentials/revoke (operator-facing, loopback-only — see design doc
-// "Error handling": an unauthenticated, network-exposed revoke endpoint
-// would itself be the class of gap this feature exists to close).
 // RevokeAuthorizer decides whether a non-loopback caller may still
 // revoke a credential. Wired only when the rbac feature is on; nil
 // means "not wired," which preserves today's loopback-only behavior
@@ -42,6 +37,11 @@ type RevokeAuthorizer interface {
 	Allowed(r *http.Request) bool
 }
 
+// Handler serves the credential-issuance HTTP surface: POST
+// /credentials/token (agent-facing, network-reachable) and POST
+// /credentials/revoke (operator-facing, loopback-only — see design doc
+// "Error handling": an unauthenticated, network-exposed revoke endpoint
+// would itself be the class of gap this feature exists to close).
 type Handler struct {
 	issuance         *usecase.IssuanceService
 	revocation       *usecase.RevocationService
