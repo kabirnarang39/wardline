@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,15 +19,91 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil))
 }
 
+// errorFS is an fs.FS that fails every Open call, so catalog.List's
+// underlying fs.ReadDir(fsys, ".") always errors -- used to exercise
+// runPolicyPackListTo's error branch, which real embedded packs can't
+// reach.
+type errorFS struct{}
+
+func (errorFS) Open(name string) (fs.File, error) {
+	return nil, fmt.Errorf("errorFS: forced failure opening %q", name)
+}
+
 func TestRunPolicyPackList_PrintsAllFourPacks(t *testing.T) {
 	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
 	var out bytes.Buffer
-	runPolicyPackListTo(&out, discardLogger(), catalog)
+	ok := runPolicyPackListTo(&out, discardLogger(), catalog)
 
+	if !ok {
+		t.Fatal("expected list to succeed against the real embedded packs")
+	}
 	for _, name := range []string{"deny-all-baseline", "single-identity-full-access", "read-only-single-identity", "admin-viewer-split"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("expected list output to contain %q, got:\n%s", name, out.String())
 		}
+	}
+}
+
+func TestRunPolicyPackList_CatalogErrors_ReturnsFalseWithoutExiting(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(errorFS{})
+	var out bytes.Buffer
+	ok := runPolicyPackListTo(&out, discardLogger(), catalog)
+
+	if ok {
+		t.Fatal("expected list to fail when the catalog's filesystem errors")
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected no output on error, got:\n%s", out.String())
+	}
+}
+
+func TestReorderFlagsFirst(t *testing.T) {
+	valueFlags := map[string]bool{"output": true}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "flag after positional (the bug case)",
+			args: []string{"deny-all-baseline", "-output", "/tmp/x.yaml"},
+			want: []string{"-output", "/tmp/x.yaml", "deny-all-baseline"},
+		},
+		{
+			name: "-output=value form, already flag-first",
+			args: []string{"-output=/tmp/x.yaml", "deny-all-baseline"},
+			want: []string{"-output=/tmp/x.yaml", "deny-all-baseline"},
+		},
+		{
+			name: "-output=value form, after positional",
+			args: []string{"deny-all-baseline", "-output=/tmp/x.yaml"},
+			want: []string{"-output=/tmp/x.yaml", "deny-all-baseline"},
+		},
+		{
+			name: "bare - token is positional, not a flag",
+			args: []string{"-", "-output", "/tmp/x.yaml"},
+			want: []string{"-output", "/tmp/x.yaml", "-"},
+		},
+		{
+			name: "unrecognized flag name does not consume the next token",
+			args: []string{"deny-all-baseline", "-bogus"},
+			want: []string{"-bogus", "deny-all-baseline"},
+		},
+		{
+			name: "-- terminator makes everything after it positional",
+			args: []string{"--", "-output", "deny-all-baseline"},
+			want: []string{"--", "-output", "deny-all-baseline"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reorderFlagsFirst(tt.args, valueFlags)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("reorderFlagsFirst(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
 	}
 }
 
