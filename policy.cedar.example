@@ -1,0 +1,7 @@
+// The same allow rule as policy.rego.example / policy.yaml.example,
+// expressed in Cedar. See README.md "Policy backends".
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"read_file"
+);

@@ -50,8 +50,8 @@ engine — only tool calls are.
 
 ## Policy backends
 
-Wardline supports two policy backends, selected by `policy_backend` in the
-config file (defaults to `yaml` if omitted):
+Wardline supports three policy backends, selected by `policy_backend` in
+the config file (defaults to `yaml` if omitted):
 
 - **`yaml`** (default) — a static allow/deny rule list, as in
   `policy.yaml.example`.
@@ -61,11 +61,29 @@ config file (defaults to `yaml` if omitted):
   `policy.rego.example` for the same allow rule expressed in Rego, with
   access to the full request context — tool call parameters, timestamp,
   remote address, and user agent — not just identity and tool name.
+- **`cedar`** — an embedded AWS Cedar evaluator
+  (`github.com/cedar-policy/cedar-go`, no external process, no network
+  hop). Cedar policies use `permit(...)` statements matching a fixed
+  `principal`/`action`/`resource` shape — `principal` is
+  `Wardline::Identity::"<identity>"`, `action` is always
+  `Wardline::Action::"call_tool"` (Wardline's action space genuinely is
+  just "call a tool"), and `resource` is `Wardline::Tool::"<tool>"`.
+  Tool call parameters, timestamp, remote address, and user agent are
+  available under `context.params`/`context.timestamp`/
+  `context.remote_addr`/`context.user_agent` in a `when { ... }` clause.
+  See `policy.cedar.example`. Unlike Rego, Cedar is deliberately
+  non-Turing-complete (no loops, no recursion, no arbitrary network
+  calls) — evaluation terminates by construction, so Wardline doesn't
+  need to wrap it in an evaluation timeout the way it does for OPA.
 
-Choosing the `opa` backend links in the OPA Go SDK, which meaningfully
-increases binary size — roughly 29MB with OPA linked in vs. a few MB
-without — so an operator building a container image should expect the
-larger image when opting into it.
+Both `opa` and `cedar` link their SDKs into every Wardline binary
+unconditionally (selected at runtime by `policy_backend`, not by build
+tag), which increases binary size versus `yaml` alone — the OPA SDK adds
+roughly 29MB; Cedar's SDK measured at roughly 44MB with both
+already linked in. An operator building a minimal-size image and using
+only `yaml` still pays this cost today; splitting policy backends into
+optional build tags is tracked as a future improvement, not solved by
+this cycle.
 
 The Rego input (`input` in a policy) is the whole request context as JSON:
 
@@ -82,6 +100,7 @@ The Rego input (`input` in a policy) is the whole request context as JSON:
 
 ```bash
 ./wardline validate-policy --file policy.rego.example --backend opa
+./wardline validate-policy --file policy.cedar.example --backend cedar
 ```
 
 ## Framework integrations
