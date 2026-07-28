@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	anomalyadapter "github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
+	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
@@ -119,14 +122,50 @@ func runServe(logger *slog.Logger, args []string) {
 
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
+	anomalyDetectionEnabled := featureFlags.Enabled("anomaly_detection")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
-	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
 	var ringBuffer *dashboardusecase.RingBuffer
 	if webUIEnabled {
 		ringBuffer = dashboardusecase.NewRingBuffer(ringBufferCapacity)
+	}
+
+	var anomalyDetector *anomalyusecase.Detector
+	var anomalyBuffer *anomalyusecase.AlertBuffer
+	var anomalyGCStop chan struct{}
+	if anomalyDetectionEnabled {
+		anomalyWriter, err := buildAnomalyWriter(logger, cfg.Anomaly.Output)
+		if err != nil {
+			logger.Error("failed to open anomaly output file", "path", cfg.Anomaly.Output, "error", err)
+			os.Exit(1)
+		}
+		bufferCapacity := cfg.Anomaly.BufferCapacity
+		if bufferCapacity <= 0 {
+			bufferCapacity = ringBufferCapacity
+		}
+		anomalyBuffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
+		anomalyDetector = anomalyusecase.NewDetector(anomalyHeuristicConfig(cfg.Anomaly), anomalyWriter, anomalyBuffer, func(err error) {
+			logger.Error("anomaly write failed", "error", err)
+		}, time.Now)
+
+		gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
+		if gcInterval <= 0 {
+			gcInterval = 10 * time.Minute
+		}
+		anomalyGCStop = make(chan struct{})
+		go anomalyusecase.StartGC(anomalyDetector, gcInterval, anomalyGCStop)
+		logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
+	}
+
+	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
+	switch {
+	case webUIEnabled && anomalyDetectionEnabled:
+		liveSink = auditadapter.MultiSink{ringBuffer, anomalyDetector}
+	case webUIEnabled:
 		liveSink = ringBuffer
+	case anomalyDetectionEnabled:
+		liveSink = anomalyDetector
 	}
 
 	recorder := auditusecase.NewRecorder(writer, liveSink, func(err error) {
@@ -208,7 +247,11 @@ func runServe(logger *slog.Logger, args []string) {
 			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
 		)
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), nil)
+		var anomalySource dashboardadapter.AnomalySource
+		if anomalyDetectionEnabled {
+			anomalySource = anomalyBuffer
+		}
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -261,6 +304,9 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("audit writer shutdown failed", "error", err)
 				}
 			}
+			if anomalyGCStop != nil {
+				close(anomalyGCStop)
+			}
 			os.Exit(1)
 		}
 	case <-ctx.Done():
@@ -288,6 +334,9 @@ func runServe(logger *slog.Logger, args []string) {
 		if err := auditCloser.Close(); err != nil {
 			logger.Error("audit writer shutdown failed", "error", err)
 		}
+	}
+	if anomalyGCStop != nil {
+		close(anomalyGCStop)
 	}
 }
 
@@ -398,6 +447,12 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("anomaly_detection") {
+		if _, err := buildAnomalyWriter(logger, cfg.Anomaly.Output); err != nil {
+			logger.Error("failed to open anomaly output", "path", cfg.Anomaly.Output, "error", err)
+			os.Exit(1)
+		}
+	}
 	fmt.Println("config file is valid")
 }
 
@@ -433,6 +488,42 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	}
 
 	return buildAuditWriter(logger, cfg.Output), nil
+}
+
+// anomalyHeuristicConfig translates the operator-facing AnomalyConfig
+// into anomaly/domain.HeuristicConfig, the shape Detector actually
+// consumes -- kept as a pure translation with no I/O so it's trivial to
+// eyeball against the config struct it's built from.
+func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicConfig {
+	return anomalydomain.HeuristicConfig{
+		WindowSeconds:        cfg.WindowSeconds,
+		RateSpikeEnabled:     cfg.RateSpike.Enabled,
+		RateMultiplier:       cfg.RateSpike.Multiplier,
+		RateMinCalls:         cfg.RateSpike.MinCalls,
+		NovelToolEnabled:     cfg.NovelTool.Enabled,
+		DenyRateSpikeEnabled: cfg.DenyRateSpike.Enabled,
+		DenyRateThreshold:    cfg.DenyRateSpike.Threshold,
+		DenyRateMinCalls:     cfg.DenyRateSpike.MinCalls,
+		GCIntervalSeconds:    cfg.GCIntervalSeconds,
+	}
+}
+
+// buildAnomalyWriter opens output ("stdout" or a file path) and wraps it
+// in anomaly/adapter.JSONLWriter -- same shape as buildAuditWriter, kept
+// as a separate function (not a parameter to buildAuditWriter) because
+// anomaly output is a distinct stream from the audit trail, opened only
+// when anomaly_detection is on, and returns an error instead of calling
+// os.Exit itself so the caller can log with its own context before
+// exiting.
+func buildAnomalyWriter(logger *slog.Logger, output string) (*anomalyadapter.JSONLWriter, error) {
+	if output == "stdout" {
+		return anomalyadapter.NewJSONLWriter(os.Stdout), nil
+	}
+	f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	return anomalyadapter.NewJSONLWriter(f), nil
 }
 
 func buildAuditWriter(logger *slog.Logger, output string) *auditadapter.JSONLWriter {
