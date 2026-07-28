@@ -531,3 +531,134 @@ audit:
 		t.Fatal("expected error for an unrecognized policy_backend value")
 	}
 }
+
+func TestLoad_AnomalyDisabledByDefaultNoValidation(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Anomaly.Output != "" {
+		t.Errorf("expected empty Anomaly.Output when unset, got %q", cfg.Anomaly.Output)
+	}
+}
+
+func TestLoad_AnomalyEnabledValid(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 3.0
+    min_calls: 10
+  deny_rate_spike:
+    enabled: true
+    threshold: 0.5
+    min_calls: 5
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Anomaly.Output != "./anomaly.jsonl" {
+		t.Errorf("unexpected Anomaly.Output: %q", cfg.Anomaly.Output)
+	}
+	if cfg.Anomaly.RateSpike.Multiplier != 3.0 {
+		t.Errorf("unexpected RateSpike.Multiplier: %v", cfg.Anomaly.RateSpike.Multiplier)
+	}
+}
+
+func TestLoad_AnomalyEnabledMissingOutput(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when anomaly_detection is on but anomaly.output is unset")
+	}
+}
+
+func TestLoad_AnomalyRateSpikeEnabledWithNonPositiveMultiplierErrors(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 0
+    min_calls: 10
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when rate_spike is enabled with a non-positive multiplier")
+	}
+}
+
+func TestLoad_AnomalyDenyRateSpikeEnabledWithOutOfRangeThresholdErrors(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  deny_rate_spike:
+    enabled: true
+    threshold: 1.5
+    min_calls: 5
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when deny_rate_spike's threshold is outside (0, 1]")
+	}
+}
+
+func TestLoad_AnomalyEnabledNonPositiveWindowSecondsErrors(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when anomaly_detection is on but window_seconds is non-positive")
+	}
+}
