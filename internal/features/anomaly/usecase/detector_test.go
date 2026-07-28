@@ -27,9 +27,10 @@ func baseCfg() domain.HeuristicConfig {
 	}
 }
 
-// fakeClock advances by one second on every call, so a test can publish
-// N entries "in the same window" (small elapsed time) or force a window
-// rotation by jumping the clock forward explicitly.
+// fakeClock returns whatever time is currently set on t and does not
+// auto-advance -- a test publishes N entries "in the same window" by
+// leaving t unchanged, or forces a window rotation by jumping t forward
+// explicitly (clock.t = clock.t.Add(...)).
 type fakeClock struct {
 	t time.Time
 }
@@ -129,6 +130,33 @@ func TestDetector_RateSpike_DisabledNeverFlags(t *testing.T) {
 		if a.Kind == domain.KindRateSpike {
 			t.Errorf("expected no rate_spike anomaly when the heuristic is disabled, got %+v", writer.anomalies)
 		}
+	}
+}
+
+func TestDetector_RateSpike_SustainedSpikeFlagsOnlyOnce(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, clock.now)
+
+	for i := 0; i < 10; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	}
+	clock.t = clock.t.Add(61 * time.Second)
+	// A sustained spike: 50 calls in the same window, every call from the
+	// 31st onward is individually above threshold -- must still flag
+	// exactly once per window, not once per call.
+	for i := 0; i < 50; i++ {
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	}
+
+	count := 0
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindRateSpike {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 rate_spike anomaly for a sustained spike, got %d: %+v", count, writer.anomalies)
 	}
 }
 
