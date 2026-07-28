@@ -1,5 +1,11 @@
 // The same allow rule as policy.rego.example / policy.yaml.example,
 // expressed in Cedar. See README.md "Policy backends".
+//
+// Known limitation: Cedar has no float or null type, and a bounded
+// Long integer range. Tool-call params containing a JSON float, null,
+// or an out-of-range integer will be denied (fail-closed) rather than
+// coerced -- this is deliberate, not a bug. See README.md "Policy
+// backends" for details.
 permit(
   principal == Wardline::Identity::"agent-abc123",
   action == Wardline::Action::"call_tool",
