@@ -174,3 +174,36 @@ bindings: []
 		t.Fatal("expected an error for an unknown permission string")
 	}
 }
+
+// TestLoadAuthorizer_UnknownBindingFieldErrors covers the strict-decode
+// regression this fix closes: a typo'd binding key (e.g. "tenatt" instead
+// of "tenant") must fail to load, not silently zero-value Tenant and
+// route the binding into clusterRoleBindings (global scope) instead of
+// the tenant-scoped RoleBinding the operator intended.
+func TestLoadAuthorizer_UnknownBindingFieldErrors(t *testing.T) {
+	path := writeRBACFile(t, `
+bindings:
+  - subject: alice
+    role: admin
+    tenatt: default
+`)
+	_, err := adapter.LoadAuthorizer(path)
+	if err == nil {
+		t.Fatal("expected an error for a binding with an unknown field (tenant typo)")
+	}
+}
+
+// TestLoadAuthorizer_EmptyFileLoadsSuccessfully proves the switch to a
+// strict decoder didn't break the "empty rbac.yaml is valid" case — an
+// empty file decodes to io.EOF, which LoadAuthorizer must treat as an
+// empty rbacFile, not an error.
+func TestLoadAuthorizer_EmptyFileLoadsSuccessfully(t *testing.T) {
+	path := writeRBACFile(t, "")
+	a, err := adapter.LoadAuthorizer(path)
+	if err != nil {
+		t.Fatalf("unexpected error loading an empty rbac.yaml: %v", err)
+	}
+	if a.Authorize("nobody", "default", domain.PermissionDashboardView) {
+		t.Error("expected zero bindings (and thus no granted permissions) from an empty rbac.yaml")
+	}
+}

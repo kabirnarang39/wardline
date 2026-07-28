@@ -248,8 +248,11 @@ Then visit `http://<listen-addr>/dashboard/`.
   feature flags are on.
 
 **Security note:** the dashboard has no authentication and is read-only
-by design — it does not accept writes and cannot influence policy,
-budget, or proxy decisions. It does, however, display audit *reasons*
+by design (unless `features.rbac` is on — see the [RBAC](#rbac) section
+above; with it on, every dashboard request must resolve an identity
+holding `dashboard:view`, else `403`). It does not accept writes and
+cannot influence policy, budget, or proxy decisions. It does, however,
+display audit *reasons*
 (which can include internal policy-engine diagnostics normally kept out
 of proxy responses) and raw policy file content, both of which may
 carry information you don't want a stranger to see. The dashboard
@@ -336,16 +339,20 @@ helm install my-wardline charts/wardline \
   --set-file wardline.policy=./policy.yaml
 ```
 
-Every `internal/platform/config.Config` field is exposed under
-`values.yaml`'s `wardline:` key — feature flags, budget limits, tracing,
-and Postgres storage all work the same way they do outside Kubernetes.
+Most of `internal/platform/config.Config` is exposed under `values.yaml`'s
+`wardline:` key — feature flags, budget limits, tracing, and Postgres
+storage all work the same way they do outside Kubernetes. Two blocks are
+not yet exposed there: `credential:` (pre-existing gap) and `rbac:` — set
+either via a mounted/overridden config file if you need them on Kubernetes
+today; wiring them into `values.yaml` is deferred to a future chart cycle.
 
 **Exposing the dashboard:** if you enable `features.web_ui` and also
 enable Ingress (or set `service.type` to something other than
-`ClusterIP`), you're making the unauthenticated dashboard reachable
-beyond the cluster — see the [Dashboard](#dashboard) section's security
-note above before doing this; `helm install`'s post-install notes warn
-about this combination too.
+`ClusterIP`), you're making the dashboard reachable beyond the cluster —
+unauthenticated unless `features.rbac` is also on (see the
+[Dashboard](#dashboard) section's security note and the [RBAC](#rbac)
+section above before doing this); `helm install`'s post-install notes
+warn about this combination too.
 
 **Multiple replicas:** Wardline's budget enforcement and dashboard live
 view are both per-process, in-memory state, not shared across replicas
