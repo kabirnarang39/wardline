@@ -34,15 +34,24 @@ type revokeRequest struct {
 // /credentials/revoke (operator-facing, loopback-only — see design doc
 // "Error handling": an unauthenticated, network-exposed revoke endpoint
 // would itself be the class of gap this feature exists to close).
-type Handler struct {
-	issuance   *usecase.IssuanceService
-	revocation *usecase.RevocationService
-	logger     *slog.Logger
-	now        func() time.Time
+// RevokeAuthorizer decides whether a non-loopback caller may still
+// revoke a credential. Wired only when the rbac feature is on; nil
+// means "not wired," which preserves today's loopback-only behavior
+// exactly (see design doc docs/superpowers/specs/2026-07-28-rbac-design.md).
+type RevokeAuthorizer interface {
+	Allowed(r *http.Request) bool
 }
 
-func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger) *Handler {
-	return &Handler{issuance: issuance, revocation: revocation, logger: logger, now: time.Now}
+type Handler struct {
+	issuance         *usecase.IssuanceService
+	revocation       *usecase.RevocationService
+	logger           *slog.Logger
+	revokeAuthorizer RevokeAuthorizer
+	now              func() time.Time
+}
+
+func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer) *Handler {
+	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, now: time.Now}
 }
 
 func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
@@ -72,8 +81,11 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// Loopback check before the method check — a non-loopback caller must
 	// get a uniform 403 regardless of HTTP method, not a 405 that leaks
-	// that this endpoint exists.
-	if !isLoopback(r.RemoteAddr) {
+	// that this endpoint exists. A non-loopback caller may still proceed
+	// if an RBAC authorizer is wired and grants it — the loopback path
+	// itself is completely unchanged and unweakened (see design doc
+	// docs/superpowers/specs/2026-07-28-rbac-design.md).
+	if !isLoopback(r.RemoteAddr) && (h.revokeAuthorizer == nil || !h.revokeAuthorizer.Allowed(r)) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}

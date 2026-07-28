@@ -44,7 +44,7 @@ func newTestHandler(revoker domain.Revoker) *adapter.Handler {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return adapter.NewHandler(issuance, revocation, logger)
+	return adapter.NewHandler(issuance, revocation, logger, nil)
 }
 
 func TestHandleToken_ValidSecretReturns200WithToken(t *testing.T) {
@@ -246,5 +246,74 @@ func TestHandleRevoke_OversizedBodyRejected(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized body, got %d", w.Code)
+	}
+}
+
+type fakeRevokeAuthorizer struct {
+	allowed bool
+}
+
+func (f fakeRevokeAuthorizer) Allowed(r *http.Request) bool { return f.allowed }
+
+func TestHandleRevoke_NonLoopbackAllowedByAuthorizerRevokes(t *testing.T) {
+	revoker := &recordingRevoker{}
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(revoker)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: true})
+
+	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "203.0.113.5:54321" // non-loopback
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if revoker.identity != "agent-abc123" {
+		t.Errorf("expected agent-abc123 to have been revoked, got %q", revoker.identity)
+	}
+}
+
+func TestHandleRevoke_NonLoopbackDeniedByAuthorizerIsForbidden(t *testing.T) {
+	revoker := &recordingRevoker{}
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(revoker)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: false})
+
+	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "203.0.113.5:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if revoker.identity != "" {
+		t.Error("expected no revocation when the authorizer denies")
+	}
+}
+
+func TestHandleRevoke_NonLoopbackNoAuthorizerWiredIsForbidden(t *testing.T) {
+	revoker := &recordingRevoker{}
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(revoker)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil) // rbac not wired -- today's behavior
+
+	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "203.0.113.5:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
 	}
 }
