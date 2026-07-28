@@ -1,5 +1,5 @@
 baseURL = "https://kabirnarang39.github.io/wardline/docs/"
-languageCode = "en-us"
+locale = "en-us"
 title = "Wardline Docs"
 enableRobotsTXT = true
 canonifyURLs = true
