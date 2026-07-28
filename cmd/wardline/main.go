@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
+
 	anomalyadapter "github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
@@ -26,10 +29,12 @@ import (
 	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
 	complianceusecase "github.com/kabirnarang39/wardline/internal/features/compliance/usecase"
 	credentialadapter "github.com/kabirnarang39/wardline/internal/features/credential/adapter"
+	credentialdomain "github.com/kabirnarang39/wardline/internal/features/credential/domain"
 	credentialusecase "github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
 	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
+	healthadapter "github.com/kabirnarang39/wardline/internal/features/health/adapter"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	cedaradapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/cedar"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
@@ -199,6 +204,24 @@ func runServe(logger *slog.Logger, args []string) {
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
 
+	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
+	var healthPinger func(ctx context.Context) error
+	if postgresStorageEnabled {
+		// A short-lived ping connection, independent of the audit
+		// writer's own pool -- /readyz proves Postgres is reachable
+		// right now, it doesn't need to share the audit path's
+		// connections or its longer queryTimeout.
+		healthPinger = func(ctx context.Context) error {
+			db, err := sql.Open("pgx", cfg.Audit.PostgresDSN)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			return db.PingContext(ctx)
+		}
+	}
+	healthHandler := healthadapter.NewHandler(healthPinger)
+
 	rbacEnabled := featureFlags.Enabled("rbac")
 	var rbacChecker *rbacusecase.Checker
 	if rbacEnabled {
@@ -229,15 +252,37 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Error("failed to load credentials file", "error", err)
 			os.Exit(1)
 		}
-		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier()
+		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
 			os.Exit(1)
 		}
-		revocationList := credentialadapter.NewRevocationList()
+		if cfg.Credential.SigningKeyFile == "" {
+			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file to run more than one")
+		}
+
+		var revoker credentialdomain.Revoker
+		var revokerCloser io.Closer
+		if postgresStorageEnabled {
+			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN)
+			if err != nil {
+				logger.Error("failed to initialize postgres revoker", "error", err)
+				os.Exit(1)
+			}
+			revoker = pr
+			revokerCloser = pr
+			logger.Info("credential revocation backed by postgres (shared across replicas)")
+		} else {
+			revoker = credentialadapter.NewRevocationList()
+			logger.Warn("credential revocation is in-process only; safe for exactly one replica -- enable features.postgres_storage to share revocation across replicas")
+		}
+		if revokerCloser != nil {
+			defer func() { _ = revokerCloser.Close() }()
+		}
+
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
-		verification := credentialusecase.NewVerificationService(issuerVerifier, revocationList)
-		revocation := credentialusecase.NewRevocationService(revocationList)
+		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
+		revocation := credentialusecase.NewRevocationService(revoker)
 		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer)
 		identityAuth = proxyadapter.NewBearerIdentity(verification)
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
@@ -275,6 +320,11 @@ func runServe(logger *slog.Logger, args []string) {
 		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
 		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
 	}
+	// Unconditional, unlike every other extraRoutes entry -- every
+	// deployment needs health/readiness checking, it isn't a feature an
+	// operator opts into with a flag.
+	extraRoutes["/healthz"] = healthHandler
+	extraRoutes["/readyz"] = healthHandler
 
 	topHandler := buildTopHandler(handler, extraRoutes)
 
@@ -323,6 +373,11 @@ func runServe(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	case <-ctx.Done():
+		// Flip readiness before anything else: a polling Kubernetes
+		// readiness probe needs the pod out of Service endpoint
+		// rotation as early as possible in the drain window, not after
+		// srv.Shutdown has already started refusing new connections.
+		healthHandler.SetDraining(true)
 		// Release the signal registration immediately so a second
 		// SIGINT/SIGTERM during a slow drain takes the OS's default action
 		// (immediate termination) instead of being swallowed by the still-live
@@ -457,6 +512,12 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 	if flags.NewStaticProvider(cfg.Features).Enabled("rbac") {
 		if _, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile); err != nil {
 			logger.Error("failed to load rbac file", "error", err)
+			os.Exit(1)
+		}
+	}
+	if cfg.Credential.SigningKeyFile != "" {
+		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile); err != nil {
+			logger.Error("failed to load credential signing key file", "error", err)
 			os.Exit(1)
 		}
 	}
