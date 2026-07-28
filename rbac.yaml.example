@@ -1,0 +1,9 @@
+roles:
+  - name: auditor
+    permissions: ["dashboard:view"]
+bindings:
+  - subject: alice
+    role: admin
+  - subject: bob
+    role: viewer
+    tenant: default
