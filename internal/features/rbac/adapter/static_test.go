@@ -146,3 +146,31 @@ bindings:
 		t.Fatal("expected an error for a binding missing a subject")
 	}
 }
+
+func TestLoadAuthorizer_DuplicateCustomRoleNameErrors(t *testing.T) {
+	path := writeRBACFile(t, `
+roles:
+  - name: auditor
+    permissions: ["dashboard:view"]
+  - name: auditor
+    permissions: ["credential:revoke"]
+bindings: []
+`)
+	_, err := adapter.LoadAuthorizer(path)
+	if err == nil {
+		t.Fatal("expected an error when a custom role is defined more than once")
+	}
+}
+
+func TestLoadAuthorizer_UnknownPermissionErrors(t *testing.T) {
+	path := writeRBACFile(t, `
+roles:
+  - name: auditor
+    permissions: ["dashboard:view", "dashbord:view"]
+bindings: []
+`)
+	_, err := adapter.LoadAuthorizer(path)
+	if err == nil {
+		t.Fatal("expected an error for an unknown permission string")
+	}
+}
