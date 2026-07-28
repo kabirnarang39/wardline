@@ -17,4 +17,10 @@ type Manifest struct {
 	UnparsableAuditLinesSkipped int             `json:"unparsable_audit_lines_skipped"`
 	AnomalyEntryCount           int             `json:"anomaly_entry_count"`
 	AnomalyKindCounts           map[string]int  `json:"anomaly_kind_counts"`
+
+	// UnparsableAnomalyLinesSkipped is the anomaly stream's counterpart to
+	// UnparsableAuditLinesSkipped. Both exist so a skipped line shows up as
+	// a declared gap in the evidence rather than silently shrinking the
+	// bundle -- an auditor must be able to see that something was dropped.
+	UnparsableAnomalyLinesSkipped int `json:"unparsable_anomaly_lines_skipped"`
 }

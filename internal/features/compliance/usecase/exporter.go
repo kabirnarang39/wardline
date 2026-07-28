@@ -17,6 +17,7 @@ func BuildManifest(
 	auditEntries []auditdomain.Entry,
 	skippedAuditLines int,
 	anomalies []anomalydomain.Anomaly,
+	skippedAnomalyLines int,
 ) domain.Manifest {
 	decisionCounts := make(map[string]int)
 	for _, e := range auditEntries {
@@ -37,5 +38,7 @@ func BuildManifest(
 		UnparsableAuditLinesSkipped: skippedAuditLines,
 		AnomalyEntryCount:           len(anomalies),
 		AnomalyKindCounts:           kindCounts,
+
+		UnparsableAnomalyLinesSkipped: skippedAnomalyLines,
 	}
 }

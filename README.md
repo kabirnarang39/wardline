@@ -284,6 +284,20 @@ The bundle is a `.tar.gz` containing:
 material in any form, the full parsed config, or any DSN. Only the
 files listed above.
 
+The bundle is written `0600`, and every file inside it carries mode
+`0600` too — it aggregates the whole audit trail into one artifact, so
+it should not be world-readable on a shared host. Copy it to the
+auditor over a channel you'd trust with the audit log itself.
+
+**Postgres exports need the same DSN `serve` uses.** With
+`features.postgres_storage` on, `export-evidence` opens the audit
+database through the same connector `serve` does, which runs `CREATE
+TABLE IF NOT EXISTS`/`CREATE INDEX IF NOT EXISTS` on connect. A
+`SELECT`-only compliance role therefore can't run this command today —
+point `-config` at a config whose `audit.postgres_dsn` has the
+privileges `serve` has. A dedicated read-only connector (plus a
+separate read-only DSN field to make it useful) is a future cycle.
+
 **Requires a queryable audit trail.** `audit.output: stdout` has
 nothing to read back — point `audit.output` at a file, or turn on
 `features.postgres_storage`, to use this command. See
