@@ -87,6 +87,16 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 			toEmit = append(toEmit, a)
 		}
 	}
+	if d.cfg.NovelToolEnabled {
+		if a, ok := d.checkNovelTool(e, st); ok {
+			toEmit = append(toEmit, a)
+		}
+	}
+	if d.cfg.DenyRateSpikeEnabled {
+		if a, ok := d.checkDenyRateSpike(e, st); ok {
+			toEmit = append(toEmit, a)
+		}
+	}
 	return toEmit
 }
 
@@ -116,6 +126,52 @@ func (d *Detector) checkRateSpike(e auditdomain.Entry, st *identityState) (domai
 		Identity:  e.Identity,
 		Kind:      domain.KindRateSpike,
 		Detail:    "call rate exceeded the identity's own trailing baseline",
+		Entry:     e,
+	}, true
+}
+
+// checkNovelTool must be called with d.mu held (st is shared, mutable
+// state). st.tools is itself a one-shot latch per tool: the first call
+// records it and fires, every later call to the same tool is a no-op --
+// no flaggedThisWindow bookkeeping needed.
+func (d *Detector) checkNovelTool(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
+	if _, seen := st.tools[e.Tool]; seen {
+		return domain.Anomaly{}, false
+	}
+	st.tools[e.Tool] = struct{}{}
+	return domain.Anomaly{
+		Timestamp: d.now(),
+		Identity:  e.Identity,
+		Kind:      domain.KindNovelTool,
+		Detail:    "first call from this identity to tool " + e.Tool,
+		Entry:     e,
+	}, true
+}
+
+// checkDenyRateSpike must be called with d.mu held (st is shared,
+// mutable state). Like checkRateSpike, it latches on
+// st.flaggedThisWindow (keyed by KindDenyRateSpike) so a sustained deny
+// spike emits exactly one Anomaly per window, not one per deny call.
+func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
+	if st.cur.total < d.cfg.DenyRateMinCalls {
+		return domain.Anomaly{}, false
+	}
+	ratio := float64(st.cur.deny) / float64(st.cur.total)
+	if ratio <= d.cfg.DenyRateThreshold {
+		return domain.Anomaly{}, false
+	}
+	if st.flaggedThisWindow[domain.KindDenyRateSpike] {
+		return domain.Anomaly{}, false
+	}
+	if st.flaggedThisWindow == nil {
+		st.flaggedThisWindow = make(map[domain.Kind]bool)
+	}
+	st.flaggedThisWindow[domain.KindDenyRateSpike] = true
+	return domain.Anomaly{
+		Timestamp: d.now(),
+		Identity:  e.Identity,
+		Kind:      domain.KindDenyRateSpike,
+		Detail:    "deny ratio exceeded threshold within the trailing window",
 		Entry:     e,
 	}, true
 }
