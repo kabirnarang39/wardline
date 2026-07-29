@@ -259,6 +259,81 @@ rest of the dashboard, when `rbac` is on). ML-based detection is a
 tracked future direction, not part of this version: everything here is
 interpretable, rule/statistics-based, and needs no training data.
 
+## Federation
+
+Off by default. Opt in with `features.federation: true`, which requires
+`features.anomaly_detection: true` too — federation shares this
+instance's own local anomaly detections with peers, so there must be
+local detections to share. Configure with a `federation:` block:
+
+```yaml
+federation:
+  peers_file: "./peers.yaml"
+  signing_key_file: "./federation-signing-key.pem"
+  shared_secret_file: "./federation-shared-secret"
+  publish_interval_seconds: 60
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+```
+
+Every `publish_interval_seconds`, this instance aggregates its local
+anomalies since the last publish into pseudonymized summaries — a
+fingerprint, which heuristic fired, a count, and a time window — and
+POSTs a signed batch to every peer's `/federation/summaries`. **Only
+that summary ever crosses the wire.** No tool name, no detail string, no
+raw identity, and no audit entry are ever sent — see
+`internal/features/federation/domain/summary.go`'s `AnomalySummary`,
+the sole wire shape.
+
+Two independent keys, answering two different questions:
+
+- **`signing_key_file`** (this instance's own RSA private key, PEM,
+  PKCS1 or PKCS8 — generate with the same `openssl genrsa` command
+  credential issuance uses above) signs every outbound batch, so a peer
+  can verify *which configured peer actually sent this* against that
+  peer's public key. Every instance needs its own key pair; the public
+  half is what `peers_file` below records for each peer.
+- **`shared_secret_file`** (opaque key material, not PEM — any random
+  bytes) is fed into an HMAC that turns each anomaly's raw identity into
+  a pseudonymous fingerprint before it ever leaves this process. Every
+  federated instance must share the *same* secret, or the same identity
+  produces a different fingerprint at each instance and never
+  correlates. This answers "is this the same identity another instance
+  also saw", a separate question from "did this peer really send this
+  message" — the signing key never sees a raw identity, and the shared
+  secret never signs anything.
+
+`peers_file` (`peers.yaml`) lists every other instance this one
+federates with, each peer's endpoint, and the PEM file holding that
+peer's *public* signing key (used only to verify batches it sends, not
+sign anything):
+
+```yaml
+peers:
+  - id: eu-cluster
+    endpoint: "https://eu.example.com/federation/summaries"
+    public_key_file: "./eu-cluster-public-key.pem"
+  - id: us-cluster
+    endpoint: "https://us.example.com/federation/summaries"
+    public_key_file: "./us-cluster-public-key.pem"
+```
+
+A `Correlator` watches every inbound summary — from peers via `POST
+/federation/summaries`, and from this instance's own local detections on
+the same publish tick — and emits a `CorrelatedAlert` once a fingerprint
+has been sighted by at least `min_instances_for_correlation` distinct
+instances within `correlation_window_seconds`. That's the actual value
+of federation: an anomaly only one instance ever sees might be noise; the
+same identity fingerprint tripping the same heuristic across multiple
+instances is a much stronger signal. State older than 2x
+`gc_interval_seconds` is garbage-collected. When `web_ui` is also on,
+correlated alerts appear via `GET /dashboard/api/federation/correlated`
+(same after-ID pagination as every other dashboard endpoint); the
+`/federation/summaries` inbound route itself is always registered when
+`federation` is on, regardless of `web_ui` — a peer must be able to
+reach it even with the local dashboard off.
+
 ## Compliance evidence export
 
 `wardline export-evidence -config wardline.yaml -from <RFC3339> [-to <RFC3339>] [-output <path>]`

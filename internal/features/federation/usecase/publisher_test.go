@@ -67,9 +67,12 @@ func TestPublisher_PublishOnce_SendsToEveryPeer(t *testing.T) {
 
 	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
 
-	errs := p.PublishOnce(context.Background(), now)
+	summaries, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 0 {
 		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary returned, got %d", len(summaries))
 	}
 
 	sender.mu.Lock()
@@ -105,7 +108,7 @@ func TestPublisher_OnePeerFails_OthersStillSucceed(t *testing.T) {
 
 	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
 
-	errs := p.PublishOnce(context.Background(), now)
+	_, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 1 {
 		t.Fatalf("expected exactly 1 error (from eu-cluster), got %d: %v", len(errs), errs)
 	}
@@ -125,9 +128,12 @@ func TestPublisher_NoAnomalies_SendsNothing(t *testing.T) {
 
 	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
 
-	errs := p.PublishOnce(context.Background(), now)
+	summaries, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 0 {
 		t.Fatalf("expected no errors, got %v", errs)
+	}
+	if len(summaries) != 0 {
+		t.Fatalf("expected no summaries when there are no local anomalies, got %d", len(summaries))
 	}
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
@@ -146,7 +152,7 @@ func TestPublisher_SecondPublishOnce_DoesNotResendAlreadyReadAnomalies(t *testin
 
 	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
 
-	if errs := p.PublishOnce(context.Background(), now); len(errs) != 0 {
+	if _, errs := p.PublishOnce(context.Background(), now); len(errs) != 0 {
 		t.Fatalf("first PublishOnce: expected no errors, got %v", errs)
 	}
 	sender.mu.Lock()
@@ -161,7 +167,7 @@ func TestPublisher_SecondPublishOnce_DoesNotResendAlreadyReadAnomalies(t *testin
 	// re-sent: PublishOnce's read cursor (lastReadID) should already
 	// exclude it.
 	second := now.Add(5 * time.Second)
-	if errs := p.PublishOnce(context.Background(), second); len(errs) != 0 {
+	if _, errs := p.PublishOnce(context.Background(), second); len(errs) != 0 {
 		t.Fatalf("second PublishOnce: expected no errors, got %v", errs)
 	}
 

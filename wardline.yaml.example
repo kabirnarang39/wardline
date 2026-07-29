@@ -13,6 +13,7 @@ features: {}
 #   credential_issuance: true  # off by default — see README.md "Credential issuance"
 #   rbac: true                 # off by default — see README.md "RBAC"
 #   anomaly_detection: true    # off by default — see README.md "Anomaly detection"
+#   federation: true           # off by default, requires anomaly_detection — see README.md "Federation"
 # audit:
 #   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
 #   # only used when features.postgres_storage is true; audit.output is
@@ -48,3 +49,12 @@ features: {}
 #     enabled: true
 #     threshold: 0.5
 #     min_calls: 5
+# federation:
+#   peers_file: "./peers.yaml"
+#   signing_key_file: "./federation-signing-key.pem"
+#   shared_secret_file: "./federation-shared-secret"
+#   # all three required when features.federation is true — see README.md "Federation"
+#   publish_interval_seconds: 60
+#   min_instances_for_correlation: 2   # must be >= 2
+#   correlation_window_seconds: 300
+#   gc_interval_seconds: 600

@@ -103,6 +103,19 @@ type AnomalyConfig struct {
 	DenyRateSpike     DenyRateSpikeConfig `yaml:"deny_rate_spike"`
 }
 
+// FederationConfig configures cross-instance anomaly correlation. Only
+// validated (and only meaningful) when the federation feature flag is
+// on, which itself requires anomaly_detection also be on.
+type FederationConfig struct {
+	PeersFile                  string `yaml:"peers_file"`
+	SigningKeyFile             string `yaml:"signing_key_file"`
+	SharedSecretFile           string `yaml:"shared_secret_file"`
+	PublishIntervalSeconds     int    `yaml:"publish_interval_seconds"`
+	MinInstancesForCorrelation int    `yaml:"min_instances_for_correlation"`
+	CorrelationWindowSeconds   int    `yaml:"correlation_window_seconds"`
+	GCIntervalSeconds          int    `yaml:"gc_interval_seconds"`
+}
+
 // Config is Wardline's top-level operator configuration. Features holds
 // flag toggles for capabilities added after v0.1 — budget_enforcement and
 // otel_tracing are the two real ones so far; internal/platform/flags
@@ -118,6 +131,7 @@ type Config struct {
 	Credential    CredentialConfig `yaml:"credential"`
 	RBAC          RBACConfig       `yaml:"rbac"`
 	Anomaly       AnomalyConfig    `yaml:"anomaly"`
+	Federation    FederationConfig `yaml:"federation"`
 	Features      map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
@@ -238,6 +252,32 @@ func (c *Config) validate() error {
 		}
 		if c.Anomaly.DenyRateSpike.Enabled && c.Anomaly.DenyRateSpike.MinCalls <= 0 {
 			problems = append(problems, "anomaly.deny_rate_spike.min_calls must be > 0 when anomaly.deny_rate_spike.enabled is true")
+		}
+	}
+	if c.Features["federation"] {
+		if !c.Features["anomaly_detection"] {
+			problems = append(problems, "features.anomaly_detection must be true when features.federation is true -- federation shares this instance's own local anomaly detections")
+		}
+		if c.Federation.PeersFile == "" {
+			problems = append(problems, "federation.peers_file must not be empty when features.federation is true")
+		}
+		if c.Federation.SigningKeyFile == "" {
+			problems = append(problems, "federation.signing_key_file must not be empty when features.federation is true")
+		}
+		if c.Federation.SharedSecretFile == "" {
+			problems = append(problems, "federation.shared_secret_file must not be empty when features.federation is true")
+		}
+		if c.Federation.PublishIntervalSeconds <= 0 {
+			problems = append(problems, "federation.publish_interval_seconds must be > 0 when features.federation is true")
+		}
+		if c.Federation.MinInstancesForCorrelation < 2 {
+			problems = append(problems, "federation.min_instances_for_correlation must be >= 2 when features.federation is true")
+		}
+		if c.Federation.CorrelationWindowSeconds <= 0 {
+			problems = append(problems, "federation.correlation_window_seconds must be > 0 when features.federation is true")
+		}
+		if c.Federation.GCIntervalSeconds <= 0 {
+			problems = append(problems, "federation.gc_interval_seconds must be > 0 when features.federation is true")
 		}
 	}
 	if c.ShutdownDelaySeconds < 0 {
