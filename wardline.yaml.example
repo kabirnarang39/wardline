@@ -50,6 +50,10 @@ features: {}
 #     threshold: 0.5
 #     min_calls: 5
 # federation:
+#   instance_id: "eu-cluster-1"
+#   # optional, defaults to os.Hostname() — set to something unique when
+#   # more than one Wardline instance runs on the same host, since the
+#   # hostname default is identical for every co-located process
 #   peers_file: "./peers.yaml"
 #   signing_key_file: "./federation-signing-key.pem"
 #   shared_secret_file: "./federation-shared-secret"
