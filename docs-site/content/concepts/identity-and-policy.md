@@ -27,8 +27,17 @@ Every request produces exactly one decision, recorded in the audit log:
   prompts, be aware they are not currently gated by policy.
 - **`error`** — malformed request (unparseable JSON-RPC, missing
   identity header, etc.).
+- **`blocked`** — the identity is currently auto-blocked by anomaly
+  detection's `ml_score`/`auto_block` feature (see [Anomaly
+  Detection](/features/anomaly-detection/)): every call is rejected
+  (`403`, JSON-RPC error, `Retry-After` header) until
+  `auto_block.block_duration_seconds` elapses since the most recent
+  detection, with no manual early unblock this cycle.
 
 Scope note: policy, budget, and audit decisions apply to `tools/call`
-only, for the reason above.
+only, for the reason above. `auto_block` is the one deliberate exception:
+once an identity is blocked, ALL of its calls are rejected, including
+protocol-lifecycle passthrough methods like `initialize` — a blocked
+identity shouldn't get a handshake either.
 
 Next: [Policy backends](/concepts/policy-backends/).

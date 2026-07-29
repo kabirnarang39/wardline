@@ -239,6 +239,7 @@ h1 {
 .decision-cell[data-decision="error"]::before { background: var(--deny); }
 .decision-cell[data-decision="throttled"]::before { background: var(--throttled); }
 .decision-cell[data-decision="passthrough"]::before { background: var(--passthrough); }
+.decision-cell[data-decision="blocked"]::before { background: var(--deny); }
 
 .empty-state {
   padding: 40px 20px;
