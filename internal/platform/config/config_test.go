@@ -1,8 +1,10 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/platform/config"
@@ -978,6 +980,48 @@ audit:
 	_, err := config.Load(path)
 	if err == nil {
 		t.Fatal("expected error when auto_block.score_threshold is lower than ml_score.score_threshold")
+	}
+}
+
+// TestConfig_Validate_AutoBlockDurationVsGCInterval covers the invariant
+// anomaly/usecase.gc relies on to skip any blocked-identity special case:
+// a block longer than 2x the GC interval would have its frozen baseline
+// evicted partway through, silently resetting it.
+func TestConfig_Validate_AutoBlockDurationVsGCInterval(t *testing.T) {
+	cfgYAML := func(blockDuration int) string {
+		return fmt.Sprintf(`
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  gc_interval_seconds: 600
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 5
+  auto_block:
+    enabled: true
+    score_threshold: 4.0
+    block_duration_seconds: %d
+audit:
+  output: stdout
+`, blockDuration)
+	}
+
+	// 1800s exceeds 2x600s: GC would evict the frozen baseline mid-block.
+	if _, err := config.Load(writeTemp(t, cfgYAML(1800))); err == nil {
+		t.Error("expected error when auto_block.block_duration_seconds exceeds 2x anomaly.gc_interval_seconds")
+	} else if !strings.Contains(err.Error(), "garbage-collected mid-block") {
+		t.Errorf("unexpected error for block_duration_seconds 1800 vs gc_interval_seconds 600: %v", err)
+	}
+
+	// 300s is the shipped example config's pairing, well within 2x600s.
+	if _, err := config.Load(writeTemp(t, cfgYAML(300))); err != nil {
+		t.Errorf("expected the shipped 300s/600s pairing to pass, got: %v", err)
 	}
 }
 

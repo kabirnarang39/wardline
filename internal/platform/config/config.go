@@ -300,6 +300,11 @@ func (c *Config) validate() error {
 			if c.Anomaly.AutoBlock.BlockDurationSeconds <= 0 {
 				problems = append(problems, "anomaly.auto_block.block_duration_seconds must be > 0 when anomaly.auto_block.enabled is true")
 			}
+			if c.Anomaly.GCIntervalSeconds > 0 && c.Anomaly.AutoBlock.BlockDurationSeconds > 2*c.Anomaly.GCIntervalSeconds {
+				problems = append(problems, fmt.Sprintf(
+					"anomaly.auto_block.block_duration_seconds (%d) must be <= 2x anomaly.gc_interval_seconds (%d, so <= %d) -- otherwise a blocked identity's baseline can be garbage-collected mid-block, silently resetting it instead of freezing it",
+					c.Anomaly.AutoBlock.BlockDurationSeconds, c.Anomaly.GCIntervalSeconds, 2*c.Anomaly.GCIntervalSeconds))
+			}
 		}
 	}
 	if c.Features["federation"] {

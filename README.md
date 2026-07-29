@@ -318,7 +318,10 @@ get a handshake either) — is rejected (`403`, JSON-RPC error,
 `auto_block.block_duration_seconds` seconds from the most recent
 detection — **strictly time-bounded, with no manual early unblock this
 cycle**: the block simply expires once its TTL elapses, checked fresh on
-every call, no separate invalidation step. Re-detection while already
+every call, no separate invalidation step. `block_duration_seconds` must
+stay within `2x` `anomaly.gc_interval_seconds` (config validation
+enforces this) so per-identity state GC can't evict a blocked identity's
+frozen baseline mid-block. Re-detection while already
 blocked extends `until` from that most recent detection, not the
 original one. When `web_ui` is also on, currently-blocked identities
 (TTL not yet elapsed as of the request) appear via `GET
