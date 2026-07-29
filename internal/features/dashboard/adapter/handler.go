@@ -9,6 +9,7 @@ import (
 
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
+	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 )
 
 // AuditSource is the subset of RingBuffer's behavior Handler depends on —
@@ -37,6 +38,12 @@ type AnomalySource interface {
 	Since(afterID int64, limit int) []anomalyusecase.Alert
 }
 
+// FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
+// behavior Handler depends on -- same one-method pattern as AnomalySource.
+type FederationSource interface {
+	Since(afterID int64, limit int) []federationusecase.CorrelatedAlertEntry
+}
+
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
 // limit query parameter: a missing or invalid value defaults to 100; any
 // requested value above 1000 (the ring buffer's own capacity — see
@@ -52,11 +59,12 @@ const (
 // all read-only by construction — it has no dependency on any policy,
 // budget, or proxy domain type, so it cannot influence a proxied request.
 type Handler struct {
-	audit     AuditSource
-	status    StatusSource
-	policy    domain.PolicyInfo
-	anomalies AnomalySource
-	mux       *http.ServeMux
+	audit      AuditSource
+	status     StatusSource
+	policy     domain.PolicyInfo
+	anomalies  AnomalySource
+	federation FederationSource
+	mux        *http.ServeMux
 }
 
 // NewHandler expects the returned *Handler to be mounted at exactly
@@ -65,15 +73,18 @@ type Handler struct {
 // http.StripPrefix) will break routing. anomalies may be nil (the
 // anomaly_detection feature is off) -- /dashboard/api/anomalies then
 // answers 404, the same "not wired" posture as
-// credential/adapter.Handler's nil RevokeAuthorizer.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies}
+// credential/adapter.Handler's nil RevokeAuthorizer. federation may
+// likewise be nil (the federation feature is off) -- /dashboard/api/federation/correlated
+// then answers 404 the same way.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
 	mux.HandleFunc("/dashboard/api/policy", h.handlePolicy)
 	mux.HandleFunc("/dashboard/api/status", h.handleStatus)
 	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
+	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -157,6 +168,20 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 			Tool:      a.Entry.Tool,
 		})
 	}
+	writeJSON(w, entries)
+}
+
+func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.federation == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	after, limit := pagination(r)
+
+	entries := h.federation.Since(after, limit)
 	writeJSON(w, entries)
 }
 
