@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -28,6 +29,12 @@ import (
 // importing the real usecase package's flags/limiter wiring.
 type BudgetChecker interface {
 	Check(identity string, now time.Time) budgetdomain.Verdict
+}
+
+// AutoBlockChecker is the subset of anomaly/usecase.BlockChecker's
+// behavior Handler depends on -- mirrors BudgetChecker's exact shape.
+type AutoBlockChecker interface {
+	Check(identity string, now time.Time) anomalydomain.BlockVerdict
 }
 
 // JSON-RPC error codes. This isn't a full JSON-RPC error code
@@ -80,17 +87,22 @@ const maxRequestBodyBytes = 1 << 20 // 1 MiB
 // (with a trace ID for correlation), and forward allowed calls to the
 // upstream MCP server.
 type Handler struct {
-	decider       *proxyusecase.Decider
-	recorder      *auditusecase.Recorder
-	upstream      *httputil.ReverseProxy
-	budgetChecker BudgetChecker
-	identityAuth  IdentityAuthenticator
-	tracer        trace.Tracer
-	logger        *slog.Logger
-	now           func() time.Time
+	decider          *proxyusecase.Decider
+	recorder         *auditusecase.Recorder
+	upstream         *httputil.ReverseProxy
+	budgetChecker    BudgetChecker
+	autoBlockChecker AutoBlockChecker
+	identityAuth     IdentityAuthenticator
+	tracer           trace.Tracer
+	logger           *slog.Logger
+	now              func() time.Time
 }
 
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger) *Handler {
+// autoBlockChecker is nil-able: the anomaly-detection feature it backs is
+// gated by a feature flag (see CLAUDE.md "Feature flags"), and callers that
+// don't wire one up (including every existing test in this package) get the
+// pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -100,14 +112,15 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 	tr.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
 	proxy.Transport = tr
 	return &Handler{
-		decider:       decider,
-		recorder:      recorder,
-		upstream:      proxy,
-		budgetChecker: budgetChecker,
-		identityAuth:  identityAuth,
-		tracer:        tracer,
-		logger:        logger,
-		now:           time.Now,
+		decider:          decider,
+		recorder:         recorder,
+		upstream:         proxy,
+		budgetChecker:    budgetChecker,
+		autoBlockChecker: autoBlockChecker,
+		identityAuth:     identityAuth,
+		tracer:           tracer,
+		logger:           logger,
+		now:              time.Now,
 	}
 }
 
@@ -145,6 +158,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.finish(span, identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
+	}
+
+	// The auto-block gate runs before policy evaluation (and before the
+	// passthrough/tool-call split below) so a blocked identity's call never
+	// reaches the policy engine — call.Tool isn't parsed yet at this point,
+	// so "" is used for tool, matching the parse-error paths above.
+	if h.autoBlockChecker != nil {
+		blockVerdict := h.autoBlockChecker.Check(identity, start)
+		if !blockVerdict.Allowed {
+			h.finish(span, identity, "", "blocked", blockVerdict.Reason, start)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))
+			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "blocked due to anomalous behavior")
+			return
+		}
 	}
 
 	if !parsed.IsToolCall {
@@ -261,9 +288,9 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
 	// ponytail: explicit success allowlist, not a switch with a default —
-	// decision is a closed set of 5 literals this file alone produces
-	// ("allow", "deny", "throttled", "passthrough", "error"), not
-	// caller-controlled. A future 6th decision value needs a human to add
+	// decision is a closed set of 6 literals this file alone produces
+	// ("allow", "deny", "throttled", "passthrough", "error", "blocked"), not
+	// caller-controlled. A future 7th decision value needs a human to add
 	// it here too; forgetting fails safe (Error), not silently open.
 	// Upgrade to a typed decision enum with an exhaustive switch if that
 	// becomes a real maintenance pain point.
