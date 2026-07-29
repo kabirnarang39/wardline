@@ -10,16 +10,23 @@ import (
 	"time"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/federation/domain"
 	"github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 )
 
 type fakeAlertReader struct {
-	anomalies []anomalydomain.Anomaly
+	alerts []anomalyusecase.Alert
 }
 
-func (f *fakeAlertReader) Since(afterID int64) []anomalydomain.Anomaly {
-	return f.anomalies
+func (f *fakeAlertReader) Since(afterID int64, limit int) []anomalyusecase.Alert {
+	var out []anomalyusecase.Alert
+	for _, a := range f.alerts {
+		if a.ID > afterID {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 type fakeSender struct {
@@ -49,8 +56,8 @@ func testSigningKey(t *testing.T) *rsa.PrivateKey {
 
 func TestPublisher_PublishOnce_SendsToEveryPeer(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	reader := &fakeAlertReader{anomalies: []anomalydomain.Anomaly{
-		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: now.Add(-10 * time.Second)},
+	reader := &fakeAlertReader{alerts: []anomalyusecase.Alert{
+		{ID: 1, Anomaly: anomalydomain.Anomaly{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: now.Add(-10 * time.Second)}},
 	}}
 	sender := &fakeSender{sendErr: map[string]error{}}
 	peers := []domain.Peer{
@@ -85,8 +92,8 @@ func TestPublisher_PublishOnce_SendsToEveryPeer(t *testing.T) {
 
 func TestPublisher_OnePeerFails_OthersStillSucceed(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	reader := &fakeAlertReader{anomalies: []anomalydomain.Anomaly{
-		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: now.Add(-10 * time.Second)},
+	reader := &fakeAlertReader{alerts: []anomalyusecase.Alert{
+		{ID: 1, Anomaly: anomalydomain.Anomaly{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: now.Add(-10 * time.Second)}},
 	}}
 	sender := &fakeSender{sendErr: map[string]error{
 		"https://eu.example.com/federation/summaries": errors.New("connection refused"),
@@ -112,7 +119,7 @@ func TestPublisher_OnePeerFails_OthersStillSucceed(t *testing.T) {
 
 func TestPublisher_NoAnomalies_SendsNothing(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	reader := &fakeAlertReader{anomalies: nil}
+	reader := &fakeAlertReader{alerts: nil}
 	sender := &fakeSender{sendErr: map[string]error{}}
 	peers := []domain.Peer{{ID: "eu-cluster", Endpoint: "https://eu.example.com/federation/summaries"}}
 
@@ -126,5 +133,41 @@ func TestPublisher_NoAnomalies_SendsNothing(t *testing.T) {
 	defer sender.mu.Unlock()
 	if len(sender.sent) != 0 {
 		t.Fatalf("expected nothing sent when there are no local anomalies, got %d", len(sender.sent))
+	}
+}
+
+func TestPublisher_SecondPublishOnce_DoesNotResendAlreadyReadAnomalies(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	reader := &fakeAlertReader{alerts: []anomalyusecase.Alert{
+		{ID: 1, Anomaly: anomalydomain.Anomaly{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: now.Add(-10 * time.Second)}},
+	}}
+	sender := &fakeSender{sendErr: map[string]error{}}
+	peers := []domain.Peer{{ID: "eu-cluster", Endpoint: "https://eu.example.com/federation/summaries"}}
+
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
+
+	if errs := p.PublishOnce(context.Background(), now); len(errs) != 0 {
+		t.Fatalf("first PublishOnce: expected no errors, got %v", errs)
+	}
+	sender.mu.Lock()
+	firstSent := len(sender.sent)
+	sender.mu.Unlock()
+	if firstSent != 1 {
+		t.Fatalf("expected 1 batch sent on first call, got %d", firstSent)
+	}
+
+	// Same underlying anomaly is still within the aggregation window (60s)
+	// on this second call a few seconds later, but it must not be
+	// re-sent: PublishOnce's read cursor (lastReadID) should already
+	// exclude it.
+	second := now.Add(5 * time.Second)
+	if errs := p.PublishOnce(context.Background(), second); len(errs) != 0 {
+		t.Fatalf("second PublishOnce: expected no errors, got %v", errs)
+	}
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.sent) != firstSent {
+		t.Fatalf("expected no additional batches sent on second call, got %d total (was %d after first call)", len(sender.sent), firstSent)
 	}
 }
