@@ -88,8 +88,9 @@ func mlFloorCfg() domain.HeuristicConfig {
 // regression gate for N2: without MinCalls, a window containing exactly
 // one call scores as a wild outlier by construction, not by behavior.
 // Against the baseline this test builds ({10, 11} alternating, mean 10.5,
-// sample stddev 0.5345), a 1-call window scores
-// z_rate = (1 - 10.5) / 0.5345 = -17.8 -- far past both the 3.0 log
+// sample stddev 0.5270, floored per minStddevRelFraction to
+// 0.15*10.5=1.575), a 1-call window scores
+// z_rate = (1 - 10.5) / 1.575 = -6.03 -- past both the 3.0 log
 // threshold and the 4.0 block threshold. An identity that simply went
 // quiet for one window would be auto-blocked. With the floor, the window
 // is skipped outright: no anomaly, nothing folded, no Block call.
