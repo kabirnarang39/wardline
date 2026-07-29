@@ -688,6 +688,59 @@ func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.
 	}
 }
 
+// TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged is the
+// regression gate for C2, whose fix (only fold a window into the baseline
+// when it wasn't itself flagged) was verified empirically in fix wave 1
+// but never turned into a test. Before that fix, folding a flagged window
+// in unconditionally dragged the baseline's variance so wide that an
+// identical repeat of the same attack stopped scoring anomalous after
+// round one -- 4 identical bursts, only the first flagged.
+//
+// Each burst is 200 calls across 20 tools 1ms apart, scored against a
+// frozen 8-sample {10, 11} baseline (mean 10.5, stddev floored to
+// 0.15*10.5 = 1.575): z_rate = (200-10.5)/1.575 = 120.3 every time, far
+// past both the 3.0 log threshold and the 4.0 block threshold. "Frozen" is
+// the whole point: because no burst is folded, burst 4 is compared against
+// exactly the same baseline burst 1 was.
+func TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	cfg := domain.HeuristicConfig{
+		WindowSeconds: 60,
+		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
+		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
+	}
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
+
+	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
+		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	// 4 identical bursts. Burst i is scored by the first call of burst i+1,
+	// so the 4th needs one trailing rollover call of its own.
+	const bursts = 4
+	for i := 0; i < bursts; i++ {
+		publishWindow(d, clock, "alice", manyToolNames(20), "allow", 200, time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	count := 0
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			count++
+		}
+	}
+	if count != bursts {
+		t.Errorf("expected all %d identical attack bursts to be flagged, got %d: %+v", bursts, count, writer.anomalies)
+	}
+	if len(blocker.calls) != bursts {
+		t.Errorf("expected all %d identical attack bursts to trigger Block, got %d: %+v", bursts, len(blocker.calls), blocker.calls)
+	}
+}
+
 // TestDetector_MLScore_OrdinaryGrowth_NeverFlags is the end-to-end
 // (Detector-level) regression gate for the remainder of N1: the reviewer's
 // exact repro, driven through Publish rather than onlineStat directly.
