@@ -856,3 +856,108 @@ audit:
 		t.Errorf("unexpected Federation.MinInstancesForCorrelation: %d", cfg.Federation.MinInstancesForCorrelation)
 	}
 }
+
+func TestConfig_Validate_MLScoreEnabledRequiresPositiveThreshold(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when ml_score is enabled with a non-positive score_threshold")
+	}
+}
+
+func TestConfig_Validate_AutoBlockRequiresMLScoreEnabled(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: false
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 300
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when auto_block is enabled but ml_score is not")
+	}
+}
+
+func TestConfig_Validate_AutoBlockRequiresPositiveThresholdAndDuration(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+  auto_block:
+    enabled: true
+    score_threshold: 0
+    block_duration_seconds: 0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when auto_block is enabled with a non-positive score_threshold or block_duration_seconds")
+	}
+}
+
+func TestConfig_Validate_ValidMLScoreAndAutoBlockConfig(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+  auto_block:
+    enabled: true
+    score_threshold: 4.0
+    block_duration_seconds: 300
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected a valid ml_score/auto_block config to pass, got: %v", err)
+	}
+	if cfg.Anomaly.MLScore.ScoreThreshold != 3.0 {
+		t.Errorf("unexpected Anomaly.MLScore.ScoreThreshold: %v", cfg.Anomaly.MLScore.ScoreThreshold)
+	}
+	if cfg.Anomaly.AutoBlock.BlockDurationSeconds != 300 {
+		t.Errorf("unexpected Anomaly.AutoBlock.BlockDurationSeconds: %d", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+	}
+}

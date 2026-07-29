@@ -91,6 +91,20 @@ type DenyRateSpikeConfig struct {
 	MinCalls  int     `yaml:"min_calls"`
 }
 
+// MLScoreConfig configures the combined-z-score ML detector.
+type MLScoreConfig struct {
+	Enabled        bool    `yaml:"enabled"`
+	ScoreThreshold float64 `yaml:"score_threshold"`
+}
+
+// AutoBlockConfig configures whether an ml_score anomaly also blocks the
+// offending identity for a time-bounded window.
+type AutoBlockConfig struct {
+	Enabled              bool    `yaml:"enabled"`
+	ScoreThreshold       float64 `yaml:"score_threshold"`
+	BlockDurationSeconds int     `yaml:"block_duration_seconds"`
+}
+
 // AnomalyConfig configures anomaly detection. Only validated (and only
 // meaningful) when the anomaly_detection feature flag is on.
 type AnomalyConfig struct {
@@ -101,6 +115,8 @@ type AnomalyConfig struct {
 	RateSpike         RateSpikeConfig     `yaml:"rate_spike"`
 	NovelTool         NovelToolConfig     `yaml:"novel_tool"`
 	DenyRateSpike     DenyRateSpikeConfig `yaml:"deny_rate_spike"`
+	MLScore           MLScoreConfig       `yaml:"ml_score"`
+	AutoBlock         AutoBlockConfig     `yaml:"auto_block"`
 }
 
 // FederationConfig configures cross-instance anomaly correlation. Only
@@ -263,6 +279,20 @@ func (c *Config) validate() error {
 		}
 		if c.Anomaly.DenyRateSpike.Enabled && c.Anomaly.DenyRateSpike.MinCalls <= 0 {
 			problems = append(problems, "anomaly.deny_rate_spike.min_calls must be > 0 when anomaly.deny_rate_spike.enabled is true")
+		}
+		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.ScoreThreshold <= 0 {
+			problems = append(problems, "anomaly.ml_score.score_threshold must be > 0 when anomaly.ml_score.enabled is true")
+		}
+		if c.Anomaly.AutoBlock.Enabled {
+			if !c.Anomaly.MLScore.Enabled {
+				problems = append(problems, "anomaly.ml_score.enabled must be true when anomaly.auto_block.enabled is true -- auto-block acts on ml_score's value")
+			}
+			if c.Anomaly.AutoBlock.ScoreThreshold <= 0 {
+				problems = append(problems, "anomaly.auto_block.score_threshold must be > 0 when anomaly.auto_block.enabled is true")
+			}
+			if c.Anomaly.AutoBlock.BlockDurationSeconds <= 0 {
+				problems = append(problems, "anomaly.auto_block.block_duration_seconds must be > 0 when anomaly.auto_block.enabled is true")
+			}
 		}
 	}
 	if c.Features["federation"] {
