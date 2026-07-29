@@ -92,6 +92,26 @@ func isToolCall(e auditdomain.Entry) bool {
 }
 
 func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
+	// A "blocked" decision is Wardline's own auto-block gate rejecting the
+	// call before it ever reaches policy -- self-inflicted rejection
+	// traffic from an identity that's already been flagged, not a real
+	// behavioral signal. Feeding it into window state would let it
+	// re-poison the very heuristics that produced the block: a retrying
+	// client's rejected calls would inflate the rate/inter-arrival
+	// features, and a client that backs off would produce a near-empty
+	// window (see checkMLScore's MinCalls gate) -- either way
+	// re-triggering Block() at every rollover, forever, which is exactly
+	// what "strictly time-bounded" promises won't happen. Excluding these
+	// entries entirely means the first real call after the block expires
+	// is scored exactly as if the blocked period never happened. This
+	// applies to every heuristic, not just ml_score: a blocked call is not
+	// real traffic for rate_spike, novel_tool or deny_rate_spike either.
+	// Nothing is read or written for this case, so the guard sits ahead of
+	// the mutex.
+	if e.Decision == "blocked" {
+		return nil
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

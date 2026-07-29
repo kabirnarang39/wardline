@@ -3,11 +3,13 @@ package usecase
 // These tests live in package usecase (not usecase_test like the rest of
 // detector_test.go) because they assert on Detector's unexported
 // per-identity state directly: "a sub-floor window folds nothing into the
-// baseline" is a claim about internal state that no externally-observable
-// output distinguishes from a coincidence.
+// baseline" and "a blocked identity's rejection traffic leaves window
+// state untouched" are both claims about internal state that no
+// externally-observable output distinguishes from a coincidence.
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -135,5 +137,103 @@ func TestDetector_MLScore_MinCallsFloor_SkipsSingleCallWindow(t *testing.T) {
 	}
 	if len(blocker.calls) != 0 {
 		t.Errorf("expected zero Block calls for a 1-call window under the MinCalls floor, got %+v", blocker.calls)
+	}
+}
+
+// stateSnapshot is a fully comparable projection of identityState: every
+// scalar, plus map cardinalities (the maps themselves are shared by
+// reference, so copying the struct alone would not notice a mutation made
+// through the shared map).
+type stateSnapshot struct {
+	prevTotal, prevToolCalls, prevDeny, prevUniqueTools, prevInterArrivalN int
+	prevInterArrivalSum                                                    time.Duration
+	curTotal, curToolCalls, curDeny, curUniqueTools, curInterArrivalN      int
+	curInterArrivalSum                                                     time.Duration
+	windowStart, lastCallAt, lastSeen                                      time.Time
+	allTimeTools                                                           int
+	rate, diversity, denyRatio, interArrival                               onlineStat
+}
+
+func snapshot(st *identityState) stateSnapshot {
+	return stateSnapshot{
+		prevTotal:           st.prev.total,
+		prevToolCalls:       st.prev.toolCalls,
+		prevDeny:            st.prev.deny,
+		prevUniqueTools:     len(st.prev.uniqueTools),
+		prevInterArrivalN:   st.prev.interArrivalN,
+		prevInterArrivalSum: st.prev.interArrivalSum,
+		curTotal:            st.cur.total,
+		curToolCalls:        st.cur.toolCalls,
+		curDeny:             st.cur.deny,
+		curUniqueTools:      len(st.cur.uniqueTools),
+		curInterArrivalN:    st.cur.interArrivalN,
+		curInterArrivalSum:  st.cur.interArrivalSum,
+		windowStart:         st.windowStart,
+		lastCallAt:          st.lastCallAt,
+		lastSeen:            st.lastSeen,
+		allTimeTools:        len(st.tools),
+		rate:                st.mlStats.rate,
+		diversity:           st.mlStats.diversity,
+		denyRatio:           st.mlStats.denyRatio,
+		interArrival:        st.mlStats.interArrival,
+	}
+}
+
+// TestDetector_MLScore_BlockedEntriesExcludedFromState is the regression
+// gate for N3. Without the "blocked" guard in recordAndCheck, a blocked
+// identity's own rejected retries -- or its silence, which produces
+// near-empty windows -- form new windows that score as anomalous by
+// construction, and since fix wave 1 stopped folding flagged windows into
+// the baseline, the baseline never absorbs them. Block() then fires again
+// at every window rollover and BlockChecker.Block rewrites `until` each
+// time, so the identity never recovers from what README.md documents as a
+// strictly time-bounded block.
+func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
+	clock := &internalClock{t: time.Unix(0, 0)}
+	writer := &nopWriter{}
+	blocker := &blockRecorder{}
+	d := NewDetector(mlFloorCfg(), writer, nil, blocker, nil, clock.now)
+
+	// Same 10-window {10, 11} baseline as the MinCalls test above.
+	for i := 0; i < 10; i++ {
+		n := 10 + i%2
+		feedWindow(d, clock, "alice", distinctTools(n), n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	// A genuinely wild window: 200 calls across 20 tools, 1ms apart.
+	// z_rate = (200 - 10.5) / 1.575 = 120.3 against the relative-stddev
+	// floor -- far past the 4.0 block threshold.
+	feedWindow(d, clock, "alice", distinctTools(20), 200, time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 1 {
+		t.Fatalf("test setup: expected exactly 1 Block call for the wild window, got %d: %+v", len(blocker.calls), blocker.calls)
+	}
+	before := snapshot(d.state["alice"])
+
+	// The block is now in force, so every subsequent call from alice is
+	// rejected by the proxy's gate and recorded as decision "blocked" with
+	// an empty Tool. Simulate both real blocked-client behaviors across
+	// five window durations: a client that retries hard (200 rejected
+	// calls) and a client that honors Retry-After (one lone probe).
+	for w := 0; w < 5; w++ {
+		retries := 200
+		if w%2 == 1 {
+			retries = 1
+		}
+		for i := 0; i < retries; i++ {
+			d.Publish(auditdomain.Entry{Identity: "alice", Tool: "", Decision: "blocked"})
+			clock.t = clock.t.Add(time.Millisecond)
+		}
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	if after := snapshot(d.state["alice"]); !reflect.DeepEqual(before, after) {
+		t.Errorf("blocked entries mutated Detector state -- the first real call after the block expires must be scored as if the block never happened\nbefore: %+v\nafter:  %+v", before, after)
+	}
+	if len(blocker.calls) != 1 {
+		t.Errorf("expected the block to stay at exactly 1 Block call across 5 window rollovers of blocked traffic, got %d: %+v", len(blocker.calls), blocker.calls)
 	}
 }
