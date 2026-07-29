@@ -30,7 +30,10 @@ features:
 
 Every capability beyond the v0.1 baseline (proxy + policy + audit) is
 gated by a `features` flag, off by default — see each feature's own page
-under [Features](/features/) for what its block adds to this file.
+under [Features](/features/) for what its block adds to this file
+(`otel_tracing` and `web_ui` are covered under
+[Observability](/deployment/observability/) instead, alongside the
+Helm/Docker deployment material they're most relevant to).
 [Compliance evidence export](/features/compliance-evidence-export/) and
 [Policy-pack marketplace](/features/policy-pack-marketplace/) are the
 two exceptions: both are always-available CLI subcommands
