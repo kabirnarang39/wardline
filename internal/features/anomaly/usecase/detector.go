@@ -1,6 +1,8 @@
 package usecase
 
 import (
+	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -16,6 +18,14 @@ type alertSink interface {
 	Add(domain.Anomaly)
 }
 
+// blocker is the subset of usecase.BlockChecker's behavior Detector
+// depends on -- one method, matching alertSink's narrow-interface
+// pattern. nil-able: ml_score-without-auto_block needs zero special-casing
+// here beyond a nil check.
+type blocker interface {
+	Block(identity, reason string)
+}
+
 // Detector implements audit/domain.LiveSink: every published audit entry
 // is run through all enabled heuristics. Publish must never block or
 // error outward -- the same contract every other LiveSink already
@@ -25,6 +35,7 @@ type Detector struct {
 	cfg     domain.HeuristicConfig
 	writer  domain.Writer
 	buffer  alertSink
+	blocker blocker
 	onError func(error)
 	now     func() time.Time
 
@@ -32,11 +43,12 @@ type Detector struct {
 	state map[string]*identityState
 }
 
-func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, onError func(error), now func() time.Time) *Detector {
+func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time) *Detector {
 	return &Detector{
 		cfg:     cfg,
 		writer:  writer,
 		buffer:  buffer,
+		blocker: blocker,
 		onError: onError,
 		now:     now,
 		state:   make(map[string]*identityState),
@@ -92,7 +104,8 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	st.lastSeen = now
 
 	window := time.Duration(d.cfg.WindowSeconds) * time.Second
-	if now.Sub(st.windowStart) >= window {
+	windowJustCompleted := now.Sub(st.windowStart) >= window
+	if windowJustCompleted {
 		st.prev = st.cur
 		st.cur = windowCounts{}
 		st.windowStart = now
@@ -105,7 +118,16 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 		if e.Decision == "deny" {
 			st.cur.deny++
 		}
+		if st.cur.uniqueTools == nil {
+			st.cur.uniqueTools = make(map[string]struct{})
+		}
+		st.cur.uniqueTools[e.Tool] = struct{}{}
 	}
+	if !st.lastCallAt.IsZero() {
+		st.cur.interArrivalSum += now.Sub(st.lastCallAt)
+		st.cur.interArrivalN++
+	}
+	st.lastCallAt = now
 
 	var toEmit []domain.Anomaly
 	if d.cfg.RateSpikeEnabled {
@@ -120,6 +142,21 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	}
 	if d.cfg.DenyRateSpikeEnabled {
 		if a, ok := d.checkDenyRateSpike(e, st); ok {
+			toEmit = append(toEmit, a)
+		}
+	}
+	// ml_score is different from the three checks above: it scores a
+	// window only once, at the instant it just completed (st.prev), never
+	// the in-progress st.cur -- see checkMLScore's doc comment. Gating on
+	// windowJustCompleted (true for exactly one Publish call per window,
+	// the call whose arrival crosses the boundary) is what makes that
+	// "once" hold; calling checkMLScore unconditionally on every Publish
+	// call like the other three heuristics would re-score the same
+	// completed window -- and re-fold its raw feature values into
+	// st.mlStats -- once per call in the *following* window, silently
+	// over-weighting whichever window happens to contain the most calls.
+	if d.cfg.MLScore.Enabled && windowJustCompleted {
+		if a, ok := d.checkMLScore(e, st); ok {
 			toEmit = append(toEmit, a)
 		}
 	}
@@ -207,6 +244,88 @@ func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (d
 		Detail:    "deny ratio exceeded threshold within the trailing window",
 		Entry:     e,
 	}, true
+}
+
+// checkMLScore must be called with d.mu held, and only once per completed
+// window -- the caller (recordAndCheck) enforces this by gating the call
+// on windowJustCompleted rather than invoking it on every entry the way
+// checkRateSpike/checkNovelTool/checkDenyRateSpike are. Unlike those three
+// (which evaluate the in-progress st.cur on every call), ml_score
+// evaluates a window only once, at the moment it just completed
+// (st.prev), against each feature's persistent running baseline in
+// st.mlStats -- there is no earlier point at which "this window's tool
+// diversity" or "this window's mean inter-arrival time" is a finished,
+// scoreable number. Each onlineStat is scored against its pre-update
+// baseline and only then updated with this window's raw value, so a wild
+// window is compared against history that does not already include
+// itself.
+func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
+	rate := float64(st.prev.total)
+	diversity := float64(len(st.prev.uniqueTools))
+	var denyRatio float64
+	if st.prev.toolCalls > 0 {
+		denyRatio = float64(st.prev.deny) / float64(st.prev.toolCalls)
+	}
+	var interArrival float64
+	if st.prev.interArrivalN > 0 {
+		interArrival = st.prev.interArrivalSum.Seconds() / float64(st.prev.interArrivalN)
+	}
+
+	zRate := st.mlStats.rate.ZScore(rate)
+	zDiversity := st.mlStats.diversity.ZScore(diversity)
+	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
+	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
+
+	st.mlStats.rate.Update(rate)
+	st.mlStats.diversity.Update(diversity)
+	st.mlStats.denyRatio.Update(denyRatio)
+	st.mlStats.interArrival.Update(interArrival)
+
+	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
+
+	if d.cfg.AutoBlock.Enabled && d.blocker != nil && score > d.cfg.AutoBlock.ScoreThreshold {
+		d.blocker.Block(e.Identity, fmt.Sprintf(
+			"ml_score %.2f (feature: %s) exceeded auto-block threshold %.2f",
+			score, feature, d.cfg.AutoBlock.ScoreThreshold))
+	}
+
+	if score <= d.cfg.MLScore.ScoreThreshold {
+		return domain.Anomaly{}, false
+	}
+	if st.flaggedThisWindow[domain.KindMLScore] {
+		return domain.Anomaly{}, false
+	}
+	if st.flaggedThisWindow == nil {
+		st.flaggedThisWindow = make(map[domain.Kind]bool)
+	}
+	st.flaggedThisWindow[domain.KindMLScore] = true
+	return domain.Anomaly{
+		Timestamp: d.now(),
+		Identity:  e.Identity,
+		Kind:      domain.KindMLScore,
+		Detail: fmt.Sprintf(
+			"combined z-score %.2f (driving feature: %s) exceeded threshold %.2f",
+			score, feature, d.cfg.MLScore.ScoreThreshold),
+		Entry: e,
+	}, true
+}
+
+// maxAbsZ returns the largest-magnitude of the four feature z-scores and
+// the name of the feature that produced it, for ml_score's combined
+// score and its human-readable Detail.
+func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) {
+	best := math.Abs(zRate)
+	feature := "call_rate"
+	if v := math.Abs(zDiversity); v > best {
+		best, feature = v, "tool_diversity"
+	}
+	if v := math.Abs(zDeny); v > best {
+		best, feature = v, "deny_ratio"
+	}
+	if v := math.Abs(zInterArrival); v > best {
+		best, feature = v, "inter_arrival_time"
+	}
+	return best, feature
 }
 
 func (d *Detector) emit(a domain.Anomaly) {
