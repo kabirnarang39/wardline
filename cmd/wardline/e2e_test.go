@@ -1361,6 +1361,126 @@ anomaly:
 	}
 }
 
+// TestServeEndToEnd_MLScoreAutoBlock_BlockExpiresAndIdentityRecovers proves
+// the block installed by auto_block is time-bounded, not permanent: once
+// block_duration_seconds elapses, BlockChecker.Check reads the same
+// identity as allowed again (see auto_block.go's Check doc comment -- a
+// block whose TTL has passed reads as "not blocked" purely by comparing
+// against wall-clock time, no separate expiry/GC step required for the
+// read path). block_duration_seconds is kept short (2s) so this test
+// doesn't need a long sleep, matching this file's fast-window style
+// elsewhere (e.g. TestServeEndToEnd_AnomalyDetectionRateSpike's 3s window).
+func TestServeEndToEnd_MLScoreAutoBlock_BlockExpiresAndIdentityRecovers(t *testing.T) {
+	dir := t.TempDir()
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, fmt.Sprintf(`features:
+  web_ui: true
+  anomaly_detection: true
+anomaly:
+  output: "%s"
+  window_seconds: 2
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 2`, anomalyPath))
+
+	doCall := func(identity, tool string) {
+		resp := postToolCall(t, listenAddr, identity, tool)
+		_ = resp.Body.Close()
+	}
+
+	// Same baseline-then-outlier shape as TestServeEndToEnd_MLScoreAutoBlock
+	// -- two non-identical baseline windows so onlineStat.ZScore() has a
+	// non-zero variance to compare the outlier window against, then one
+	// wild outlier window of many distinct, rapid-fire tool calls.
+	doCall("alice", "read_file")
+	doCall("alice", "read_file")
+	time.Sleep(2100 * time.Millisecond)
+	doCall("alice", "read_file")
+	doCall("alice", "list_dir")
+	doCall("alice", "list_dir")
+	time.Sleep(2100 * time.Millisecond)
+
+	for i := 0; i < 30; i++ {
+		doCall("alice", fmt.Sprintf("tool_%d", i))
+	}
+	time.Sleep(2100 * time.Millisecond)
+	doCall("alice", "read_file")
+
+	data, err := os.ReadFile(anomalyPath)
+	if err != nil {
+		t.Fatalf("failed to read anomaly output: %v (stderr: %s)", err, stderr.String())
+	}
+	if !bytes.Contains(data, []byte(`"kind":"ml_score"`)) {
+		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
+	}
+
+	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	defer func() { _ = blockedResp.Body.Close() }()
+	if blockedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for the auto-blocked identity, got %d (stderr: %s)", blockedResp.StatusCode, stderr.String())
+	}
+
+	// Wait out block_duration_seconds (2s) plus margin, then confirm the
+	// same identity that was just rejected succeeds again -- the block
+	// expired rather than persisting indefinitely.
+	time.Sleep(2500 * time.Millisecond)
+
+	recoveredResp := postToolCall(t, listenAddr, "alice", "read_file")
+	defer func() { _ = recoveredResp.Body.Close() }()
+	if recoveredResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alice after block_duration_seconds elapsed, got %d (stderr: %s)", recoveredResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_AutoBlockOff_BlockedListRouteReturns404 proves the
+// dashboard's /dashboard/api/anomalies/blocked route answers 404 -- not a
+// panic, not an empty-but-200 list -- when anomaly_detection and web_ui are
+// both on but auto_block is left off (unset from config entirely here).
+// This is the exact combination the typed-nil bug Task 7 fixed would have
+// broken: main.go only assigns dashboardadapter.BlockedSource when
+// blockChecker != nil (a real *BlockChecker, never a nil one wrapped in
+// the interface), so h.blocked stays a true nil interface and
+// handleBlocked's "h.blocked == nil" guard in
+// internal/features/dashboard/adapter/handler.go correctly answers 404
+// instead of dereferencing a nil BlockChecker. A real proxied call is
+// made first so the "auto_block off" path is exercised under live
+// traffic, not just checked against an idle server.
+func TestServeEndToEnd_AutoBlockOff_BlockedListRouteReturns404(t *testing.T) {
+	dir := t.TempDir()
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, fmt.Sprintf(`features:
+  web_ui: true
+  anomaly_detection: true
+anomaly:
+  output: "%s"
+  window_seconds: 2`, anomalyPath))
+
+	callResp := postToolCall(t, listenAddr, "alice", "read_file")
+	defer func() { _ = callResp.Body.Close() }()
+	if callResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a normal call with auto_block off, got %d (stderr: %s)", callResp.StatusCode, stderr.String())
+	}
+
+	resp, err := http.Get("http://" + listenAddr + "/dashboard/api/anomalies/blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 from /dashboard/api/anomalies/blocked when auto_block is off, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+}
+
 // TestValidateConfigEndToEnd_AnomalyOutputNotCreated proves
 // `wardline validate-config` has no filesystem side effects: it must
 // report a valid anomaly block without creating anomaly.output, which an
