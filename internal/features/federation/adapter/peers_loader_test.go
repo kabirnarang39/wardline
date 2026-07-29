@@ -92,6 +92,29 @@ func TestLoadPeers_MissingFile_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoadPeers_DuplicatePeerID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	keyPath1 := writeTestPublicKey(t, dir, "eu-cluster-1.pub.pem")
+	keyPath2 := writeTestPublicKey(t, dir, "eu-cluster-2.pub.pem")
+
+	peersYAML := "peers:\n" +
+		"  - id: eu-cluster\n" +
+		"    endpoint: https://wardline.eu.example.com/federation/summaries\n" +
+		"    public_key_file: " + keyPath1 + "\n" +
+		"  - id: eu-cluster\n" +
+		"    endpoint: https://wardline.eu2.example.com/federation/summaries\n" +
+		"    public_key_file: " + keyPath2 + "\n"
+	peersPath := filepath.Join(dir, "peers.yaml")
+	if err := os.WriteFile(peersPath, []byte(peersYAML), 0o600); err != nil {
+		t.Fatalf("write peers file: %v", err)
+	}
+
+	_, err := adapter.LoadPeers(peersPath)
+	if err == nil {
+		t.Fatal("expected an error for a duplicate peer id, got nil")
+	}
+}
+
 func TestLoadPeers_UnparsablePublicKey_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	badKeyPath := filepath.Join(dir, "bad.pem")
