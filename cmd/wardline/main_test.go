@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
@@ -320,6 +321,43 @@ func TestRunExportEvidence_MissingAnomalyFileIsZeroAnomaliesAndBundleIsOwnerOnly
 	}
 	if !bytes.Contains(manifestJSON, []byte(`"unparsable_anomaly_lines_skipped": 0`)) {
 		t.Errorf("expected the anomaly skip counter in manifest.json, got:\n%s", manifestJSON)
+	}
+}
+
+func TestDeriveInstanceID_OverrideWins(t *testing.T) {
+	got := deriveInstanceIDFrom(testLogger(), "operator-supplied-id", func() (string, error) {
+		t.Fatal("hostname lookup must not be called when override is set")
+		return "", nil
+	})
+	if got != "operator-supplied-id" {
+		t.Errorf("expected the override to win, got %q", got)
+	}
+}
+
+func TestDeriveInstanceID_FallsBackToHostname(t *testing.T) {
+	got := deriveInstanceIDFrom(testLogger(), "", func() (string, error) {
+		return "real-hostname", nil
+	})
+	if got != "real-hostname" {
+		t.Errorf("expected the resolved hostname, got %q", got)
+	}
+}
+
+func TestDeriveInstanceID_HostnameLookupFails_FallsBackToRandomSuffix(t *testing.T) {
+	got := deriveInstanceIDFrom(testLogger(), "", func() (string, error) {
+		return "", errors.New("no hostname")
+	})
+	if !strings.HasPrefix(got, "wardline-") {
+		t.Errorf("expected a random wardline-<suffix> fallback, got %q", got)
+	}
+}
+
+func TestDeriveInstanceID_EmptyHostname_FallsBackToRandomSuffix(t *testing.T) {
+	got := deriveInstanceIDFrom(testLogger(), "", func() (string, error) {
+		return "", nil // no error, but an empty hostname is just as unusable
+	})
+	if !strings.HasPrefix(got, "wardline-") {
+		t.Errorf("expected a random wardline-<suffix> fallback for an empty hostname, got %q", got)
 	}
 }
 
