@@ -16,7 +16,7 @@ func TestDetector_GC_DropsStaleStateKeepsFreshState(t *testing.T) {
 	base := time.Unix(0, 0)
 	cur := base
 	cfg := domain.HeuristicConfig{WindowSeconds: 60}
-	d := NewDetector(cfg, noopWriter{}, nil, nil, func() time.Time { return cur })
+	d := NewDetector(cfg, noopWriter{}, nil, nil, nil, func() time.Time { return cur })
 
 	d.Publish(auditdomain.Entry{Identity: "stale-identity", Tool: "read_file", Decision: "allow"})
 	cur = base.Add(5 * time.Minute)
