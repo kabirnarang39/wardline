@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
@@ -44,6 +45,12 @@ type FederationSource interface {
 	Since(afterID int64, limit int) []federationusecase.CorrelatedAlertEntry
 }
 
+// BlockedSource is the subset of anomaly/usecase.BlockChecker's behavior
+// Handler depends on.
+type BlockedSource interface {
+	List() []anomalydomain.BlockedEntry
+}
+
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
 // limit query parameter: a missing or invalid value defaults to 100; any
 // requested value above 1000 (the ring buffer's own capacity — see
@@ -64,6 +71,7 @@ type Handler struct {
 	policy     domain.PolicyInfo
 	anomalies  AnomalySource
 	federation FederationSource
+	blocked    BlockedSource
 	mux        *http.ServeMux
 }
 
@@ -75,9 +83,11 @@ type Handler struct {
 // answers 404, the same "not wired" posture as
 // credential/adapter.Handler's nil RevokeAuthorizer. federation may
 // likewise be nil (the federation feature is off) -- /dashboard/api/federation/correlated
+// then answers 404 the same way. blocked may likewise be nil (the
+// anomaly_detection feature is off) -- /dashboard/api/anomalies/blocked
 // then answers 404 the same way.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation}
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -85,6 +95,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/status", h.handleStatus)
 	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
+	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -194,6 +205,17 @@ func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	writeJSON(w, entries)
+}
+
+func (h *Handler) handleBlocked(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.blocked == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, h.blocked.List())
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {

@@ -432,7 +432,7 @@ func runServe(logger *slog.Logger, args []string) {
 		if federationEnabled {
 			federationSource = correlatedBuffer
 		}
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource)
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, nil)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
