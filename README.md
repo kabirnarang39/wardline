@@ -287,6 +287,20 @@ entirely ordinary traffic variation as a wild outlier. A self-baseline
 needs a real amount of normal variation to compare against before it
 can tell a window apart from noise.
 
+`ml_score.min_calls` is a second, orthogonal floor — on the *window*
+rather than on the history behind it. A completed window with fewer than
+`min_calls` calls is neither scored nor folded into any of the four
+baselines: two of the four features hit a range extreme for reasons that
+have nothing to do with behavior. A window with exactly one call is by
+construction "100% diverse" (one call, one tool → ratio 1.0, the high
+extreme) and has no inter-arrival delta at all (defaulting to 0.0
+seconds, the "instantaneous" low extreme). Those extremes mean "no
+observation," not "wild outlier," and scoring them is how an identity
+that simply went quiet for a window gets flagged — and, under
+`auto_block`, blocked. This is the same kind of floor
+`rate_spike.min_calls` and `deny_rate_spike.min_calls` already apply
+before trusting their own ratios.
+
 ### Auto-block
 
 Opt in with `anomaly.auto_block.enabled: true` — **requires
