@@ -11,6 +11,7 @@ import (
 	"time"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/federation/domain"
 )
 
@@ -19,8 +20,12 @@ import (
 // anomaly feature besides the plain anomalydomain.Kind const type. A
 // narrow interface, matching every other *Source pattern already used
 // across this codebase (dashboard's AuditSource/AnomalySource, etc.).
+// Returns anomalyusecase.Alert (not plain anomalydomain.Anomaly) because
+// each Alert's ID is what lets PublishOnce advance its read cursor --
+// afterID=0, limit=0 mean "from the start"/"no cap", matching
+// AlertBuffer.Since's own semantics.
 type AlertReader interface {
-	Since(afterID int64) []anomalydomain.Anomaly
+	Since(afterID int64, limit int) []anomalyusecase.Alert
 }
 
 // batchSigner abstracts signing so Publisher's own tests don't need a
@@ -92,10 +97,20 @@ func signPayload(payload []byte, key *rsa.PrivateKey) ([]byte, error) {
 // receive the batch (nil slice means every peer succeeded, including
 // the trivial case of zero peers or zero anomalies to report).
 func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) []error {
-	anomalies := p.reader.Since(p.lastReadID)
-	if len(anomalies) == 0 {
+	alerts := p.reader.Since(p.lastReadID, 0)
+	if len(alerts) == 0 {
 		return nil
 	}
+
+	anomalies := make([]anomalydomain.Anomaly, len(alerts))
+	var maxID int64
+	for i, a := range alerts {
+		anomalies[i] = a.Anomaly
+		if a.ID > maxID {
+			maxID = a.ID
+		}
+	}
+	p.lastReadID = maxID
 
 	windowStart := now.Add(-time.Duration(p.windowSecs) * time.Second)
 	summaries := Aggregate(anomalies, p.sharedSecret, windowStart, now)
