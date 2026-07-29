@@ -1854,6 +1854,322 @@ audit:
 	}
 }
 
+// genRSAKeyPairE2E shells out to openssl (same tool TestHAEndToEnd already
+// depends on) to generate a real RSA private key plus its matching PKIX
+// "PUBLIC KEY" PEM -- the two shapes adapter.ParsePrivateKeyPEM and
+// adapter.ParsePublicKeyPEM expect, respectively.
+func genRSAKeyPairE2E(t *testing.T, dir, name string) (privPath, pubPath string) {
+	t.Helper()
+	privPath = filepath.Join(dir, name+"-private.pem")
+	pubPath = filepath.Join(dir, name+"-public.pem")
+	if out, err := exec.Command("openssl", "genrsa", "-out", privPath, "2048").CombinedOutput(); err != nil {
+		t.Fatalf("generate %s private key: %v\n%s", name, err, out)
+	}
+	if out, err := exec.Command("openssl", "rsa", "-in", privPath, "-pubout", "-out", pubPath).CombinedOutput(); err != nil {
+		t.Fatalf("derive %s public key: %v\n%s", name, err, out)
+	}
+	return privPath, pubPath
+}
+
+// waitForCorrelatedAlertE2E polls addr's /dashboard/api/federation/correlated
+// until a CorrelatedAlert whose InstanceIDs cover every id in wantIDs
+// appears, or fails the test after a generous deadline -- correlation is
+// necessarily eventually-consistent (it depends on both instances'
+// publish tickers firing and a real HTTP round trip between them), so
+// this follows the same poll-until-true shape as this file's other
+// eventually-consistent assertions (e.g. TestServeEndToEnd_OTLPExport's
+// collector poll) rather than a fixed sleep.
+func waitForCorrelatedAlertE2E(t *testing.T, addr string, wantIDs []string, stderrA, stderrB *safeBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated?after=0&limit=50")
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var entries []struct {
+					InstanceIDs []string
+				}
+				if decErr := json.NewDecoder(resp.Body).Decode(&entries); decErr == nil {
+					for _, e := range entries {
+						seen := make(map[string]bool, len(e.InstanceIDs))
+						for _, id := range e.InstanceIDs {
+							seen[id] = true
+						}
+						allPresent := true
+						for _, want := range wantIDs {
+							if !seen[want] {
+								allPresent = false
+								break
+							}
+						}
+						if allPresent {
+							_ = resp.Body.Close()
+							return
+						}
+					}
+				}
+			}
+			_ = resp.Body.Close()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("no correlated alert covering instance IDs %v ever appeared at %s within deadline\nstderr A: %s\nstderr B: %s", wantIDs, addr, stderrA.String(), stderrB.String())
+}
+
+// TestE2E_FederationCorrelatesAcrossInstances is the whole federation
+// feature's end-to-end proof point: two real wardline serve subprocesses
+// (instance-a, instance-b), each with its own RSA signing key but a
+// shared HMAC secret and a peers.yaml naming the other by its real
+// listen address, independently trip their own local rate-spike
+// detector for the SAME identity, publish their pseudonymized summaries
+// to each other over a real signed HTTP POST, and each ends up with a
+// CorrelatedAlert naming both instances via its own
+// /dashboard/api/federation/correlated.
+//
+// This test is self-contained (does not reuse startWardline), following
+// the same pattern TestHAEndToEnd_TwoReplicasShareSigningKeyAndRevocation
+// already established for multi-process e2e tests: startWardline calls
+// reserveAddr(t) internally and doesn't return the address or temp dir
+// it used, so a caller can't learn instance A's real listen address
+// before starting it -- but that address has to be baked into instance
+// B's peers.yaml (and vice versa) before either process starts. Building
+// the binary and writing each instance's config directly (as
+// TestHAEndToEnd and TestExportEvidenceEndToEnd_RealBundleFromRealBinary
+// already do) sidesteps the chicken-and-egg problem entirely, without
+// changing startWardline's signature or behavior for its ~25 other
+// callers.
+func TestE2E_FederationCorrelatesAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	privA, pubA := genRSAKeyPairE2E(t, dir, "instance-a")
+	privB, pubB := genRSAKeyPairE2E(t, dir, "instance-b")
+	sharedSecretPath := filepath.Join(dir, "shared-secret")
+	if err := os.WriteFile(sharedSecretPath, []byte("federation-e2e-shared-hmac-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	addrA := reserveAddr(t)
+	addrB := reserveAddr(t)
+
+	peersAPath := filepath.Join(dir, "peers-a.yaml")
+	if err := os.WriteFile(peersAPath, []byte(fmt.Sprintf(`
+peers:
+  - id: "instance-b"
+    endpoint: "http://%s/federation/summaries"
+    public_key_file: "%s"
+`, addrB, pubB)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	peersBPath := filepath.Join(dir, "peers-b.yaml")
+	if err := os.WriteFile(peersBPath, []byte(fmt.Sprintf(`
+peers:
+  - id: "instance-a"
+    endpoint: "http://%s/federation/summaries"
+    public_key_file: "%s"
+`, addrA, pubA)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	buildConfig := func(listenAddr, instanceID, anomalyPath, signingKeyPath, peersPath string) string {
+		return fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: stdout
+features:
+  web_ui: true
+  anomaly_detection: true
+  federation: true
+anomaly:
+  output: "%s"
+  window_seconds: 3
+  rate_spike:
+    enabled: true
+    rate_multiplier: 2.0
+    min_calls: 5
+federation:
+  instance_id: "%s"
+  peers_file: "%s"
+  signing_key_file: "%s"
+  shared_secret_file: "%s"
+  publish_interval_seconds: 1
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+`, listenAddr, upstream.URL, policyPath, anomalyPath, instanceID, peersPath, signingKeyPath, sharedSecretPath)
+	}
+
+	configAPath := filepath.Join(dir, "wardline-a.yaml")
+	if err := os.WriteFile(configAPath, []byte(buildConfig(addrA, "instance-a", filepath.Join(dir, "anomaly-a.jsonl"), privA, peersAPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configBPath := filepath.Join(dir, "wardline-b.yaml")
+	if err := os.WriteFile(configBPath, []byte(buildConfig(addrB, "instance-b", filepath.Join(dir, "anomaly-b.jsonl"), privB, peersBPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	startInstance := func(listenAddr, configPath string) *safeBuffer {
+		cmd := exec.Command(binPath, "serve", "--config", configPath)
+		stderr := &safeBuffer{}
+		cmd.Stderr = stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start instance at %s: %v", listenAddr, err)
+		}
+		waiter := waitFor(cmd)
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			<-waiter.done
+		})
+		waitForServer(t, "http://"+listenAddr)
+		return stderr
+	}
+
+	stderrA := startInstance(addrA, configAPath)
+	stderrB := startInstance(addrB, configBPath)
+
+	doCall := func(addr, identity string) {
+		resp := postToolCall(t, addr, identity, "read_file")
+		_ = resp.Body.Close()
+	}
+
+	// Same burst shape as TestServeEndToEnd_AnomalyDetectionRateSpike: 5
+	// baseline calls, sleep past the 3s window, then 11 calls -- above
+	// both 5*2.0=10 and the min-calls floor -- driven independently
+	// against each instance so each trips its own local rate-spike
+	// detector for the same identity.
+	burst := func(addr string) {
+		for i := 0; i < 5; i++ {
+			doCall(addr, "alice")
+		}
+		time.Sleep(3100 * time.Millisecond)
+		for i := 0; i < 11; i++ {
+			doCall(addr, "alice")
+		}
+	}
+	burst(addrA)
+	burst(addrB)
+
+	// Each instance's own Publisher feeds its local detection into its
+	// own Correlator every publish_interval_seconds tick, and pushes a
+	// signed summary batch to the other instance's /federation/summaries
+	// -- so each side eventually has a CorrelatedAlert naming both
+	// instance-a and instance-b.
+	waitForCorrelatedAlertE2E(t, addrA, []string{"instance-a", "instance-b"}, stderrA, stderrB)
+	waitForCorrelatedAlertE2E(t, addrB, []string{"instance-a", "instance-b"}, stderrA, stderrB)
+}
+
+// TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI proves the
+// federation feature flag actually gates both its inbound HTTP surfaces
+// when off: /federation/summaries isn't mounted at all (an unmatched
+// path falls through to the proxy, which rejects the non-JSON-RPC body
+// with 400 -- the same "not mounted" pattern as
+// TestServeEndToEnd_DashboardNotMountedWhenDisabled), and
+// /dashboard/api/federation/correlated answers 404 (the same documented
+// nil-FederationSource posture already covered for anomalies by
+// TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput).
+func TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	addrA := reserveAddr(t)
+	addrB := reserveAddr(t)
+
+	buildConfig := func(listenAddr string) string {
+		return fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: stdout
+features:
+  web_ui: true
+  federation: false
+`, listenAddr, upstream.URL, policyPath)
+	}
+
+	configAPath := filepath.Join(dir, "wardline-a.yaml")
+	if err := os.WriteFile(configAPath, []byte(buildConfig(addrA)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configBPath := filepath.Join(dir, "wardline-b.yaml")
+	if err := os.WriteFile(configBPath, []byte(buildConfig(addrB)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	startInstance := func(listenAddr, configPath string) *safeBuffer {
+		cmd := exec.Command(binPath, "serve", "--config", configPath)
+		stderr := &safeBuffer{}
+		cmd.Stderr = stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start instance at %s: %v", listenAddr, err)
+		}
+		waiter := waitFor(cmd)
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			<-waiter.done
+		})
+		waitForServer(t, "http://"+listenAddr)
+		return stderr
+	}
+
+	stderrA := startInstance(addrA, configAPath)
+	stderrB := startInstance(addrB, configBPath)
+
+	for _, addr := range []string{addrA, addrB} {
+		summariesResp, err := http.Get("http://" + addr + "/federation/summaries")
+		if err != nil {
+			t.Fatalf("GET /federation/summaries at %s: %v", addr, err)
+		}
+		body, _ := io.ReadAll(summariesResp.Body)
+		_ = summariesResp.Body.Close()
+		if summariesResp.StatusCode == http.StatusOK {
+			t.Errorf("expected /federation/summaries to not be reachable at %s when federation is off, got 200 (stderr A: %s, stderr B: %s)", addr, stderrA.String(), stderrB.String())
+		}
+		_ = body
+
+		correlatedResp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated")
+		if err != nil {
+			t.Fatalf("GET /dashboard/api/federation/correlated at %s: %v", addr, err)
+		}
+		_ = correlatedResp.Body.Close()
+		if correlatedResp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404 from /dashboard/api/federation/correlated at %s when federation is off, got %d", addr, correlatedResp.StatusCode)
+		}
+	}
+}
+
 // testSchema isolates this package's real-Postgres e2e tests from the
 // audit and credential adapter packages' own Postgres tests --
 // internal/features/audit/adapter and internal/features/credential/adapter

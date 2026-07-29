@@ -185,7 +185,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var federationPublishStop chan struct{}
 	var federationGCStop chan struct{}
 	if federationEnabled {
-		instanceID := deriveInstanceID(logger)
+		instanceID := deriveInstanceID(logger, cfg.Federation.InstanceID)
 
 		peers, err := federationadapter.LoadPeers(cfg.Federation.PeersFile)
 		if err != nil {
@@ -925,12 +925,18 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	return buildAuditWriter(logger, cfg.Output), nil
 }
 
-// deriveInstanceID derives this process's federation instance ID from
-// os.Hostname(), falling back to a random suffix (logged as a warning,
-// never fatal) if that fails -- an instance ID is only used to label
-// this instance's own summaries to peers and to the local Correlator,
-// so a missing/unstable hostname must never block startup.
-func deriveInstanceID(logger *slog.Logger) string {
+// deriveInstanceID returns override if non-empty (an operator-supplied
+// federation.instance_id, for topologies where os.Hostname() isn't
+// unique per process -- see FederationConfig.InstanceID's doc comment).
+// Otherwise it derives an ID from os.Hostname(), falling back to a
+// random suffix (logged as a warning, never fatal) if that fails -- an
+// instance ID is only used to label this instance's own summaries to
+// peers and to the local Correlator, so a missing/unstable hostname
+// must never block startup.
+func deriveInstanceID(logger *slog.Logger, override string) string {
+	if override != "" {
+		return override
+	}
 	if host, err := os.Hostname(); err == nil && host != "" {
 		return host
 	}
