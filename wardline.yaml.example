@@ -49,6 +49,13 @@ features: {}
 #     enabled: true
 #     threshold: 0.5
 #     min_calls: 5
+#   ml_score:
+#     enabled: true
+#     score_threshold: 3.0    # combined z-score (max over rate/diversity/deny/inter-arrival) that counts as anomalous
+#   auto_block:
+#     enabled: true           # requires anomaly.ml_score.enabled: true -- acts on ml_score's value
+#     score_threshold: 4.0    # usually stricter than ml_score.score_threshold -- log at a lower bar than you block at
+#     block_duration_seconds: 300   # strictly time-bounded; no manual early unblock -- see README.md "Auto-block"
 # federation:
 #   instance_id: "eu-cluster-1"
 #   # optional, defaults to os.Hostname() — set to something unique when

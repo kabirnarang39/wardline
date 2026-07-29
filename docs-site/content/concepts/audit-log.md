@@ -4,7 +4,7 @@ weight: 40
 ---
 
 Every decision Wardline makes (`allow`, `deny`, `throttled`,
-`passthrough`, `error`) is written as one structured JSON line to
+`passthrough`, `error`, `blocked`) is written as one structured JSON line to
 `audit.output` — `stdout` by default, or a file path, or (with
 `features.postgres_storage: true`) a Postgres table for durable,
 queryable storage shared across replicas.
