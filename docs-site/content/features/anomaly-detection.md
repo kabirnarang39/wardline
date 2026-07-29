@@ -24,17 +24,25 @@ anomaly:
   rate_spike: {enabled: true, rate_multiplier: 5, min_calls: 10}
   novel_tool: {enabled: true}
   deny_rate_spike: {enabled: true, threshold: 0.5, min_calls: 10}
-  ml_score: {enabled: true, score_threshold: 3.0}
+  ml_score: {enabled: true, score_threshold: 3.0, min_calls: 5}
   auto_block: {enabled: true, score_threshold: 8.0, block_duration_seconds: 300}
 ```
 
-`ml_score.score_threshold` must be lower than `auto_block.score_threshold`
-(config validation enforces this) — an operator can log at a lower
-sensitivity than they block at, never the reverse. `ml_score` needs at
-least 8 completed windows of history per identity before it can score
-anything at all: a 2- or 3-sample stddev is statistical noise, not
-signal, and treating it as signal is exactly what caused ordinary
-traffic to auto-block early on.
+`ml_score.score_threshold` must be less than or equal to
+`auto_block.score_threshold` (config validation enforces this) — an
+operator can log at a lower sensitivity than they block at, never the
+reverse. `ml_score` needs at least 8 completed windows of history per
+identity before it can score anything at all: a 2- or 3-sample stddev is
+statistical noise, not signal, and treating it as signal is exactly what
+caused ordinary traffic to auto-block early on.
+
+`ml_score.min_calls` is the matching floor on the window being scored,
+rather than on the history behind it: a window with fewer calls than this
+is neither scored nor folded into any baseline. Two of the four features
+hit a range extreme on a near-empty window for reasons unrelated to
+behavior — one call to one tool is by construction "100% diverse", and a
+single call has no inter-arrival gap at all — so scoring such a window is
+how an identity that simply went quiet ends up blocked.
 
 ## Known limitations
 
