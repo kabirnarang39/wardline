@@ -51,7 +51,11 @@ budget evaluation, recorded in the audit log with a `"passthrough"`
 decision so they're visible but distinguishable from an actual policy
 `"allow"`. If your upstream server exposes sensitive resources or
 prompts, be aware they are not currently gated by Wardline's policy
-engine — only tool calls are.
+engine — only tool calls are. `auto_block` (see [Auto-block](#auto-block))
+is the one deliberate exception to this scope note: once an identity is
+auto-blocked, every one of its calls is rejected, protocol-lifecycle
+passthrough included — a blocked identity shouldn't get a handshake
+either.
 
 ## Policy backends
 
@@ -262,7 +266,9 @@ A fourth, independently-toggleable heuristic alongside the three
 rule/statistics ones above:
 
 - **`ml_score`** — a combined z-score over four per-identity, per-window
-  features (call rate, distinct-tool count, deny ratio, mean
+  features (call rate, tool-diversity ratio — distinct tools called this
+  window ÷ total calls this window, so a burst hitting one tool repeatedly
+  reads differently from a burst hitting many — deny ratio, mean
   inter-arrival time), each scored against its own running mean/variance
   baseline (Welford's algorithm — no stored history, no training data,
   self-baselining exactly like `rate_spike` above). `ml_score.enabled`
@@ -273,24 +279,35 @@ rule/statistics ones above:
   itself the anomalous signal, not the average across all four, which
   would dilute a spike in one dimension with three quiet ones.
 
-`ml_score` needs at least two completed windows of history per identity
+`ml_score` needs at least 8 completed windows of history per identity
 before it can score anything (`onlineStat.ZScore` returns 0 — "not
-anomalous" — with fewer than 2 samples or zero variance): a self-baseline
-has nothing to compare against until it has seen some normal variation.
+anomalous" — with fewer than 8 samples or zero variance): a 2- or
+3-sample stddev is statistical noise, not signal, and would treat
+entirely ordinary traffic variation as a wild outlier. A self-baseline
+needs a real amount of normal variation to compare against before it
+can tell a window apart from noise.
 
 ### Auto-block
 
 Opt in with `anomaly.auto_block.enabled: true` — **requires
 `ml_score.enabled: true`**, since auto-block acts on `ml_score`'s value
-via its own, independently-configured `auto_block.score_threshold` (an
-operator can log at a lower sensitivity than they block at). When an
-identity's `ml_score` clears `auto_block.score_threshold`, every one of
-that identity's calls is rejected (`403`, JSON-RPC error, `Retry-After`
-header, audit `decision: "blocked"`) for `auto_block.block_duration_seconds`
-seconds from the moment it was blocked — **strictly time-bounded, with no
-manual early unblock this cycle**: the block simply expires once its TTL
-elapses, checked fresh on every call, no separate invalidation step. When
-`web_ui` is also on, currently-blocked identities appear via `GET
+via its own, independently-configured `auto_block.score_threshold`, which
+config validation requires to be `>= ml_score.score_threshold` (an
+operator can log at a lower sensitivity than they block at, never the
+reverse — inverting them would mean an identity gets blocked with no
+corresponding `ml_score` anomaly ever logged). When an identity's
+`ml_score` clears `auto_block.score_threshold`, every one of that
+identity's calls — **including protocol-lifecycle passthrough methods
+like `initialize`**, not just `tools/call` (a blocked identity shouldn't
+get a handshake either) — is rejected (`403`, JSON-RPC error,
+`Retry-After` header, audit `decision: "blocked"`) for
+`auto_block.block_duration_seconds` seconds from the most recent
+detection — **strictly time-bounded, with no manual early unblock this
+cycle**: the block simply expires once its TTL elapses, checked fresh on
+every call, no separate invalidation step. Re-detection while already
+blocked extends `until` from that most recent detection, not the
+original one. When `web_ui` is also on, currently-blocked identities
+(TTL not yet elapsed as of the request) appear via `GET
 /dashboard/api/anomalies/blocked` (same RBAC gate as the rest of the
 dashboard).
 
