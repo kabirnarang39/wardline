@@ -13,6 +13,8 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
+	federationdomain "github.com/kabirnarang39/wardline/internal/features/federation/domain"
+	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 )
 
 type fakeAuditSource struct {
@@ -45,6 +47,14 @@ type fakeAnomalySource struct {
 }
 
 func (f *fakeAnomalySource) Since(afterID int64, limit int) []usecase.Alert {
+	return f.entries
+}
+
+type fakeFederationSource struct {
+	entries []federationusecase.CorrelatedAlertEntry
+}
+
+func (f *fakeFederationSource) Since(afterID int64, limit int) []federationusecase.CorrelatedAlertEntry {
 	return f.entries
 }
 
@@ -268,5 +278,43 @@ func TestHandler_HandleAnomalies_NilSourceReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 when anomalies is not wired (feature off), got %d", rec.Code)
+	}
+}
+
+func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *testing.T) {
+	federation := &fakeFederationSource{entries: []federationusecase.CorrelatedAlertEntry{
+		{ID: 1, CorrelatedAlert: federationdomain.CorrelatedAlert{
+			Fingerprint: "fp1",
+			Kind:        anomalydomain.KindRateSpike,
+			InstanceIDs: []string{"eu-cluster", "us-cluster"},
+		}},
+	}}
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []federationusecase.CorrelatedAlertEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if len(got) != 1 || got[0].Fingerprint != "fp1" || got[0].Kind != anomalydomain.KindRateSpike {
+		t.Errorf("unexpected decoded response: %+v", got)
+	}
+}
+
+func TestHandler_HandleFederationCorrelated_NilSourceReturns404(t *testing.T) {
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when federation is not wired (feature off), got %d", rec.Code)
 	}
 }
