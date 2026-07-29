@@ -1,6 +1,7 @@
 package adapter_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -298,12 +299,21 @@ func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *test
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	var got []federationusecase.CorrelatedAlertEntry
+	var got []domain.CorrelatedAlertEntry
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if len(got) != 1 || got[0].Fingerprint != "fp1" || got[0].Kind != anomalydomain.KindRateSpike {
+	if len(got) != 1 || got[0].Fingerprint != "fp1" || got[0].Kind != string(anomalydomain.KindRateSpike) {
 		t.Errorf("unexpected decoded response: %+v", got)
+	}
+	if len(got[0].InstanceIDs) != 2 {
+		t.Errorf("expected 2 instance ids, got %+v", got[0].InstanceIDs)
+	}
+	// The raw response body must be snake_case, not the usecase type's
+	// Go-cased fields -- proves the dashboard's own wire shape is what's
+	// actually on the wire, not just that it round-trips.
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"instance_ids"`)) {
+		t.Errorf("expected snake_case \"instance_ids\" in response body, got %s", rec.Body.String())
 	}
 }
 

@@ -1886,8 +1886,11 @@ func waitForCorrelatedAlertE2E(t *testing.T, addr string, wantIDs []string, stde
 		resp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated?after=0&limit=50")
 		if err == nil {
 			if resp.StatusCode == http.StatusOK {
+				// Field name matches dashboard/domain.CorrelatedAlertEntry's
+				// snake_case wire shape, not the federation usecase type's
+				// Go-cased fields -- see dashboard/adapter.handleFederationCorrelated.
 				var entries []struct {
-					InstanceIDs []string
+					InstanceIDs []string `json:"instance_ids"`
 				}
 				if decErr := json.NewDecoder(resp.Body).Decode(&entries); decErr == nil {
 					for _, e := range entries {

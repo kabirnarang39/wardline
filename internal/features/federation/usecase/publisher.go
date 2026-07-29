@@ -28,14 +28,6 @@ type AlertReader interface {
 	Since(afterID int64, limit int) []anomalyusecase.Alert
 }
 
-// batchSigner abstracts signing so Publisher's own tests don't need a
-// real RSA key beyond what testSigningKey generates; the real Sign
-// function (Task 5) satisfies this trivially since Publisher calls it
-// directly, not through an interface -- kept as a plain function
-// reference for simplicity (there's only ever one signing algorithm,
-// unlike policy backends, so this isn't a place Open/Closed applies).
-type signFunc func(payload []byte, key *rsa.PrivateKey) ([]byte, error)
-
 // BatchSender delivers one SignedSummaryBatch to one peer endpoint.
 // adapter.HTTPSender (Task 7 adapter half) is the real implementation;
 // tests supply a fake.
@@ -55,13 +47,14 @@ type Publisher struct {
 	signingKey   *rsa.PrivateKey
 	sharedSecret []byte
 	sender       BatchSender
-	sign         signFunc
 	lastReadID   int64
 	windowSecs   int
-	now          func() time.Time
 }
 
-func NewPublisher(instanceID string, reader AlertReader, peers []domain.Peer, signingKey *rsa.PrivateKey, sharedSecret []byte, sender BatchSender, windowSeconds int, now func() time.Time) *Publisher {
+// NewPublisher does not take a now func() time.Time -- PublishOnce takes
+// now as an explicit parameter instead (see its doc comment), so there
+// is nothing here for a stored clock to do.
+func NewPublisher(instanceID string, reader AlertReader, peers []domain.Peer, signingKey *rsa.PrivateKey, sharedSecret []byte, sender BatchSender, windowSeconds int) *Publisher {
 	return &Publisher{
 		instanceID:   instanceID,
 		reader:       reader,
@@ -69,26 +62,22 @@ func NewPublisher(instanceID string, reader AlertReader, peers []domain.Peer, si
 		signingKey:   signingKey,
 		sharedSecret: sharedSecret,
 		sender:       sender,
-		sign:         signPayload,
 		windowSecs:   windowSeconds,
-		now:          now,
 	}
 }
 
+// rsaSignPSS is Publisher's real signing function -- RSA-PSS over
+// sha256(payload), matching adapter.Sign exactly. Re-declared here
+// (rather than importing the adapter package's Sign) to avoid an
+// adapter-from-usecase import, which would invert the Clean Architecture
+// dependency rule. Called directly from PublishOnce -- no interface or
+// function-variable indirection around it: there is only ever one
+// signing algorithm, and every test (including this package's own,
+// which generate a real RSA key) exercises this exact call, so an
+// abstraction layer here would have no real caller.
 func rsaSignPSS(payload []byte, key *rsa.PrivateKey) ([]byte, error) {
 	digest := sha256.Sum256(payload)
 	return rsa.SignPSS(rand.Reader, key, crypto.SHA256, digest[:], nil)
-}
-
-// signPayload is the production signFunc -- a package-level var so
-// tests could override it if ever needed, but Task 5's real Sign
-// (imported via the adapter package would create an import cycle, so
-// this usecase re-declares the RSA-PSS call directly using only
-// crypto/rsa, matching Sign's implementation exactly) is called here.
-// Kept intentionally tiny and duplicated rather than reaching into
-// adapter from usecase, which would invert the dependency rule.
-func signPayload(payload []byte, key *rsa.PrivateKey) ([]byte, error) {
-	return rsaSignPSS(payload, key)
 }
 
 // PublishOnce aggregates every local anomaly since the last publish
@@ -118,7 +107,22 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) ([]domain.An
 	}
 	p.lastReadID = maxID
 
+	// The cursor above (lastReadID) advances past every alert Since just
+	// returned, regardless of how old it is -- Since has no time bound of
+	// its own. windowStart normally trails now by windowSecs, but if this
+	// tick is running late (e.g. a prior tick overran the publish interval
+	// blocked on unreachable peers) some of what the cursor just consumed
+	// can be older than that. Aggregate only keeps entries within
+	// [windowStart, now), so without this adjustment anything the cursor
+	// consumed but Aggregate excludes would be silently dropped forever --
+	// extend windowStart backward to cover the earliest alert actually
+	// read this tick, so nothing the cursor advances past is ever lost.
 	windowStart := now.Add(-time.Duration(p.windowSecs) * time.Second)
+	for _, a := range anomalies {
+		if a.Timestamp.Before(windowStart) {
+			windowStart = a.Timestamp
+		}
+	}
 	summaries := Aggregate(anomalies, p.sharedSecret, windowStart, now)
 	if len(summaries) == 0 {
 		return nil, nil
@@ -133,7 +137,7 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) ([]domain.An
 		return summaries, []error{fmt.Errorf("marshal summary batch: %w", err)}
 	}
 
-	sig, err := p.sign(payload, p.signingKey)
+	sig, err := rsaSignPSS(payload, p.signingKey)
 	if err != nil {
 		return summaries, []error{fmt.Errorf("sign summary batch: %w", err)}
 	}
@@ -156,7 +160,21 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) ([]domain.An
 // instance's own local anomalies into its Correlator -- see
 // PublishOnce's doc comment for why this is a callback here rather than
 // a second Aggregate call in main.go.
+//
+// Each tick's PublishOnce call gets a context derived from stop rather
+// than context.Background(), so an in-flight publish (each peer send has
+// its own timeout, but several unreachable peers can still add up) is
+// canceled promptly on shutdown instead of holding the process open --
+// HTTPSender.Send already accepts and threads a cancelable context for
+// exactly this.
 func StartPublisher(p *Publisher, interval time.Duration, stop <-chan struct{}, onSummaries func([]domain.AnomalySummary), onError func([]error)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-stop
+		cancel()
+	}()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -164,7 +182,7 @@ func StartPublisher(p *Publisher, interval time.Duration, stop <-chan struct{}, 
 		case <-stop:
 			return
 		case now := <-ticker.C:
-			summaries, errs := p.PublishOnce(context.Background(), now)
+			summaries, errs := p.PublishOnce(ctx, now)
 			if len(summaries) > 0 && onSummaries != nil {
 				onSummaries(summaries)
 			}

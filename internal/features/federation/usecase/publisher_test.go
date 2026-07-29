@@ -65,7 +65,7 @@ func TestPublisher_PublishOnce_SendsToEveryPeer(t *testing.T) {
 		{ID: "us-cluster", Endpoint: "https://us.example.com/federation/summaries"},
 	}
 
-	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60)
 
 	summaries, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 0 {
@@ -106,7 +106,7 @@ func TestPublisher_OnePeerFails_OthersStillSucceed(t *testing.T) {
 		{ID: "us-cluster", Endpoint: "https://us.example.com/federation/summaries"},
 	}
 
-	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60)
 
 	_, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 1 {
@@ -126,7 +126,7 @@ func TestPublisher_NoAnomalies_SendsNothing(t *testing.T) {
 	sender := &fakeSender{sendErr: map[string]error{}}
 	peers := []domain.Peer{{ID: "eu-cluster", Endpoint: "https://eu.example.com/federation/summaries"}}
 
-	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60)
 
 	summaries, errs := p.PublishOnce(context.Background(), now)
 	if len(errs) != 0 {
@@ -150,7 +150,7 @@ func TestPublisher_SecondPublishOnce_DoesNotResendAlreadyReadAnomalies(t *testin
 	sender := &fakeSender{sendErr: map[string]error{}}
 	peers := []domain.Peer{{ID: "eu-cluster", Endpoint: "https://eu.example.com/federation/summaries"}}
 
-	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60, func() time.Time { return now })
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60)
 
 	if _, errs := p.PublishOnce(context.Background(), now); len(errs) != 0 {
 		t.Fatalf("first PublishOnce: expected no errors, got %v", errs)
@@ -175,5 +175,41 @@ func TestPublisher_SecondPublishOnce_DoesNotResendAlreadyReadAnomalies(t *testin
 	defer sender.mu.Unlock()
 	if len(sender.sent) != firstSent {
 		t.Fatalf("expected no additional batches sent on second call, got %d total (was %d after first call)", len(sender.sent), firstSent)
+	}
+}
+
+func TestStartPublisher_RunsATickThenStopsCleanlyOnStopClose(t *testing.T) {
+	reader := &fakeAlertReader{alerts: []anomalyusecase.Alert{
+		{ID: 1, Anomaly: anomalydomain.Anomaly{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: time.Now()}},
+	}}
+	sender := &fakeSender{sendErr: map[string]error{}}
+	peers := []domain.Peer{{ID: "eu-cluster", Endpoint: "https://eu.example.com/federation/summaries"}}
+
+	p := usecase.NewPublisher("local-instance", reader, peers, testSigningKey(t), []byte("shared-secret"), sender, 60)
+
+	stop := make(chan struct{})
+	tickCh := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		usecase.StartPublisher(p, 10*time.Millisecond, stop, func(summaries []domain.AnomalySummary) {
+			select {
+			case tickCh <- struct{}{}:
+			default:
+			}
+		}, nil)
+		close(done)
+	}()
+
+	select {
+	case <-tickCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for StartPublisher's first tick")
+	}
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartPublisher did not return after stop was closed")
 	}
 }

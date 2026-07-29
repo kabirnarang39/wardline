@@ -46,3 +46,30 @@ func TestCorrelatorGC_KeepsRecentState(t *testing.T) {
 		t.Fatal("expected fresh-fp state to survive a GC tick within 2x interval")
 	}
 }
+
+func TestStartCorrelatorGC_RunsATickThenStopsCleanlyOnStopClose(t *testing.T) {
+	c := usecase.NewCorrelator(
+		domain.FederationConfig{MinInstancesForCorrelation: 99, CorrelationWindowSeconds: 300},
+		func(domain.CorrelatedAlert) {},
+		time.Now,
+	)
+	c.Ingest("instance-a", domain.AnomalySummary{Fingerprint: "fp", Kind: anomalydomain.KindRateSpike, Count: 1, WindowStart: time.Now(), WindowEnd: time.Now()})
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		usecase.StartCorrelatorGC(c, 10*time.Millisecond, stop)
+		close(done)
+	}()
+
+	// No assertion on GC's own effect here -- GCCorrelatorOnce's behavior
+	// is already covered by the two tests above; this only proves the
+	// ticker loop actually runs and returns promptly once stop closes.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartCorrelatorGC did not return after stop was closed")
+	}
+}
