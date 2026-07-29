@@ -1,6 +1,8 @@
 {{ if .Fragments.Headings }}
-<aside class="toc" aria-label="On this page">
-  <strong>On this page</strong>
-  {{ .TableOfContents }}
+<aside class="page-actions" aria-label="On this page">
+  <div class="page-actions-inner">
+    <p class="page-actions-label">On this page</p>
+    {{ .TableOfContents }}
+  </div>
 </aside>
 {{ end }}

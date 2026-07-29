@@ -5,17 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ if .IsHome }}{{ .Site.Title }}{{ else }}{{ .Title }} · {{ .Site.Title }}{{ end }}</title>
 <link rel="icon" href="{{ "favicon.svg" | relURL }}" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ "css/main.css" | relURL }}">
+<script>
+(function(){
+  var stored = localStorage.getItem("wardline-theme");
+  if (stored === "light") document.documentElement.setAttribute("data-theme", "light");
+})();
+</script>
 </head>
 <body>
   {{ partial "header.html" . }}
-  <div class="docs-layout container">
+  <div class="shell">
     {{ partial "sidebar.html" . }}
-    <main class="docs-content">
-      {{ block "main" . }}{{ end }}
-    </main>
-    {{ if not .IsHome }}{{ partial "toc.html" . }}{{ end }}
+    <div class="content">
+      <div class="content-grid">
+        <div class="content-body">
+          {{ block "main" . }}{{ end }}
+        </div>
+        {{ if not .IsHome }}{{ partial "toc.html" . }}{{ end }}
+      </div>
+    </div>
   </div>
   {{ partial "footer.html" . }}
+  <script src="{{ "js/theme.js" | relURL }}"></script>
 </body>
 </html>

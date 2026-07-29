@@ -3,106 +3,180 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wardline — Identity, policy, budget, and audit for every AI agent call</title>
-<meta name="description" content="Open source control-plane proxy for AI agents: identity, policy, budget, and audit for MCP and beyond.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<title>Wardline | Identity, policy, budget, and audit for every AI agent call</title>
+<meta name="description" content="Open source control-plane proxy for AI agents: identity, policy, budget, and audit for MCP and beyond.">
+<meta property="og:title" content="Wardline | AI-agent control-plane proxy">
+<meta property="og:description" content="Open source control-plane proxy for AI agents: identity, policy, budget, and audit for MCP and beyond.">
+<meta property="og:type" content="website">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="site-header container">
-  <strong>Wardline</strong>
-  <nav>
-    <a href="https://github.com/kabirnarang39/wardline">GitHub</a>
-    <a href="docs/">Docs</a>
-  </nav>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" aria-label="Wardline home"><span class="brand-mark">wardline</span></a>
+    <p class="topbar-context">Identity, policy, budget, audit</p>
+    <nav class="topnav" aria-label="Primary">
+      <a href="docs/">Docs</a>
+      <a class="topnav-secondary" href="https://github.com/kabirnarang39/wardline" target="_blank" rel="noreferrer">GitHub</a>
+      <a class="topnav-secondary" href="https://github.com/kabirnarang39/wardline/releases" target="_blank" rel="noreferrer">Releases</a>
+      <a href="docs/getting-started/quickstart/">Get started <span aria-hidden="true">↗</span></a>
+    </nav>
+  </div>
 </header>
 
-<main>
-  <section class="hero container">
-    <h1>Identity, policy, budget, and audit for every AI agent call</h1>
-    <p class="subhead">Wardline sits between your AI agents and everything they call — MCP servers, LLM providers, other agents — and enforces who's allowed to do what, how much, and logs every decision.</p>
-    <div class="cta-row">
-      <a class="primary" href="docs/getting-started/quickstart/">Get started →</a>
-      <a href="https://github.com/kabirnarang39/wardline">View on GitHub →</a>
-    </div>
-    <pre class="terminal"><code>go build -o wardline ./cmd/wardline
-./wardline validate-policy --file policy.yaml.example
-./wardline validate-config --config wardline.yaml.example
-./wardline serve --config wardline.yaml.example
+<main class="page">
 
-# in another terminal
-curl -X POST http://localhost:8080 \
+  <section class="hero wrap">
+    <div class="hero-copy">
+      <p class="index">01 / ENFORCE THE CALL</p>
+      <h1 class="display">Every agent call is a trust decision <em>you're not making.</em></h1>
+      <p>Wardline is the open-source control-plane proxy that sits between your AI agents and everything they call — MCP servers, LLM providers, other agents.</p>
+      <p>It enforces who's allowed to do what, how much they can spend, and writes a structured record of every decision — before the call ever reaches your upstream server.</p>
+      <div class="hero-actions">
+        <a class="btn" href="docs/getting-started/quickstart/">Get started <span aria-hidden="true">→</span></a>
+        <code><span aria-hidden="true">$</span>go install github.com/kabirnarang39/wardline/cmd/wardline@latest</code>
+      </div>
+      <a class="text-link" href="https://github.com/kabirnarang39/wardline">View source on GitHub</a>
+    </div>
+    <figure class="terminal-card">
+      <figcaption><div><i></i><i></i><i></i></div><span>wardline · localhost:8080</span></figcaption>
+      <pre class="terminal-output"><span class="is-prompt">$</span> ./wardline serve --config wardline.yaml.example
+<span class="is-brand">wardline</span> proxy listening on :8080, policy=deny-by-default
+
+<span class="is-prompt">$</span> curl -X POST localhost:8080 \
   -H "X-Wardline-Identity: agent-abc123" \
-  -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}'
-# -> allowed, forwarded upstream, and written to the audit log</code></pre>
+
+<span class="is-muted">identity</span>  agent-abc123
+<span class="is-muted">tool</span>      read_file
+<span class="is-muted">decision</span>  <span class="is-ok">allow</span>  <span class="is-muted">rule matched: policy.yaml:4</span>
+<span class="is-muted">audit</span>     written → audit.jsonl</pre>
+    </figure>
   </section>
 
-  <section class="numbered container">
-    <div class="num">01</div>
-    <h2>Without a control plane, every agent call is a trust decision you're not making</h2>
-    <div class="compare">
-      <div class="col without">
-        <strong>Without Wardline</strong>
-        <p>Any agent with network access to your MCP server can call any tool, with no per-identity limit, no audit trail, and no record of what happened after the fact.</p>
+  <section id="principle" class="principle">
+    <div class="wrap">
+      <div class="principle-head">
+        <div>
+          <p class="index">02 / THE CONTRACT</p>
+          <h2 class="display" style="font-size:clamp(32px,4vw,52px)">Every call carries the same three things.</h2>
+        </div>
+        <p>No exceptions, no bypass path — identity, policy, and audit are evaluated on every single request Wardline proxies, regardless of feature flags.</p>
       </div>
-      <div class="col">
-        <strong>With Wardline</strong>
-        <p>Every call carries an identity, is matched against an explicit allow/deny policy, optionally counted against a budget, and written to a structured audit log — before it ever reaches your upstream server.</p>
+      <div class="contract">
+        <article>
+          <span>IDENTITY</span>
+          <h3>Who is calling</h3>
+          <p>A short-lived bearer credential or preshared identity header — never an anonymous connection.</p>
+        </article>
+        <i aria-hidden="true">→</i>
+        <article>
+          <span>POLICY</span>
+          <h3>What they're allowed to do</h3>
+          <p>Matched against an explicit allow/deny rule set — YAML, OPA/Rego, or Cedar — deny by default.</p>
+        </article>
+        <i aria-hidden="true">→</i>
+        <article>
+          <span>AUDIT</span>
+          <h3>What actually happened</h3>
+          <p>A structured, tamper-evident record of the decision — written before the call reaches upstream.</p>
+        </article>
       </div>
     </div>
   </section>
 
-  <section class="numbered container">
-    <div class="num">02</div>
-    <h2>How it works</h2>
-    <img src="assets/diagram-flow.svg" alt="Request flow: Agent calls Wardline, which checks policy, then forwards to the upstream MCP server while writing to the audit log" width="760" height="140">
-    <pre class="terminal"><code># policy.yaml
-rules:
-  - identity: agent-abc123
-    tool: read_file
-    effect: allow
-default: deny</code></pre>
+  <section id="assertions" class="assertions wrap">
+    <header>
+      <p class="index">03 / WHAT'S INSIDE</p>
+      <h2 class="display" style="font-size:clamp(32px,4vw,52px)">One baseline, eight optional features.</h2>
+      <p class="assertions-intro">The proxy + policy + audit baseline is always on. Everything else ships behind a feature flag, so new capability lands without destabilizing what's already running.</p>
+    </header>
+    <div class="check-table">
+      <table>
+        <caption>Wardline feature checklist</caption>
+        <colgroup><col class="is-check"><col class="is-proof"><col class="is-evidence"><col class="is-status"></colgroup>
+        <thead><tr><th>FEATURE</th><th>WHAT IT DOES</th><th>DOCS</th><th>STATUS</th></tr></thead>
+        <tbody>
+          <tr><td><a href="docs/features/baseline-proxy-policy-audit/">Baseline</a></td><td>Proxy + policy + audit</td><td><code>baseline</code></td><td>always on</td></tr>
+          <tr><td><a href="docs/features/credential-issuance/">Credential issuance</a></td><td>Short-lived RS256 JWT bearer tokens</td><td><code>credentials</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/rbac/">RBAC</a></td><td>Kubernetes-shaped Role/RoleBinding tenant isolation</td><td><code>rbac</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/budget-enforcement/">Budget enforcement</a></td><td>Per-identity spend limits</td><td><code>budget</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/anomaly-detection/">Anomaly detection</a></td><td>Rate-spike, novel-tool, deny-rate heuristics</td><td><code>anomaly</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/compliance-evidence-export/">Compliance export</a></td><td>Checksum-verified evidence bundle</td><td><code>export-evidence</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/policy-pack-marketplace/">Policy-pack marketplace</a></td><td>Embedded starter policy templates</td><td><code>policy-pack</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/deployment/high-availability/">HA deployment</a></td><td>Shared signing key, Postgres revocation, PDB</td><td><code>ha</code></td><td>shipped</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 
-  <section class="numbered container">
-    <div class="num">03</div>
-    <h2>What's inside</h2>
-    <ul class="feature-index">
-      <li><span class="tag">baseline</span><br><a href="docs/features/baseline-proxy-policy-audit/">Proxy + policy + audit</a></li>
-      <li><span class="tag">optional</span><br><a href="docs/features/credential-issuance/">Credential issuance</a></li>
-      <li><span class="tag">optional</span><br><a href="docs/features/rbac/">RBAC</a></li>
-      <li><span class="tag">optional</span><br><a href="docs/features/budget-enforcement/">Budget enforcement</a></li>
-      <li><span class="tag">optional</span><br><a href="docs/features/anomaly-detection/">Anomaly detection</a></li>
-      <li><span class="tag">CLI subcommand</span><br><a href="docs/features/compliance-evidence-export/">Compliance evidence export</a></li>
-      <li><span class="tag">CLI subcommand</span><br><a href="docs/features/policy-pack-marketplace/">Policy-pack marketplace</a></li>
-      <li><span class="tag">optional</span><br><a href="docs/features/ha-deployment/">HA deployment</a></li>
-    </ul>
+  <section id="history" class="history">
+    <div class="wrap">
+      <div class="history-copy">
+        <p class="index">04 / PRODUCTION-READY</p>
+        <h2 class="display" style="font-size:clamp(32px,4vw,52px)">Built for a cluster, not a demo.</h2>
+        <p>Real <code>/healthz</code> and <code>/readyz</code> endpoints, a <code>PodDisruptionBudget</code>, pod anti-affinity, Postgres-backed shared revocation, and a persistent signing key so credential issuance is correct across replicas — not just possible.</p>
+        <a class="text-link" href="docs/deployment/high-availability/">Read the HA deployment guide</a>
+      </div>
+      <ul class="feature-grid">
+        <li><span class="tag">CLEAN ARCH</span><a href="https://github.com/kabirnarang39/wardline">domain → usecase → adapter, dependency rule inward</a></li>
+        <li><span class="tag">OPEN/CLOSED</span><a href="docs/features/rbac/">policy backend is a pluggable interface — YAML, OPA, Cedar</a></li>
+        <li><span class="tag">FEATURE FLAGS</span><a href="docs/reference/configuration/">every feature beyond baseline ships gated, off by default</a></li>
+        <li><span class="tag">HELM</span><a href="docs/deployment/high-availability/">probes, PDB, anti-affinity, graceful drain</a></li>
+      </ul>
+    </div>
   </section>
 
-  <section class="numbered container">
-    <div class="num">04</div>
-    <h2>Production-ready</h2>
-    <p>Real <code>/healthz</code>/<code>/readyz</code> endpoints, a <code>PodDisruptionBudget</code>, pod anti-affinity, Postgres-backed shared revocation, and a persistent signing key so credential issuance is correct across replicas — not just possible. See the <a href="docs/deployment/high-availability/">HA deployment guide</a>.</p>
+  <section id="faq" class="faq">
+    <div class="wrap">
+      <header>
+        <p class="index">05 / FAQ</p>
+        <h2 class="display" style="font-size:clamp(32px,4vw,52px)">Questions</h2>
+        <p>Anything not answered here is answered in the <a class="text-link" style="margin:0" href="docs/">full docs</a>.</p>
+      </header>
+      <div class="faq-list">
+        <details open>
+          <summary><span>01</span><h3>Does Wardline replace my MCP server?</h3><i aria-hidden="true"></i></summary>
+          <p>No. Wardline is a reverse proxy that sits in front of it — your MCP server, LLM provider, or agent endpoint is unchanged. Point clients at Wardline instead of the upstream directly.</p>
+        </details>
+        <details>
+          <summary><span>02</span><h3>What happens if the policy backend errors?</h3><i aria-hidden="true"></i></summary>
+          <p>Every policy backend fails closed. An evaluation error is treated as a deny, never a silent allow — this is enforced at the <code>usecase</code> layer regardless of which backend (YAML, OPA, Cedar) is configured.</p>
+        </details>
+        <details>
+          <summary><span>03</span><h3>Is credential issuance required?</h3><i aria-hidden="true"></i></summary>
+          <p>No — it's an optional feature flag. Without it, identity is carried via a preshared <code>X-Wardline-Identity</code> header. With it, agents exchange a preshared secret for a short-lived signed bearer token.</p>
+        </details>
+        <details>
+          <summary><span>04</span><h3>How is Wardline licensed?</h3><i aria-hidden="true"></i></summary>
+          <p>Apache 2.0, fully open source. <a href="https://github.com/kabirnarang39/wardline/blob/main/LICENSE">Read the license</a>.</p>
+        </details>
+      </div>
+    </div>
   </section>
 
-  <section class="numbered container">
-    <div class="num">05</div>
-    <h2>Get started</h2>
-    <pre class="terminal"><code>go build -o wardline ./cmd/wardline
-./wardline serve --config wardline.yaml.example</code></pre>
-    <p><a href="docs/">Read the full docs →</a></p>
+  <section id="close" class="close">
+    <div><span aria-hidden="true"></span><p style="margin:0">READY TO ENFORCE</p></div>
+    <h2 class="display">Ship agents<br><em>you can audit.</em></h2>
+    <a class="btn" href="docs/getting-started/quickstart/">Get started <span aria-hidden="true">→</span></a>
+    <footer>
+      <code>go install github.com/kabirnarang39/wardline/cmd/wardline@latest</code>
+      <nav aria-label="Footer">
+        <a href="docs/">Docs</a>
+        <a href="https://github.com/kabirnarang39/wardline">GitHub</a>
+        <a href="https://github.com/kabirnarang39/wardline/blob/main/LICENSE">License</a>
+        <a class="mobile-resource" href="https://github.com/kabirnarang39/wardline/issues">Issues</a>
+      </nav>
+      <p>OPEN SOURCE · APACHE 2.0</p>
+    </footer>
   </section>
+
 </main>
 
-<footer class="site-footer container">
-  <div class="links">
-    <a href="docs/">Docs</a>
-    <a href="https://github.com/kabirnarang39/wardline">GitHub</a>
-    <a href="https://github.com/kabirnarang39/wardline/blob/main/LICENSE">Apache 2.0</a>
-    <a href="https://github.com/kabirnarang39/wardline/issues">Issues</a>
-  </div>
-</footer>
-<script src="app.js"></script>
 </body>
 </html>
