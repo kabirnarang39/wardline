@@ -78,3 +78,22 @@ func TestBlockChecker_List_ReturnsCurrentlyBlockedEntries(t *testing.T) {
 		t.Error("expected a non-empty reason")
 	}
 }
+
+// TestBlockChecker_List_FiltersExpiredEntriesWithoutGC proves List()
+// itself filters by current time -- deliberately without ever calling
+// GCBlocksOnce -- so an expired block cannot linger in the dashboard's
+// "currently blocked" view for up to a full GC interval after it
+// actually expired (GC is memory hygiene for the map, a separate concern
+// from what a read of List() should honestly report right now).
+func TestBlockChecker_List_FiltersExpiredEntriesWithoutGC(t *testing.T) {
+	current := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return current })
+
+	b.Block("agent-abc123", "ml_score exceeded threshold")
+
+	current = current.Add(301 * time.Second) // past the 300s TTL, GC interval typically much longer (e.g. 600s) and never run here
+	entries := b.List()
+	if len(entries) != 0 {
+		t.Fatalf("expected List() to filter out the expired entry on its own, got %+v", entries)
+	}
+}
