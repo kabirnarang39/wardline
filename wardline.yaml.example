@@ -52,6 +52,9 @@ features: {}
 #   ml_score:
 #     enabled: true
 #     score_threshold: 3.0    # combined z-score (max over rate/diversity/deny/inter-arrival) that counts as anomalous
+#     min_calls: 5            # windows with fewer calls than this are neither scored nor folded into the baseline --
+#                             # a 1-call window is "100% diverse" with no inter-arrival delta at all, range extremes
+#                             # that mean "no observation" rather than "wild outlier"
 #   auto_block:
 #     enabled: true           # requires anomaly.ml_score.enabled: true -- acts on ml_score's value
 #     score_threshold: 4.0    # usually stricter than ml_score.score_threshold -- log at a lower bar than you block at

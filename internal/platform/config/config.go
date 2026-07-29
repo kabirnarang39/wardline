@@ -95,6 +95,7 @@ type DenyRateSpikeConfig struct {
 type MLScoreConfig struct {
 	Enabled        bool    `yaml:"enabled"`
 	ScoreThreshold float64 `yaml:"score_threshold"`
+	MinCalls       int     `yaml:"min_calls"`
 }
 
 // AutoBlockConfig configures whether an ml_score anomaly also blocks the
@@ -282,6 +283,9 @@ func (c *Config) validate() error {
 		}
 		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.ScoreThreshold <= 0 {
 			problems = append(problems, "anomaly.ml_score.score_threshold must be > 0 when anomaly.ml_score.enabled is true")
+		}
+		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.MinCalls <= 0 {
+			problems = append(problems, "anomaly.ml_score.min_calls must be > 0 when anomaly.ml_score.enabled is true")
 		}
 		if c.Anomaly.AutoBlock.Enabled {
 			if !c.Anomaly.MLScore.Enabled {

@@ -870,12 +870,35 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 0
+    min_calls: 5
 audit:
   output: stdout
 `)
 	_, err := config.Load(path)
 	if err == nil {
 		t.Fatal("expected error when ml_score is enabled with a non-positive score_threshold")
+	}
+}
+
+func TestConfig_Validate_MLScoreEnabledRequiresPositiveMinCalls(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when ml_score is enabled with a non-positive min_calls")
 	}
 }
 
@@ -917,6 +940,7 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 3.0
+    min_calls: 5
   auto_block:
     enabled: true
     score_threshold: 0
@@ -943,6 +967,7 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 8.0
+    min_calls: 5
   auto_block:
     enabled: true
     score_threshold: 3.0
@@ -969,6 +994,7 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 3.0
+    min_calls: 5
   auto_block:
     enabled: true
     score_threshold: 4.0
@@ -982,6 +1008,9 @@ audit:
 	}
 	if cfg.Anomaly.MLScore.ScoreThreshold != 3.0 {
 		t.Errorf("unexpected Anomaly.MLScore.ScoreThreshold: %v", cfg.Anomaly.MLScore.ScoreThreshold)
+	}
+	if cfg.Anomaly.MLScore.MinCalls != 5 {
+		t.Errorf("unexpected Anomaly.MLScore.MinCalls: %d", cfg.Anomaly.MLScore.MinCalls)
 	}
 	if cfg.Anomaly.AutoBlock.BlockDurationSeconds != 300 {
 		t.Errorf("unexpected Anomaly.AutoBlock.BlockDurationSeconds: %d", cfg.Anomaly.AutoBlock.BlockDurationSeconds)

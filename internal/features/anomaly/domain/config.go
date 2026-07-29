@@ -3,10 +3,19 @@ package domain
 // MLScoreConfig configures the combined-z-score ML detector, which
 // reuses Detector's existing per-identity state and window -- it has
 // no window of its own. ScoreThreshold is compared against
-// max(|z_rate|, |z_diversity|, |z_deny|, |z_interarrival|).
+// max(|z_rate|, |z_diversity|, |z_deny|, |z_interarrival|). MinCalls
+// gates the entire feature on the previous completed window's call
+// count -- below it, none of the four features are scored or folded
+// into their baselines. This exists for the same reason
+// RateMinCalls/DenyRateMinCalls exist on the other two heuristics: a
+// window with too few calls can't say anything trustworthy about
+// tool-diversity or inter-arrival spacing (a 1-call window is, by
+// construction, "100% diverse" and has no inter-arrival delta at all --
+// range extremes that mean "no observation," not "wild outlier").
 type MLScoreConfig struct {
 	Enabled        bool
 	ScoreThreshold float64
+	MinCalls       int
 }
 
 // AutoBlockConfig configures whether an ml_score anomaly also blocks

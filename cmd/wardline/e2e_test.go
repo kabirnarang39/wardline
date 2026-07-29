@@ -1275,6 +1275,7 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 3.0
+    min_calls: 2   # below the example config's 5: this test's baseline windows are 2-3 calls, which a floor of 5 would skip entirely
   auto_block:
     enabled: true
     score_threshold: 3.0
@@ -1390,6 +1391,7 @@ anomaly:
   ml_score:
     enabled: true
     score_threshold: 3.0
+    min_calls: 2   # below the example config's 5: this test's baseline windows are 2-3 calls, which a floor of 5 would skip entirely
   auto_block:
     enabled: true
     score_threshold: 3.0

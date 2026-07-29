@@ -1055,6 +1055,7 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 		MLScore: anomalydomain.MLScoreConfig{
 			Enabled:        cfg.MLScore.Enabled,
 			ScoreThreshold: cfg.MLScore.ScoreThreshold,
+			MinCalls:       cfg.MLScore.MinCalls,
 		},
 		AutoBlock: anomalydomain.AutoBlockConfig{
 			Enabled:              cfg.AutoBlock.Enabled,

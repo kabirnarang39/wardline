@@ -262,6 +262,15 @@ func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (d
 // below) -- so a wild window is compared against, and never joins, the
 // history that's supposed to represent normal behavior.
 func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
+	// ponytail: below this floor, none of the four features are scored
+	// or folded -- a quiet window never enters the baseline either,
+	// which biases the baseline slightly toward "busy enough" windows
+	// over time. Accepted tradeoff: the alternative (scoring degenerate
+	// windows at all) is what produced the diversity/inter-arrival false
+	// positives this floor exists to close.
+	if st.prev.total < d.cfg.MLScore.MinCalls {
+		return domain.Anomaly{}, false
+	}
 	rate := float64(st.prev.total)
 	var diversity float64
 	if st.prev.total > 0 {
