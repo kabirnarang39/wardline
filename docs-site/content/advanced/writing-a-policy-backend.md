@@ -9,9 +9,13 @@ consumes it (Open/Closed) — a backend is a domain-defined
 
 ```go
 type Engine interface {
-    Evaluate(ctx context.Context, req Request) (Decision, error)
+    Evaluate(pc Context) Decision
 }
 ```
+
+`Context` carries the identity, tool name, call parameters, timestamp,
+remote address, and user agent for a single request; `Decision`
+carries the resulting effect (allow/deny) and reason.
 
 Implement this interface in a new `internal/features/policy/adapter/`
 file, wire it as a new `policy_backend` value in

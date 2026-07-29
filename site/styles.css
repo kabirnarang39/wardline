@@ -2,7 +2,7 @@
   --bg: #FAFAFA;
   --fg: #111111;
   --muted: #555555;
-  --accent: #16A34A;
+  --accent: #15803D;
   --border: #E2E2E2;
   --code-bg: #17171A;
   --code-fg: #E6E6E6;
@@ -81,6 +81,6 @@ footer.site-footer {
 footer.site-footer .links a { margin-right: 1.25rem; }
 
 @media (prefers-reduced-motion: no-preference) {
-  section.numbered { animation: fade-in 400ms ease-out both; }
+  section.numbered { animation: fade-in 300ms ease-out both; }
   @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 }

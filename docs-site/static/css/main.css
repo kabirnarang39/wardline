@@ -1,5 +1,5 @@
 :root {
-  --bg: #FAFAFA; --fg: #111111; --muted: #555555; --accent: #16A34A;
+  --bg: #FAFAFA; --fg: #111111; --muted: #555555; --accent: #15803D;
   --border: #E2E2E2; --code-bg: #17171A; --code-fg: #E6E6E6; --max-width: 78rem;
 }
 @media (prefers-color-scheme: dark) {
@@ -21,7 +21,11 @@ header.site-header { border-bottom: 1px solid var(--border); padding: 1rem 0; }
 .docs-content { min-width: 0; }
 .docs-content h1 { font-size: 2rem; }
 .docs-content h2 { font-size: 1.4rem; margin-top: 2rem; }
-.docs-content pre { background: var(--code-bg); color: var(--code-fg); padding: 1rem 1.25rem; border-radius: 8px; overflow-x: auto; font: 0.875rem/1.6 ui-monospace, "SF Mono", Consolas, monospace; }
+/* !important overrides Chroma's inline background-color (Hugo's default
+   noClasses highlighting emits it directly on this same <pre>, which an
+   external stylesheet rule can't out-specificity without it) so code
+   blocks use this theme's own --code-bg token, not Chroma's style default. */
+.docs-content pre { background: var(--code-bg) !important; color: var(--code-fg); padding: 1rem 1.25rem; border-radius: 8px; overflow-x: auto; font: 0.875rem/1.6 ui-monospace, "SF Mono", Consolas, monospace; }
 .docs-content code { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
 .docs-content table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
 .docs-content th, .docs-content td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }

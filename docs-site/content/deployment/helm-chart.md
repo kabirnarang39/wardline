@@ -21,6 +21,7 @@ helm install wardline ./charts/wardline -f my-values.yaml
 | `containerPort` | The port `wardline` actually binds inside the container. |
 | `wardline.upstream` | Same as `upstream` in `wardline.yaml`. |
 | `wardline.policyBackend` | Same as `policy_backend`. |
+| `wardline.policy` | The policy file's content, rendered verbatim into a ConfigMap — use a `\|` YAML block scalar or `--set-file wardline.policy=./policy.yaml`, not a nested map. |
 | `wardline.shutdownDelaySeconds` | Same as `shutdown_delay_seconds` — see [High Availability](/deployment/high-availability/). |
 | `wardline.credentialSigningKeyFile` / `wardline.credentialIdentitiesFile` | Same as `credential.signing_key_file` / `credential.identities_file` — mount the actual files via `extraVolumes`/`extraVolumeMounts` below. |
 | `wardline.audit` / `wardline.budget` / `wardline.tracing` | Same as the `audit:` / `budget:` / `tracing:` blocks. |

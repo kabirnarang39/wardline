@@ -13,8 +13,11 @@ Every request produces exactly one decision, recorded in the audit log:
 
 - **`allow`** — matched an allow rule (or a policy backend's `allow`
   evaluated true); forwarded upstream.
-- **`deny`** — matched a deny rule, or no rule matched at all (default
-  deny); not forwarded.
+- **`deny`** — matched a deny rule, or no rule matched and the policy's
+  `default` is `deny` (an explicit, required, operator-set choice —
+  there's no hardcoded fallback); not forwarded.
+- **`throttled`** — budget enforcement rejected the call (see
+  [Budget Enforcement](/features/budget-enforcement/)); not forwarded.
 - **`passthrough`** — protocol-level MCP methods that aren't `tools/call`
   (the `initialize` handshake, `notifications/initialized`, `tools/list`,
   and, if your upstream exposes them, `resources/*`/`prompts/*`) are
