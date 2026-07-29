@@ -1286,16 +1286,19 @@ anomaly:
 		_ = resp.Body.Close()
 	}
 
-	// 8 baseline windows (minSamplesForZScore -- see C1: a 2-sample stddev
-	// is statistical noise, not signal), alternating 2 vs 3 calls and 1 vs
-	// 2 tools so each mlFeatureState baseline has real, non-zero variance
-	// to compare the outlier window against -- a zero-variance baseline
-	// makes onlineStat.ZScore() return 0 unconditionally, which would
-	// never clear auto_block's threshold regardless of how wild the
-	// outlier window below is. window_seconds is 3, not 1, purely for
-	// timing headroom -- same reasoning as
-	// TestServeEndToEnd_AnomalyDetectionRateSpike's 3s window.
-	for i := 0; i < 4; i++ {
+	// 10 baseline windows, alternating 2 vs 3 calls and 1 vs 2 tools so each
+	// mlFeatureState baseline has real, non-zero variance to compare the
+	// outlier window against -- a zero-variance baseline makes
+	// onlineStat.ZScore() return 0 unconditionally, which would never clear
+	// auto_block's threshold regardless of how wild the outlier window
+	// below is. 10, not the bare minimum 8 (minSamplesForZScore): the
+	// outlier window is scored once mlStats holds 10 samples, so a single
+	// dropped or mis-timed window still leaves margin above the floor
+	// instead of silently turning every z-score into 0 and failing this
+	// test for a reason that looks nothing like a timing flake.
+	// window_seconds is 3, not 1, purely for timing headroom -- same
+	// reasoning as TestServeEndToEnd_AnomalyDetectionRateSpike's 3s window.
+	for i := 0; i < 5; i++ {
 		doCall("alice", "read_file")
 		doCall("alice", "read_file")
 		time.Sleep(3100 * time.Millisecond) // rotate: scores the 2-call window
@@ -1324,6 +1327,18 @@ anomaly:
 	}
 	if !bytes.Contains(data, []byte(`"kind":"ml_score"`)) {
 		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
+	}
+	// Name the feature that must have driven the score, not just "some
+	// ml_score anomaly fired": the outlier window's 30 calls against a
+	// {2,3}-alternating baseline (mean 2.5, sample stddev 0.527, above the
+	// 0.15*2.5 = 0.375 relative floor so it applies unfloored) score
+	// z_rate = (30-2.5)/0.527 = 52.2, an order of magnitude past the next
+	// feature (tool diversity, z = 4.7). Asserting the driving feature
+	// catches a regression that still fires an anomaly but for the wrong
+	// reason -- which is precisely how the degenerate-window false
+	// positives this fix wave closed would have looked here.
+	if !bytes.Contains(data, []byte(`(driving feature: call_rate)`)) {
+		t.Fatalf("expected the ml_score anomaly to be driven by call_rate in %s, got: %s", anomalyPath, data)
 	}
 
 	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
@@ -1403,11 +1418,12 @@ anomaly:
 	}
 
 	// Same baseline-then-outlier shape as TestServeEndToEnd_MLScoreAutoBlock
-	// -- 8 non-identical baseline windows (minSamplesForZScore) so
-	// onlineStat.ZScore() has a non-zero variance to compare the outlier
+	// -- 10 non-identical baseline windows (two more than
+	// minSamplesForZScore, for the same margin reasoning documented there)
+	// so onlineStat.ZScore() has a non-zero variance to compare the outlier
 	// window against, then one wild outlier window of many distinct,
 	// rapid-fire tool calls.
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		doCall("alice", "read_file")
 		doCall("alice", "read_file")
 		time.Sleep(3100 * time.Millisecond)
@@ -1429,6 +1445,18 @@ anomaly:
 	}
 	if !bytes.Contains(data, []byte(`"kind":"ml_score"`)) {
 		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
+	}
+	// Name the feature that must have driven the score, not just "some
+	// ml_score anomaly fired": the outlier window's 30 calls against a
+	// {2,3}-alternating baseline (mean 2.5, sample stddev 0.527, above the
+	// 0.15*2.5 = 0.375 relative floor so it applies unfloored) score
+	// z_rate = (30-2.5)/0.527 = 52.2, an order of magnitude past the next
+	// feature (tool diversity, z = 4.7). Asserting the driving feature
+	// catches a regression that still fires an anomaly but for the wrong
+	// reason -- which is precisely how the degenerate-window false
+	// positives this fix wave closed would have looked here.
+	if !bytes.Contains(data, []byte(`(driving feature: call_rate)`)) {
+		t.Fatalf("expected the ml_score anomaly to be driven by call_rate in %s, got: %s", anomalyPath, data)
 	}
 
 	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
