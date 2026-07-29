@@ -688,6 +688,50 @@ func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.
 	}
 }
 
+// TestDetector_MLScore_OrdinaryGrowth_NeverFlags is the end-to-end
+// (Detector-level) regression gate for the remainder of N1: the reviewer's
+// exact repro, driven through Publish rather than onlineStat directly.
+// Baseline {10, 11} alternating x8 gives mean 10.5 and sample stddev
+// 0.5345; a following window of 13 calls is a 24% increase -- ordinary
+// traffic variation. Unfloored that scores z = (13-10.5)/0.5345 = 4.68,
+// which clears BOTH thresholds below: it would log an anomaly and
+// auto-block the identity. With minStddevRelFraction the divisor is
+// floored at 0.15*10.5 = 1.575 and the same window scores 1.59.
+func TestDetector_MLScore_OrdinaryGrowth_NeverFlags(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	cfg := domain.HeuristicConfig{
+		WindowSeconds: 60,
+		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
+		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
+	}
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
+
+	// One distinct tool per call and a fixed 1s spacing hold diversity at a
+	// constant 1.0 and mean inter-arrival at a constant 1s, so those two
+	// features have zero variance (ZScore 0) and this test isolates rate.
+	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
+		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	// The 13-call window. Its first call folds baseline window 8, bringing
+	// mlStats.rate to the 8 samples minSamplesForZScore requires.
+	publishWindow(d, clock, "alice", manyToolNames(13), "allow", 13, time.Second)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			t.Errorf("expected no ml_score anomaly for a 24%% traffic increase over a naturally tight baseline, got %+v", writer.anomalies)
+		}
+	}
+	if len(blocker.calls) != 0 {
+		t.Errorf("expected zero Block calls for a 24%% traffic increase, got %+v", blocker.calls)
+	}
+}
+
 // recordingBlocker is a test double for the blocker interface, so a test
 // can assert on whether Block was called at all, not just what an
 // anomaly writer recorded.
@@ -717,18 +761,24 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	}
 	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
 
-	// 8 baseline windows alternating rate 10/12 (mean 11, sample stddev
-	// ~1.07); diversity/deny-ratio/inter-arrival held constant (unique
-	// tool per call, no denies, fixed 1s spacing) so only rate varies.
+	// 8 baseline windows alternating rate 10/12 (mean 11, m2 = 8, so
+	// sample stddev sqrt(8/7) = 1.069); diversity/deny-ratio/inter-arrival
+	// held constant (unique tool per call, no denies, fixed 1s spacing) so
+	// only rate varies.
 	baseRates := []int{10, 12, 10, 12, 10, 12, 10, 12}
 	for _, n := range baseRates {
 		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
 		clock.t = clock.t.Add(61 * time.Second)
 	}
 
-	// Target window: rate 16 -- z = (16-11)/1.07 ~= 4.68, comfortably
-	// between the 3.0 log threshold and the 8.0 block threshold.
-	publishWindow(d, clock, "alice", manyToolNames(16), "allow", 16, time.Second)
+	// Target window: rate 20. minStddevRelFraction floors the divisor at
+	// 0.15*11 = 1.65 (above the real 1.069), so z = (20-11)/1.65 = 5.45 --
+	// real margin on both sides of the 3.0 log threshold and the 8.0 block
+	// threshold. Picked deliberately: the rate of 16 this test used before
+	// the relative-stddev floor scored 3.03 against the floored divisor,
+	// clearing the 3.0 log threshold by 0.03 and making the test's own
+	// premise a coin flip.
+	publishWindow(d, clock, "alice", manyToolNames(20), "allow", 20, time.Second)
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
