@@ -311,6 +311,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
 
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
+	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDeny, zInterArrival)
 	anomalous := score > d.cfg.MLScore.ScoreThreshold
 
 	// ponytail: only fold a window's raw values into the baseline when the
@@ -330,10 +331,10 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		st.mlStats.interArrival.Update(interArrival)
 	}
 
-	if d.cfg.AutoBlock.Enabled && d.blocker != nil && score > d.cfg.AutoBlock.ScoreThreshold {
+	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
 		d.blocker.Block(e.Identity, fmt.Sprintf(
 			"ml_score %.2f (feature: %s) exceeded auto-block threshold %.2f",
-			score, feature, d.cfg.AutoBlock.ScoreThreshold))
+			blockScore, blockFeature, d.cfg.AutoBlock.ScoreThreshold))
 	}
 
 	if !anomalous {
@@ -371,6 +372,34 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 	}
 	if v := math.Abs(zInterArrival); v > best {
 		best, feature = v, "inter_arrival_time"
+	}
+	return best, feature
+}
+
+// maxHarmfulZ scores only the direction each feature actually signals
+// risk in -- more calls, more tool diversity, and more denials are all
+// "positive z is worse"; faster calls (shorter inter-arrival spacing) is
+// "negative z is worse", so its sign is flipped before comparing. A
+// decline in any of these (quieter traffic, fewer denials, less
+// diversity, slower calls) is not a threat signal auto-block exists to
+// catch -- maxAbsZ (used for the ml_score log record) still surfaces it
+// for visibility, but it must never gate a Block call. The result is
+// floored at 0: if every feature moved in the benign direction, there is
+// no case for blocking at all, not a large negative "score."
+func maxHarmfulZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) {
+	best := zRate
+	feature := "call_rate"
+	if v := zDiversity; v > best {
+		best, feature = v, "tool_diversity"
+	}
+	if v := zDeny; v > best {
+		best, feature = v, "deny_ratio"
+	}
+	if v := -zInterArrival; v > best {
+		best, feature = v, "inter_arrival_time"
+	}
+	if best < 0 {
+		best = 0
 	}
 	return best, feature
 }
