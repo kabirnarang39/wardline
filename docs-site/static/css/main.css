@@ -93,7 +93,8 @@ a{color:inherit}
 .content a{color:var(--text);text-decoration-color:var(--accent-line);text-underline-offset:4px;font-weight:500;text-decoration-thickness:1px}
 .content a:hover{color:var(--accent)}
 .content code{border:1px solid var(--line);background:var(--surface);color:var(--text);font-family:var(--font-mono);overflow-wrap:anywhere;border-radius:5px;padding:.12rem .32rem;font-size:.88em}
-.content pre{border:1px solid var(--line);background:var(--code) !important;color:var(--text-soft);border-radius:8px;margin:22px 0;padding:18px 20px;line-height:1.65;overflow-x:auto}
+.content td code,.content th code{white-space:nowrap}
+.content pre{border:1px solid var(--line);background:var(--code) !important;color:var(--text-soft) !important;border-radius:8px;margin:22px 0;padding:18px 20px;line-height:1.65;overflow-x:auto}
 .content pre code{overflow-wrap:normal;background:none;border:0;padding:0;color:inherit}
 .content table{border-collapse:collapse;width:100%;margin:24px 0;display:block;overflow-x:auto}
 .content th,.content td{border:1px solid var(--line);text-align:left;vertical-align:top;padding:10px 12px}
