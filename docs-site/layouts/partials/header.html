@@ -1,10 +1,36 @@
-<header class="site-header">
-  <div class="container header-inner">
-    <a class="brand" href="{{ .Site.Params.marketingSite }}">Wardline</a>
-    <nav>
-      <a href="/">Docs Home</a>
-      <a href="{{ .Site.Params.github }}">GitHub</a>
-      <a href="{{ .Site.Params.marketingSite }}">Back to site</a>
-    </nav>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{{ .Site.Params.marketingSite }}" aria-label="Wardline home">
+      <span class="brand-mark">wardline</span>
+    </a>
+    <div class="topbar-content">
+      <span class="brand-section">Docs</span>
+      <div class="top-actions">
+        <nav class="topnav" aria-label="Primary">
+          <a href="{{ .Site.Params.marketingSite }}">Site</a>
+          <a href="{{ .Site.Params.github }}" target="_blank" rel="noreferrer">GitHub</a>
+        </nav>
+        <button class="theme-toggle" type="button" aria-label="Toggle dark and light theme" data-theme-toggle>
+          <span class="theme-toggle-track">
+            <span class="theme-toggle-thumb"></span>
+            <span class="theme-toggle-option theme-toggle-option-dark" aria-hidden="true">
+              <svg class="theme-toggle-icon theme-toggle-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </span>
+            <span class="theme-toggle-option theme-toggle-option-light" aria-hidden="true">
+              <svg class="theme-toggle-icon theme-toggle-sun" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><g class="ray"><path d="M12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></g></svg>
+            </span>
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="mobile-nav">
+    <label for="mobile-nav-select">Jump to section</label>
+    <select id="mobile-nav-select" onchange="if(this.value)location.href=this.value">
+      <option value="">Choose a section…</option>
+      {{ range .Site.Menus.main }}
+      <option value="{{ .URL | relLangURL }}">{{ .Name }}</option>
+      {{ end }}
+    </select>
   </div>
 </header>

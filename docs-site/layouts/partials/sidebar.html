@@ -1,17 +1,17 @@
 <nav class="sidebar" aria-label="Documentation sections">
-  <ul>
+  <nav>
     {{ range .Site.Menus.main }}
-    <li class="{{ if strings.HasPrefix $.RelPermalink .URL }}active{{ end }}">
-      <a href="{{ .URL | relLangURL }}">{{ .Name }}</a>
+    <div class="sidebar-item">
+      <a class="sidebar-link{{ if strings.HasPrefix $.RelPermalink .URL }} active{{ end }}" href="{{ .URL | relLangURL }}">{{ .Name }}</a>
       {{ $section := $.Site.GetPage (strings.TrimSuffix "/" .URL) }}
       {{ if $section }}
-      <ul>
+      <div class="sidebar-nested">
         {{ range $section.Pages }}
-        <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+        <a class="sidebar-link{{ if eq $.RelPermalink .RelPermalink }} active{{ end }}" href="{{ .RelPermalink }}">{{ .Title }}</a>
         {{ end }}
-      </ul>
+      </div>
       {{ end }}
-    </li>
+    </div>
     {{ end }}
-  </ul>
+  </nav>
 </nav>
