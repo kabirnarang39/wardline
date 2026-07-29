@@ -2,6 +2,7 @@
 
 [![Docs](https://img.shields.io/badge/docs-website-15803D)](https://kabirnarang39.github.io/wardline/docs/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-15803D)](LICENSE)
+[![Deploy site and docs](https://github.com/kabirnarang39/wardline/actions/workflows/docs.yml/badge.svg)](https://github.com/kabirnarang39/wardline/actions/workflows/docs.yml)
 [Website](https://kabirnarang39.github.io/wardline/)
 
 Open source control-plane proxy for AI agents: identity, policy, budget, and
