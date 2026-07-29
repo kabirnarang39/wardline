@@ -1025,6 +1025,52 @@ audit:
 	}
 }
 
+// TestConfig_Validate_OmittedGCIntervalDefaultsBeforeAutoBlockCheck is the
+// regression gate for the bypass in the check above: gc_interval_seconds is
+// documented as optional, and while it was left at its zero value through
+// validation the whole cross-check was skipped -- cmd/wardline/main.go then
+// applied its own 600s default at wiring time, so a 3600s block duration was
+// silently accepted at 6x the effective GC interval. validate() now applies
+// the default itself, before the check that reads it.
+func TestConfig_Validate_OmittedGCIntervalDefaultsBeforeAutoBlockCheck(t *testing.T) {
+	cfgYAML := func(blockDuration int) string {
+		return fmt.Sprintf(`
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 5
+  auto_block:
+    enabled: true
+    score_threshold: 4.0
+    block_duration_seconds: %d
+audit:
+  output: stdout
+`, blockDuration)
+	}
+
+	if _, err := config.Load(writeTemp(t, cfgYAML(3600))); err == nil {
+		t.Error("expected block_duration_seconds 3600 to be rejected against the defaulted 600s gc_interval_seconds")
+	} else if !strings.Contains(err.Error(), "garbage-collected mid-block") {
+		t.Errorf("unexpected error for an omitted gc_interval_seconds with block_duration_seconds 3600: %v", err)
+	}
+
+	cfg, err := config.Load(writeTemp(t, cfgYAML(300)))
+	if err != nil {
+		t.Fatalf("expected an omitted gc_interval_seconds with block_duration_seconds 300 to pass, got: %v", err)
+	}
+	if cfg.Anomaly.GCIntervalSeconds != 600 {
+		t.Errorf("expected an omitted gc_interval_seconds to read back as the 600s default, got %d", cfg.Anomaly.GCIntervalSeconds)
+	}
+}
+
 func TestConfig_Validate_ValidMLScoreAndAutoBlockConfig(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

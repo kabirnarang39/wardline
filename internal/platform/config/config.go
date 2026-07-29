@@ -36,6 +36,14 @@ const maxBudgetWindowSeconds = 86400
 // operator didn't set tracing.service_name.
 const defaultTracingServiceName = "wardline"
 
+// defaultAnomalyGCIntervalSeconds is the single source of truth for
+// anomaly.gc_interval_seconds' default. It has to be applied here, in
+// validate(), rather than only at wiring time in cmd/wardline/main.go:
+// the auto_block/GC-interval cross-validation below runs before any
+// runtime default would, so an omitted gc_interval_seconds used to read
+// as 0 and skip that check entirely.
+const defaultAnomalyGCIntervalSeconds = 600
+
 // TracingConfig configures OTLP/HTTP span export. Only validated (and
 // only meaningful) when the otel_tracing feature flag is on.
 type TracingConfig struct {
@@ -287,6 +295,9 @@ func (c *Config) validate() error {
 		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.MinCalls <= 0 {
 			problems = append(problems, "anomaly.ml_score.min_calls must be > 0 when anomaly.ml_score.enabled is true")
 		}
+		if c.Anomaly.GCIntervalSeconds <= 0 {
+			c.Anomaly.GCIntervalSeconds = defaultAnomalyGCIntervalSeconds
+		}
 		if c.Anomaly.AutoBlock.Enabled {
 			if !c.Anomaly.MLScore.Enabled {
 				problems = append(problems, "anomaly.ml_score.enabled must be true when anomaly.auto_block.enabled is true -- auto-block acts on ml_score's value")
@@ -300,7 +311,7 @@ func (c *Config) validate() error {
 			if c.Anomaly.AutoBlock.BlockDurationSeconds <= 0 {
 				problems = append(problems, "anomaly.auto_block.block_duration_seconds must be > 0 when anomaly.auto_block.enabled is true")
 			}
-			if c.Anomaly.GCIntervalSeconds > 0 && c.Anomaly.AutoBlock.BlockDurationSeconds > 2*c.Anomaly.GCIntervalSeconds {
+			if c.Anomaly.AutoBlock.BlockDurationSeconds > 2*c.Anomaly.GCIntervalSeconds {
 				problems = append(problems, fmt.Sprintf(
 					"anomaly.auto_block.block_duration_seconds (%d) must be <= 2x anomaly.gc_interval_seconds (%d, so <= %d) -- otherwise a blocked identity's baseline can be garbage-collected mid-block, silently resetting it instead of freezing it",
 					c.Anomaly.AutoBlock.BlockDurationSeconds, c.Anomaly.GCIntervalSeconds, 2*c.Anomaly.GCIntervalSeconds))

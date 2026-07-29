@@ -166,10 +166,11 @@ func runServe(logger *slog.Logger, args []string) {
 		anomalyBuffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
 		heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
 
+		// Always positive: config.validate() defaults gc_interval_seconds
+		// when anomaly_detection is on. A second fallback here is what let an
+		// omitted gc_interval_seconds bypass the auto_block/GC-interval
+		// cross-validation, which runs before this line ever does.
 		gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
-		if gcInterval <= 0 {
-			gcInterval = 10 * time.Minute
-		}
 
 		if cfg.Anomaly.AutoBlock.Enabled {
 			blockChecker = anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
