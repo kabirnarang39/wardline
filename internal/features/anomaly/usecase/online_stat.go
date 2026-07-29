@@ -23,21 +23,39 @@ func (s *onlineStat) Update(x float64) {
 	s.m2 += delta * delta2
 }
 
-// minSamplesForZScore is the floor below which a sample stddev is noise,
-// not signal -- a 2-sample stddev is trivially thrown off by normal
-// variation (see the false-positive this floor was raised to fix: a
-// baseline of {10, 11} calls produced z=7.78 for a third window of 15
-// calls, an entirely ordinary 50% swing). 8 matches the min_calls floor
-// every other heuristic in this file already has before it trusts a
-// count.
+// minSamplesForZScore is how many completed windows must be in a
+// baseline before its sample stddev is trustworthy enough to divide by.
+// A 2- or 3-sample stddev is dominated by whichever way those two or
+// three windows happened to fall: the false positive this floor was
+// raised to fix had a 2-sample baseline of {10, 11} calls producing
+// z=7.78 for a third window of 15 calls, an entirely ordinary 50% swing.
+// 8 is the point at which the sample stddev of a roughly-symmetric
+// distribution stops swinging by more than about a third from one new
+// observation to the next, so a single unusual-but-legitimate window can
+// no longer redefine the whole baseline's width.
 const minSamplesForZScore = 8
+
+// minStddevRelFraction floors the effective standard deviation at this
+// fraction of the running mean's magnitude, so a baseline that happens
+// to be naturally tight can't turn an ordinary proportional swing into
+// a large z-score. Concretely, the false positive this floor closes: a
+// baseline of {10, 11} calls/window (mean 10.5, sample stddev 0.53) is
+// tight enough that a window of 13 calls -- a 24% increase, ordinary
+// traffic variation -- scores z=4.68 without this floor, above the
+// shipped example config's auto_block.score_threshold of 4.0. With a
+// 0.15 floor (stddev floored to 0.15*10.5=1.575), that same window
+// scores z=(13-10.5)/1.575=1.59 -- comfortably below both the log and
+// block thresholds in the example config.
+const minStddevRelFraction = 0.15
 
 // ZScore reports how many standard deviations x is from the running
 // mean. Returns 0 (never anomalous) when there isn't enough history yet
 // (fewer than minSamplesForZScore samples) or the running variance is
 // zero (every prior sample was identical) -- both are "not enough signal
 // to judge", treated as the conservative non-anomalous case rather than
-// an undefined division.
+// an undefined division. The divisor is floored at
+// minStddevRelFraction of the mean's magnitude; see that constant for
+// why a tight baseline alone must not manufacture a large score.
 func (s *onlineStat) ZScore(x float64) float64 {
 	if s.count < minSamplesForZScore {
 		return 0
@@ -47,5 +65,8 @@ func (s *onlineStat) ZScore(x float64) float64 {
 		return 0
 	}
 	stddev := math.Sqrt(variance)
+	if floor := math.Abs(s.mean) * minStddevRelFraction; stddev < floor {
+		stddev = floor
+	}
 	return (x - s.mean) / stddev
 }
