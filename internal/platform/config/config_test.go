@@ -930,6 +930,32 @@ audit:
 	}
 }
 
+func TestConfig_Validate_AutoBlockThresholdBelowMLScoreThresholdRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 8.0
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 300
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when auto_block.score_threshold is lower than ml_score.score_threshold")
+	}
+}
+
 func TestConfig_Validate_ValidMLScoreAndAutoBlockConfig(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

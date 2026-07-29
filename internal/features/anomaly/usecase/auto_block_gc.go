@@ -14,7 +14,7 @@ func GCBlocksOnce(b *BlockChecker, now time.Time) {
 	defer b.mu.Unlock()
 
 	for identity, e := range b.blocked {
-		if !now.Before(e.until) {
+		if e.expired(now) {
 			delete(b.blocked, identity)
 		}
 	}

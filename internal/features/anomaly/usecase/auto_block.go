@@ -12,6 +12,13 @@ type blockEntry struct {
 	reason string
 }
 
+// expired reports whether e's TTL has already elapsed as of now -- the
+// one expiry comparison Check, List, and GCBlocksOnce must all agree on,
+// pulled out once so the three call sites can't silently drift apart.
+func (e blockEntry) expired(now time.Time) bool {
+	return !now.Before(e.until)
+}
+
 // BlockChecker tracks strictly time-bounded per-identity blocks,
 // in-memory only. Satisfies Task 2's blocker interface (Block(identity,
 // reason string)) structurally -- Detector depends on that narrow
@@ -48,24 +55,27 @@ func (b *BlockChecker) Check(identity string, now time.Time) domain.BlockVerdict
 	defer b.mu.Unlock()
 
 	entry, ok := b.blocked[identity]
-	if !ok || !now.Before(entry.until) {
+	if !ok || entry.expired(now) {
 		return domain.BlockVerdict{Allowed: true}
 	}
 	return domain.BlockVerdict{Allowed: false, RetryAfter: entry.until.Sub(now), Reason: entry.reason}
 }
 
-// List returns every currently-blocked identity (TTL not yet elapsed as
-// of the last Block call's own now -- expired entries linger until
-// StartBlockGC drops them, but List itself does not filter by current
-// time, matching the simplest honest dashboard view: "what's in the
-// block table right now", same posture as every other read-only
-// dashboard source in this codebase).
+// List returns every currently-blocked identity, filtered by TTL as of
+// now -- an expired entry answers "not blocked" here exactly like it
+// does in Check, rather than lingering in the dashboard's view for up to
+// a full GC interval after it actually expired (StartBlockGC's interval
+// is memory hygiene for the map, not a promise about what List shows).
 func (b *BlockChecker) List() []domain.BlockedEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	now := b.now()
 	entries := make([]domain.BlockedEntry, 0, len(b.blocked))
 	for identity, e := range b.blocked {
+		if e.expired(now) {
+			continue
+		}
 		entries = append(entries, domain.BlockedEntry{Identity: identity, BlockedUntil: e.until, Reason: e.reason})
 	}
 	return entries

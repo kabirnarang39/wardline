@@ -258,7 +258,7 @@ func (c *Config) validate() error {
 		}
 		// Anomaly records carry their own schema (kind/detail, no latency or
 		// trace fields) and would break every audit-log consumer's assumption
-		// that Decision is one of Entry's five documented values. Sharing
+		// that Decision is one of Entry's six documented values. Sharing
 		// "stdout" is fine and intended -- the two streams stay
 		// distinguishable there -- but sharing a file silently interleaves
 		// two schemas into one JSONL trail.
@@ -289,6 +289,9 @@ func (c *Config) validate() error {
 			}
 			if c.Anomaly.AutoBlock.ScoreThreshold <= 0 {
 				problems = append(problems, "anomaly.auto_block.score_threshold must be > 0 when anomaly.auto_block.enabled is true")
+			}
+			if c.Anomaly.MLScore.Enabled && c.Anomaly.AutoBlock.ScoreThreshold < c.Anomaly.MLScore.ScoreThreshold {
+				problems = append(problems, "anomaly.auto_block.score_threshold must be >= anomaly.ml_score.score_threshold -- otherwise an identity gets blocked with no corresponding ml_score anomaly ever logged")
 			}
 			if c.Anomaly.AutoBlock.BlockDurationSeconds <= 0 {
 				problems = append(problems, "anomaly.auto_block.block_duration_seconds must be > 0 when anomaly.auto_block.enabled is true")
