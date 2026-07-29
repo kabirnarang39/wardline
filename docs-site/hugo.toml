@@ -3,6 +3,7 @@ locale = "en-us"
 title = "Wardline Docs"
 enableRobotsTXT = true
 canonifyURLs = true
+disableKinds = ["taxonomy", "term"]
 
 [markup.goldmark.renderer]
   unsafe = false

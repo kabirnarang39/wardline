@@ -5,7 +5,9 @@ summary: "Per-identity request-rate limiting."
 ---
 
 A per-identity request-rate limiter (requests per window), enforced
-before a call reaches policy evaluation. Enable with:
+before a call reaches policy evaluation. A throttled call gets HTTP 429
+and is recorded in the audit log with decision `throttled` (see
+[Audit Log](/concepts/audit-log/)). Enable with:
 
 ```yaml
 features:

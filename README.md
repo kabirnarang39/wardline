@@ -1,6 +1,8 @@
 # Wardline
 
-[Docs](https://kabirnarang39.github.io/wardline/docs/) · [Website](https://kabirnarang39.github.io/wardline/) · [Apache 2.0](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-website-15803D)](https://kabirnarang39.github.io/wardline/docs/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-15803D)](LICENSE)
+[Website](https://kabirnarang39.github.io/wardline/)
 
 Open source control-plane proxy for AI agents: identity, policy, budget, and
 audit for MCP and beyond.
@@ -595,10 +597,10 @@ Most of `internal/platform/config.Config` is exposed under `values.yaml`'s
 `wardline:` key — feature flags, budget limits, tracing, Postgres
 storage, and (as of the HA-deployment cycle) `credential.signing_key_file`
 / `credential.identities_file` and `shutdown_delay_seconds` all work the
-same way they do outside Kubernetes. One block is not yet exposed there:
-`rbac:` — set it via a mounted/overridden config file if you need it on
-Kubernetes today; wiring it into `values.yaml` is deferred to a future
-chart cycle.
+same way they do outside Kubernetes. Two blocks are not yet exposed
+there: `rbac:` and `anomaly:` — set either via a mounted/overridden
+config file if you need them on Kubernetes today; wiring them into
+`values.yaml` is deferred to a future chart cycle.
 
 **Mounting a signing key or identities file:** `wardline.credentialSigningKeyFile`
 and `wardline.credentialIdentitiesFile` only set the config *paths* — you
