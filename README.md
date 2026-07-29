@@ -268,6 +268,7 @@ local detections to share. Configure with a `federation:` block:
 
 ```yaml
 federation:
+  instance_id: "eu-cluster-1"
   peers_file: "./peers.yaml"
   signing_key_file: "./federation-signing-key.pem"
   shared_secret_file: "./federation-shared-secret"
@@ -276,6 +277,13 @@ federation:
   correlation_window_seconds: 300
   gc_interval_seconds: 600
 ```
+
+`instance_id` is optional and defaults to `os.Hostname()` when omitted.
+Set it explicitly (to something unique) when more than one Wardline
+instance runs on the same host — `os.Hostname()` is identical for every
+co-located process, which silently caps the Correlator's distinct-
+instance count at 1 and makes cross-instance correlation impossible to
+ever trip.
 
 Every `publish_interval_seconds`, this instance aggregates its local
 anomalies since the last publish into pseudonymized summaries — a
@@ -326,7 +334,13 @@ has been sighted by at least `min_instances_for_correlation` distinct
 instances within `correlation_window_seconds`. That's the actual value
 of federation: an anomaly only one instance ever sees might be noise; the
 same identity fingerprint tripping the same heuristic across multiple
-instances is a much stronger signal. State older than 2x
+instances is a much stronger signal. Each correlated alert is also
+logged (`logger.Warn`, "cross-instance correlated anomaly") in addition
+to being buffered in memory, so it's visible even with `web_ui` off or
+after a restart clears the buffer. A given fingerprint/kind re-alerts at
+most once per `correlation_window_seconds` — a sustained cross-instance
+condition keeps alerting once per window, not once for its entire
+lifetime. State older than 2x
 `gc_interval_seconds` is garbage-collected. When `web_ui` is also on,
 correlated alerts appear via `GET /dashboard/api/federation/correlated`
 (same after-ID pagination as every other dashboard endpoint); the
