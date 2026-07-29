@@ -23,14 +23,23 @@ func (s *onlineStat) Update(x float64) {
 	s.m2 += delta * delta2
 }
 
+// minSamplesForZScore is the floor below which a sample stddev is noise,
+// not signal -- a 2-sample stddev is trivially thrown off by normal
+// variation (see the false-positive this floor was raised to fix: a
+// baseline of {10, 11} calls produced z=7.78 for a third window of 15
+// calls, an entirely ordinary 50% swing). 8 matches the min_calls floor
+// every other heuristic in this file already has before it trusts a
+// count.
+const minSamplesForZScore = 8
+
 // ZScore reports how many standard deviations x is from the running
 // mean. Returns 0 (never anomalous) when there isn't enough history yet
-// (fewer than 2 samples) or the running variance is zero (every prior
-// sample was identical) -- both are "not enough signal to judge",
-// treated as the conservative non-anomalous case rather than an
-// undefined division.
+// (fewer than minSamplesForZScore samples) or the running variance is
+// zero (every prior sample was identical) -- both are "not enough signal
+// to judge", treated as the conservative non-anomalous case rather than
+// an undefined division.
 func (s *onlineStat) ZScore(x float64) float64 {
-	if s.count < 2 {
+	if s.count < minSamplesForZScore {
 		return 0
 	}
 	variance := s.m2 / float64(s.count-1)

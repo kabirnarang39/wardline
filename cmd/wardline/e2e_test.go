@@ -1271,7 +1271,7 @@ default: allow
   anomaly_detection: true
 anomaly:
   output: "%s"
-  window_seconds: 2
+  window_seconds: 3
   ml_score:
     enabled: true
     score_threshold: 3.0
@@ -1285,26 +1285,31 @@ anomaly:
 		_ = resp.Body.Close()
 	}
 
-	// Two normal baseline windows, deliberately not identical to each
-	// other (2 vs 3 calls, 1 vs 2 tools) -- same reasoning as
-	// TestDetector_MLScore_FlagsWildOutlierAfterBaselineEstablished: a
-	// zero-variance baseline makes onlineStat.ZScore() return 0
-	// unconditionally, which would never clear auto_block's threshold
-	// regardless of how wild the outlier window below is.
-	doCall("alice", "read_file")
-	doCall("alice", "read_file")
-	time.Sleep(2100 * time.Millisecond) // rotate: scores window1 (mlStats count 0 -> 1)
-	doCall("alice", "read_file")
-	doCall("alice", "list_dir")
-	doCall("alice", "list_dir")
-	time.Sleep(2100 * time.Millisecond) // rotate: scores window2 (mlStats count 1 -> 2, a real baseline)
+	// 8 baseline windows (minSamplesForZScore -- see C1: a 2-sample stddev
+	// is statistical noise, not signal), alternating 2 vs 3 calls and 1 vs
+	// 2 tools so each mlFeatureState baseline has real, non-zero variance
+	// to compare the outlier window against -- a zero-variance baseline
+	// makes onlineStat.ZScore() return 0 unconditionally, which would
+	// never clear auto_block's threshold regardless of how wild the
+	// outlier window below is. window_seconds is 3, not 1, purely for
+	// timing headroom -- same reasoning as
+	// TestServeEndToEnd_AnomalyDetectionRateSpike's 3s window.
+	for i := 0; i < 4; i++ {
+		doCall("alice", "read_file")
+		doCall("alice", "read_file")
+		time.Sleep(3100 * time.Millisecond) // rotate: scores the 2-call window
+		doCall("alice", "read_file")
+		doCall("alice", "list_dir")
+		doCall("alice", "list_dir")
+		time.Sleep(3100 * time.Millisecond) // rotate: scores the 3-call window
+	}
 
 	// Wild outlier window: many distinct tools in a tight burst, far above
 	// the established baseline's rate and tool-diversity mean.
 	for i := 0; i < 30; i++ {
 		doCall("alice", fmt.Sprintf("tool_%d", i))
 	}
-	time.Sleep(2100 * time.Millisecond)
+	time.Sleep(3100 * time.Millisecond)
 	// This call's Publish is the one that rotates and scores the wild
 	// window (now st.prev) against the established baseline -- if the
 	// score clears auto_block.score_threshold, BlockChecker.Block runs
@@ -1381,7 +1386,7 @@ default: allow
   anomaly_detection: true
 anomaly:
   output: "%s"
-  window_seconds: 2
+  window_seconds: 3
   ml_score:
     enabled: true
     score_threshold: 3.0
@@ -1396,21 +1401,24 @@ anomaly:
 	}
 
 	// Same baseline-then-outlier shape as TestServeEndToEnd_MLScoreAutoBlock
-	// -- two non-identical baseline windows so onlineStat.ZScore() has a
-	// non-zero variance to compare the outlier window against, then one
-	// wild outlier window of many distinct, rapid-fire tool calls.
-	doCall("alice", "read_file")
-	doCall("alice", "read_file")
-	time.Sleep(2100 * time.Millisecond)
-	doCall("alice", "read_file")
-	doCall("alice", "list_dir")
-	doCall("alice", "list_dir")
-	time.Sleep(2100 * time.Millisecond)
+	// -- 8 non-identical baseline windows (minSamplesForZScore) so
+	// onlineStat.ZScore() has a non-zero variance to compare the outlier
+	// window against, then one wild outlier window of many distinct,
+	// rapid-fire tool calls.
+	for i := 0; i < 4; i++ {
+		doCall("alice", "read_file")
+		doCall("alice", "read_file")
+		time.Sleep(3100 * time.Millisecond)
+		doCall("alice", "read_file")
+		doCall("alice", "list_dir")
+		doCall("alice", "list_dir")
+		time.Sleep(3100 * time.Millisecond)
+	}
 
 	for i := 0; i < 30; i++ {
 		doCall("alice", fmt.Sprintf("tool_%d", i))
 	}
-	time.Sleep(2100 * time.Millisecond)
+	time.Sleep(3100 * time.Millisecond)
 	doCall("alice", "read_file")
 
 	data, err := os.ReadFile(anomalyPath)

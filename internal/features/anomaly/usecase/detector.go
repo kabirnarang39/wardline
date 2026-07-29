@@ -110,6 +110,7 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 		st.cur = windowCounts{}
 		st.windowStart = now
 		st.flaggedThisWindow = nil
+		st.lastCallAt = time.Time{} // first call of a new window has no in-window predecessor
 	}
 
 	st.cur.total++
@@ -256,12 +257,16 @@ func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (d
 // st.mlStats -- there is no earlier point at which "this window's tool
 // diversity" or "this window's mean inter-arrival time" is a finished,
 // scoreable number. Each onlineStat is scored against its pre-update
-// baseline and only then updated with this window's raw value, so a wild
-// window is compared against history that does not already include
-// itself.
+// baseline, and only folded into that baseline afterward if the window
+// didn't itself score as anomalous (see the fold-conditionally comment
+// below) -- so a wild window is compared against, and never joins, the
+// history that's supposed to represent normal behavior.
 func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.Anomaly, bool) {
 	rate := float64(st.prev.total)
-	diversity := float64(len(st.prev.uniqueTools))
+	var diversity float64
+	if st.prev.total > 0 {
+		diversity = float64(len(st.prev.uniqueTools)) / float64(st.prev.total)
+	}
 	var denyRatio float64
 	if st.prev.toolCalls > 0 {
 		denyRatio = float64(st.prev.deny) / float64(st.prev.toolCalls)
@@ -276,12 +281,25 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
 	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
 
-	st.mlStats.rate.Update(rate)
-	st.mlStats.diversity.Update(diversity)
-	st.mlStats.denyRatio.Update(denyRatio)
-	st.mlStats.interArrival.Update(interArrival)
-
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
+	anomalous := score > d.cfg.MLScore.ScoreThreshold
+
+	// ponytail: only fold a window's raw values into the baseline when the
+	// window itself wasn't flagged anomalous. Folding a flagged window in
+	// unconditionally (the old behavior) drags the baseline's variance wide
+	// enough that an identical repeat of the same attack stops scoring as
+	// anomalous after round one -- verified: 4 identical bursts, only the
+	// first got flagged. Trade-off: a legitimate *permanent* traffic-shape
+	// change now keeps flagging (and, under auto_block, keeps getting
+	// blocked) until the operator raises score_threshold -- the safer
+	// failure direction, since the alternative is silently desensitizing on
+	// what might be real attack traffic.
+	if !anomalous {
+		st.mlStats.rate.Update(rate)
+		st.mlStats.diversity.Update(diversity)
+		st.mlStats.denyRatio.Update(denyRatio)
+		st.mlStats.interArrival.Update(interArrival)
+	}
 
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && score > d.cfg.AutoBlock.ScoreThreshold {
 		d.blocker.Block(e.Identity, fmt.Sprintf(
@@ -289,7 +307,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 			score, feature, d.cfg.AutoBlock.ScoreThreshold))
 	}
 
-	if score <= d.cfg.MLScore.ScoreThreshold {
+	if !anomalous {
 		return domain.Anomaly{}, false
 	}
 	if st.flaggedThisWindow[domain.KindMLScore] {

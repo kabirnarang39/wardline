@@ -529,21 +529,31 @@ func manyToolNames(n int) []string {
 	return tools
 }
 
+// establishMLBaseline feeds windows worth of mild, non-identical baseline
+// traffic (alternating 5 vs 6 calls, 1 vs 2 tools) into d so each
+// mlFeatureState baseline has both a non-zero mean and non-zero variance
+// -- and, once windows >= minSamplesForZScore (8), enough history for
+// onlineStat.ZScore to actually produce a non-zero score for whatever
+// window comes next instead of the "not enough history yet" 0.
+func establishMLBaseline(d *usecase.Detector, clock *fakeClock, identity string, windows int) {
+	for i := 0; i < windows; i++ {
+		if i%2 == 0 {
+			publishWindow(d, clock, identity, []string{"read_file"}, "allow", 5, time.Second)
+		} else {
+			publishWindow(d, clock, identity, []string{"read_file", "list_dir"}, "allow", 6, 1200*time.Millisecond)
+		}
+		clock.t = clock.t.Add(61 * time.Second) // rotate: scores and folds this window into st.mlStats
+	}
+}
+
 func TestDetector_MLScore_FlagsWildOutlierAfterBaselineEstablished(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
 
-	// Two normal baseline windows -- deliberately not identical to each
-	// other (5 vs 6 calls, 1 vs 2 tools) so each mlFeatureState baseline
-	// has non-zero variance, not just a non-zero mean. Each window's
-	// completion is scored (as a no-op: mlStats has too little history to
-	// produce a non-zero z-score yet) and folds its raw values into
-	// st.mlStats, which is what "establishes the baseline".
-	publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 5, time.Second)
-	clock.t = clock.t.Add(61 * time.Second) // rotate: scores window1 (mlStats count 0 -> 1)
-	publishWindow(d, clock, "alice", []string{"read_file", "list_dir"}, "allow", 6, 1200*time.Millisecond)
-	clock.t = clock.t.Add(61 * time.Second) // rotate: scores window2 (mlStats count 1 -> 2, a real baseline now)
+	// 8 baseline windows -- minSamplesForZScore, the floor below which a
+	// sample stddev is noise rather than signal (see C1).
+	establishMLBaseline(d, clock, "alice", 8)
 
 	// Wild multi-dimensional outlier window: huge call count, many
 	// distinct tools, a tight burst (near-zero intra-window spacing).
@@ -598,10 +608,7 @@ func TestDetector_MLScore_OnePerWindow_NotOnePerCall(t *testing.T) {
 	writer := &recordingWriter{}
 	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
 
-	publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 5, time.Second)
-	clock.t = clock.t.Add(61 * time.Second)
-	publishWindow(d, clock, "alice", []string{"read_file", "list_dir"}, "allow", 6, 1200*time.Millisecond)
-	clock.t = clock.t.Add(61 * time.Second)
+	establishMLBaseline(d, clock, "alice", 8)
 	publishWindow(d, clock, "alice", manyToolNames(20), "allow", 200, time.Millisecond)
 	clock.t = clock.t.Add(61 * time.Second)
 
@@ -645,5 +652,96 @@ func TestDetector_MLScore_DisabledFlag_NeverFires(t *testing.T) {
 		if a.Kind == domain.KindMLScore {
 			t.Errorf("expected no ml_score anomaly when the heuristic is disabled, got %+v", writer.anomalies)
 		}
+	}
+}
+
+// TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives is the
+// regression gate for C1 (and C3, transitively, since C3's lastCallAt
+// reset means every window here compares like-for-like inter-arrival
+// gaps): every other ml_score test above drives a wild outlier and
+// asserts detection fires; nothing asserted the ABSENCE of a false
+// positive on ordinary, mildly-varying traffic until now. The rate
+// sequence below (10/11 alternating) is the reviewer's exact
+// reproduction: under the old count<2 floor, a baseline of {10, 11}
+// produced z=7.78 (an auto-block) for a third window of an entirely
+// ordinary 50% swing. diversity/deny-ratio/inter-arrival are held
+// constant (unique tool per call, no denies, fixed 1s spacing, and
+// lastCallAt resetting every rollover keeps that spacing honest) so this
+// isolates exactly the rate dimension the false positive fired on.
+func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
+
+	rates := []int{10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11}
+	for _, n := range rates {
+		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+	// One more call to score the final window.
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			t.Errorf("expected zero ml_score anomalies on ordinary, mildly-varying traffic, got %+v", writer.anomalies)
+		}
+	}
+}
+
+// recordingBlocker is a test double for the blocker interface, so a test
+// can assert on whether Block was called at all, not just what an
+// anomaly writer recorded.
+type recordingBlocker struct {
+	calls []struct{ identity, reason string }
+}
+
+func (b *recordingBlocker) Block(identity, reason string) {
+	b.calls = append(b.calls, struct{ identity, reason string }{identity, reason})
+}
+
+// TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks proves the
+// two-threshold design actually works: ml_score.score_threshold (3.0) is
+// lower than auto_block.score_threshold (8.0), so an operator can "log
+// at a lower sensitivity than they block at" -- traffic scoring between
+// the two must produce exactly one ml_score anomaly and zero Block
+// calls. Nothing before this test drove a score in that gap with a
+// blocker wired in to observe it.
+func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	cfg := domain.HeuristicConfig{
+		WindowSeconds: 60,
+		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0},
+		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 8.0, BlockDurationSeconds: 300},
+	}
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
+
+	// 8 baseline windows alternating rate 10/12 (mean 11, sample stddev
+	// ~1.07); diversity/deny-ratio/inter-arrival held constant (unique
+	// tool per call, no denies, fixed 1s spacing) so only rate varies.
+	baseRates := []int{10, 12, 10, 12, 10, 12, 10, 12}
+	for _, n := range baseRates {
+		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	// Target window: rate 16 -- z = (16-11)/1.07 ~= 4.68, comfortably
+	// between the 3.0 log threshold and the 8.0 block threshold.
+	publishWindow(d, clock, "alice", manyToolNames(16), "allow", 16, time.Second)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	count := 0
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 ml_score anomaly logged between the two thresholds, got %d: %+v", count, writer.anomalies)
+	}
+	if len(blocker.calls) != 0 {
+		t.Fatalf("expected zero Block calls for a score below auto_block.score_threshold, got %+v", blocker.calls)
 	}
 }

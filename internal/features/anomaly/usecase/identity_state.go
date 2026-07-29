@@ -28,7 +28,7 @@ type windowCounts struct {
 
 	uniqueTools     map[string]struct{} // per-window distinct tool set, for ml_score's diversity feature
 	interArrivalSum time.Duration       // sum of deltas between consecutive calls this window
-	interArrivalN   int                 // count of deltas summed (total-1 within-window calls, at most)
+	interArrivalN   int                 // count of deltas summed -- exactly total-1 within-window calls, since lastCallAt resets to zero on rollover (no cross-window delta)
 }
 
 // mlFeatureState holds ml_score's four persistent per-identity running
@@ -52,10 +52,11 @@ type mlFeatureState struct {
 // rather than one per call; it's cleared whenever the window rotates.
 // lastSeen drives GC eviction (Task 5). mlStats is ml_score's persistent
 // running baseline (never reset on rollover -- see mlFeatureState).
-// lastCallAt persists across window rollovers too, so the very first
-// inter-arrival delta of a new window is measured against the last call
-// of the previous window rather than being undefined -- a deliberate
-// simplification, not a bug (see the design doc's Testing section).
+// lastCallAt is reset to the zero value on every window rollover (see
+// recordAndCheck), so the first call of a new window never contributes an
+// inter-arrival delta measured against however long the identity happened
+// to be idle across the boundary -- an identity that pauses and resumes
+// must not have that idle gap read as a wild inter_arrival_time outlier.
 type identityState struct {
 	tools             map[string]struct{}
 	windowStart       time.Time
