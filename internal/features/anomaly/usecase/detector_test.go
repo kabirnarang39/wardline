@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -846,5 +847,184 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	}
 	if len(blocker.calls) != 0 {
 		t.Fatalf("expected zero Block calls for a score below auto_block.score_threshold, got %+v", blocker.calls)
+	}
+}
+
+// declineCfg is the shipped example config's ml_score/auto_block shape
+// (log at 3.0, block at 4.0, skip windows under 5 calls) scaled to a 60s
+// window -- the exact config the three traffic-decline tests below are
+// reproductions against.
+func declineCfg() domain.HeuristicConfig {
+	return domain.HeuristicConfig{
+		WindowSeconds: 60,
+		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
+		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
+	}
+}
+
+// mlScoreAnomalies filters w's record down to the ml_score kind, so a test
+// can assert on both "the decline was still logged" and "nothing was
+// blocked for it" without re-walking the slice twice.
+func mlScoreAnomalies(w *recordingWriter) []domain.Anomaly {
+	var out []domain.Anomaly
+	for _, a := range w.anomalies {
+		if a.Kind == domain.KindMLScore {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// TestDetector_MLScore_TrafficDecline_NeverBlocks is the regression gate for
+// the one-sided auto-block gate (maxHarmfulZ). It is the reviewer's exact
+// reproduction: a busy identity settles into a 95-105 calls/window baseline
+// (11 folded samples, mean 100.4545, raw stddev 2.8762 floored per
+// minStddevRelFraction to 0.15*100.4545 = 15.0682), then quiets down to 30
+// calls -- z_rate = (30 - 100.4545) / 15.0682 = -4.68.
+//
+// Under the old two-sided |z| gate that magnitude cleared
+// auto_block.score_threshold (4.0) and blocked the identity for going
+// *quiet*; worse, a flagged window is never folded into the baseline, so
+// the mean stayed pinned at 100.4545 and every following 30-call window
+// re-blocked forever. MinCalls (5) is no defense here: 30 is well above it.
+// The anomaly is still LOGGED (the two-sided score is what the log record
+// uses, deliberately -- "this identity went unusually quiet" is useful
+// telemetry); only the Block call must not happen.
+func TestDetector_MLScore_TrafficDecline_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	// 11 published windows leave 10 folded; the decline window's own first
+	// call folds the 11th, so the decline is scored against exactly the
+	// 11-sample baseline traced above (sum 1105 / 11 = 100.4545). One
+	// distinct tool per call and a fixed 200ms spacing hold diversity at
+	// 1.0, deny ratio at 0 and mean inter-arrival at 200ms across every
+	// window including the decline -- zero variance, so their ZScore is 0
+	// and this isolates the rate dimension. 200ms, not 1s: at these call
+	// counts a 1s spacing would carry a window past its own 60s boundary
+	// mid-publish, splitting it into two and destroying the baseline this
+	// test is built on.
+	for _, n := range []int{95, 105, 96, 104, 97, 103, 98, 102, 99, 101, 105} {
+		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, 200*time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	publishWindow(d, clock, "alice", manyToolNames(30), "allow", 30, 200*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("a traffic decline must never auto-block, got %+v", blocker.calls)
+	}
+	// Guards against a vacuous pass: without this, a test whose baseline
+	// silently failed to establish (every ZScore 0) would also report zero
+	// Block calls. The logged score pins the traced arithmetic.
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the decline to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 4.68 (driving feature: call_rate)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+	}
+}
+
+// publishMixedWindow feeds n calls, the first denyCount of them recorded as
+// policy denials, each with its own distinct tool name. publishWindow can't
+// produce this shape (one decision for every call), and deny_ratio needs a
+// window that is neither all-allow nor all-deny to have a baseline with
+// non-zero variance.
+func publishMixedWindow(d *usecase.Detector, clock *fakeClock, identity string, n, denyCount int, spacing time.Duration) {
+	for i := 0; i < n; i++ {
+		decision := "allow"
+		if i < denyCount {
+			decision = "deny"
+		}
+		d.Publish(auditdomain.Entry{Identity: identity, Tool: fmt.Sprintf("tool_%d", i), Decision: decision})
+		clock.t = clock.t.Add(spacing)
+	}
+}
+
+// TestDetector_MLScore_DenyRatioDropsToZero_NeverBlocks is the reviewer's
+// second, independent reproduction of the same root cause on a different
+// feature: an identity whose policy denials *stop* (an operator widened a
+// rule, a misconfigured client got fixed) must not be auto-blocked for it.
+//
+// 20 calls/window throughout with denials alternating 6 and 7 gives an
+// 11-sample deny-ratio baseline of six 0.30s and five 0.35s: mean 0.3227,
+// raw stddev 0.0261, floored to 0.15*0.3227 = 0.0484. A window with zero
+// denies scores z_deny = (0 - 0.3227) / 0.0484 = -6.67 -- past the 4.0
+// block threshold in magnitude under the old two-sided gate. Rate,
+// diversity and inter-arrival are constant (20 calls, one distinct tool
+// each, 1s spacing) so deny_ratio is the only feature with any signal.
+func TestDetector_MLScore_DenyRatioDropsToZero_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	for i := 0; i < 11; i++ {
+		publishMixedWindow(d, clock, "alice", 20, 6+i%2, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	publishMixedWindow(d, clock, "alice", 20, 0, time.Second)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("a deny ratio dropping to zero must never auto-block, got %+v", blocker.calls)
+	}
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the deny-ratio drop to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 6.67 (driving feature: deny_ratio)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+	}
+}
+
+// TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks covers the one
+// feature whose harmful direction is *negative* z -- risk is calls arriving
+// closer together, so maxHarmfulZ compares -z_interArrival. That sign flip
+// is the only place the one-sided gate can be silently wrong in the
+// dangerous direction, and no existing test exercises inter_arrival_time as
+// a driving feature at all (every wild-burst test has a zero-variance
+// inter-arrival baseline, scoring 0).
+//
+// 10 calls/window with spacing alternating 1.0s and 1.2s gives an 11-sample
+// baseline of mean 1.0909s, raw stddev 0.1045 floored to 0.15*1.0909 =
+// 0.1636. A window at 4s spacing (a client that slowed down 4x) scores
+// z_interArrival = (4.0 - 1.0909) / 0.1636 = +17.78: enormous, and entirely
+// benign. Sign-flipped it is -17.78, floored to 0 -- no block.
+func TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	for i := 0; i < 11; i++ {
+		spacing := time.Second
+		if i%2 == 1 {
+			spacing = 1200 * time.Millisecond
+		}
+		publishWindow(d, clock, "alice", manyToolNames(10), "allow", 10, spacing)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	publishWindow(d, clock, "alice", manyToolNames(10), "allow", 10, 4*time.Second)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("a client slowing down must never auto-block, got %+v", blocker.calls)
+	}
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the slowdown to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 17.78 (driving feature: inter_arrival_time)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
 	}
 }
