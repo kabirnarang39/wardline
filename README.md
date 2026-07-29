@@ -252,12 +252,47 @@ ones. Unlike the other two, `rate_spike` counts *all* of an identity's
 traffic, protocol methods and malformed requests included — a flood is a
 flood whatever shape it takes.
 
-**Detect-and-log only — never auto-block.** A flagged anomaly is written
-to `anomaly.output` as a JSON line and, when `web_ui` is also on, appears
-via `GET /dashboard/api/anomalies` (subject to the same RBAC gate as the
-rest of the dashboard, when `rbac` is on). ML-based detection is a
-tracked future direction, not part of this version: everything here is
-interpretable, rule/statistics-based, and needs no training data.
+A flagged anomaly is written to `anomaly.output` as a JSON line and, when
+`web_ui` is also on, appears via `GET /dashboard/api/anomalies` (subject
+to the same RBAC gate as the rest of the dashboard, when `rbac` is on).
+
+### ML-based anomaly scoring
+
+A fourth, independently-toggleable heuristic alongside the three
+rule/statistics ones above:
+
+- **`ml_score`** — a combined z-score over four per-identity, per-window
+  features (call rate, distinct-tool count, deny ratio, mean
+  inter-arrival time), each scored against its own running mean/variance
+  baseline (Welford's algorithm — no stored history, no training data,
+  self-baselining exactly like `rate_spike` above). `ml_score.enabled`
+  and `ml_score.score_threshold` control it; an anomaly of kind
+  `ml_score` fires (once per window, like the other three) when
+  `max(|z_rate|, |z_diversity|, |z_deny|, |z_inter_arrival|)` exceeds
+  `score_threshold` — `max()` because any one feature swinging wildly is
+  itself the anomalous signal, not the average across all four, which
+  would dilute a spike in one dimension with three quiet ones.
+
+`ml_score` needs at least two completed windows of history per identity
+before it can score anything (`onlineStat.ZScore` returns 0 — "not
+anomalous" — with fewer than 2 samples or zero variance): a self-baseline
+has nothing to compare against until it has seen some normal variation.
+
+### Auto-block
+
+Opt in with `anomaly.auto_block.enabled: true` — **requires
+`ml_score.enabled: true`**, since auto-block acts on `ml_score`'s value
+via its own, independently-configured `auto_block.score_threshold` (an
+operator can log at a lower sensitivity than they block at). When an
+identity's `ml_score` clears `auto_block.score_threshold`, every one of
+that identity's calls is rejected (`403`, JSON-RPC error, `Retry-After`
+header, audit `decision: "blocked"`) for `auto_block.block_duration_seconds`
+seconds from the moment it was blocked — **strictly time-bounded, with no
+manual early unblock this cycle**: the block simply expires once its TTL
+elapses, checked fresh on every call, no separate invalidation step. When
+`web_ui` is also on, currently-blocked identities appear via `GET
+/dashboard/api/anomalies/blocked` (same RBAC gate as the rest of the
+dashboard).
 
 ## Federation
 

@@ -151,6 +151,8 @@ func runServe(logger *slog.Logger, args []string) {
 	var anomalyDetector *anomalyusecase.Detector
 	var anomalyBuffer *anomalyusecase.AlertBuffer
 	var anomalyGCStop chan struct{}
+	var blockChecker *anomalyusecase.BlockChecker
+	var autoBlockGCStop chan struct{}
 	if anomalyDetectionEnabled {
 		anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
 		if err != nil {
@@ -162,14 +164,42 @@ func runServe(logger *slog.Logger, args []string) {
 			bufferCapacity = ringBufferCapacity
 		}
 		anomalyBuffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
-		anomalyDetector = anomalyusecase.NewDetector(anomalyHeuristicConfig(cfg.Anomaly), anomalyWriter, anomalyBuffer, func(err error) {
-			logger.Error("anomaly write failed", "error", err)
-		}, time.Now)
+		heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
 
 		gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
 		if gcInterval <= 0 {
 			gcInterval = 10 * time.Minute
 		}
+
+		if cfg.Anomaly.AutoBlock.Enabled {
+			blockChecker = anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
+			// auto_block has no gc_interval_seconds field of its own (see
+			// config.AutoBlockConfig) -- it's a sub-feature of anomaly
+			// detection, so its GC just reuses the same gcInterval already
+			// derived above for the detector's own per-identity state GC
+			// rather than inventing a second, independently-tunable knob
+			// for what's a tiny in-memory map.
+			autoBlockGCStop = make(chan struct{})
+			go anomalyusecase.StartBlockGC(blockChecker, gcInterval, autoBlockGCStop)
+			logger.Info("auto-block enabled", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+		}
+
+		onAnomalyWriteErr := func(err error) {
+			logger.Error("anomaly write failed", "error", err)
+		}
+		// blockChecker is passed through two branches, not directly as the
+		// possibly-nil *BlockChecker variable, for the same typed-nil
+		// reason as the liveSink switch below: a nil *BlockChecker placed
+		// into NewDetector's blocker interface parameter would be a
+		// non-nil interface wrapping a nil pointer, which Detector's own
+		// "d.blocker != nil" guard can't see -- it would call Block on a
+		// nil receiver on the first ml_score hit instead of skipping.
+		if blockChecker != nil {
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now)
+		} else {
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now)
+		}
+
 		anomalyGCStop = make(chan struct{})
 		go anomalyusecase.StartGC(anomalyDetector, gcInterval, anomalyGCStop)
 		logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
@@ -407,7 +437,15 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
 
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger)
+	// Declared as the interface type and left at its zero value (a true
+	// nil interface) unless blockChecker is a guaranteed-non-nil
+	// *BlockChecker -- same typed-nil avoidance as anomalySource/
+	// federationSource below, and the liveSink switch above.
+	var autoBlockChecker proxyadapter.AutoBlockChecker
+	if blockChecker != nil {
+		autoBlockChecker = blockChecker
+	}
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker)
 
 	startedAt := time.Now()
 
@@ -432,7 +470,11 @@ func runServe(logger *slog.Logger, args []string) {
 		if federationEnabled {
 			federationSource = correlatedBuffer
 		}
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, nil)
+		var blockedSource dashboardadapter.BlockedSource
+		if blockChecker != nil {
+			blockedSource = blockChecker
+		}
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -510,6 +552,9 @@ func runServe(logger *slog.Logger, args []string) {
 			if anomalyGCStop != nil {
 				close(anomalyGCStop)
 			}
+			if autoBlockGCStop != nil {
+				close(autoBlockGCStop)
+			}
 			if federationPublishStop != nil {
 				close(federationPublishStop)
 			}
@@ -581,6 +626,9 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	if anomalyGCStop != nil {
 		close(anomalyGCStop)
+	}
+	if autoBlockGCStop != nil {
+		close(autoBlockGCStop)
 	}
 	if federationPublishStop != nil {
 		close(federationPublishStop)
@@ -1004,6 +1052,15 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 		DenyRateSpikeEnabled: cfg.DenyRateSpike.Enabled,
 		DenyRateThreshold:    cfg.DenyRateSpike.Threshold,
 		DenyRateMinCalls:     cfg.DenyRateSpike.MinCalls,
+		MLScore: anomalydomain.MLScoreConfig{
+			Enabled:        cfg.MLScore.Enabled,
+			ScoreThreshold: cfg.MLScore.ScoreThreshold,
+		},
+		AutoBlock: anomalydomain.AutoBlockConfig{
+			Enabled:              cfg.AutoBlock.Enabled,
+			ScoreThreshold:       cfg.AutoBlock.ScoreThreshold,
+			BlockDurationSeconds: cfg.AutoBlock.BlockDurationSeconds,
+		},
 	}
 }
 

@@ -1252,6 +1252,115 @@ default: allow
 	}
 }
 
+// TestServeEndToEnd_MLScoreAutoBlock proves ml_score's z-score detector
+// and auto_block's time-bounded block are wired together end to end
+// through the real binary: a wild post-baseline outlier window both
+// fires an ml_score anomaly and blocks the offending identity via
+// main.go's blockChecker wiring into proxyadapter.NewHandler, and the
+// very next call from that identity is rejected with a "blocked"
+// decision -- while an unrelated identity is entirely unaffected, since
+// the block is per-identity, not a global kill switch.
+func TestServeEndToEnd_MLScoreAutoBlock(t *testing.T) {
+	dir := t.TempDir()
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, fmt.Sprintf(`features:
+  web_ui: true
+  anomaly_detection: true
+anomaly:
+  output: "%s"
+  window_seconds: 2
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 30`, anomalyPath))
+
+	doCall := func(identity, tool string) {
+		resp := postToolCall(t, listenAddr, identity, tool)
+		_ = resp.Body.Close()
+	}
+
+	// Two normal baseline windows, deliberately not identical to each
+	// other (2 vs 3 calls, 1 vs 2 tools) -- same reasoning as
+	// TestDetector_MLScore_FlagsWildOutlierAfterBaselineEstablished: a
+	// zero-variance baseline makes onlineStat.ZScore() return 0
+	// unconditionally, which would never clear auto_block's threshold
+	// regardless of how wild the outlier window below is.
+	doCall("alice", "read_file")
+	doCall("alice", "read_file")
+	time.Sleep(2100 * time.Millisecond) // rotate: scores window1 (mlStats count 0 -> 1)
+	doCall("alice", "read_file")
+	doCall("alice", "list_dir")
+	doCall("alice", "list_dir")
+	time.Sleep(2100 * time.Millisecond) // rotate: scores window2 (mlStats count 1 -> 2, a real baseline)
+
+	// Wild outlier window: many distinct tools in a tight burst, far above
+	// the established baseline's rate and tool-diversity mean.
+	for i := 0; i < 30; i++ {
+		doCall("alice", fmt.Sprintf("tool_%d", i))
+	}
+	time.Sleep(2100 * time.Millisecond)
+	// This call's Publish is the one that rotates and scores the wild
+	// window (now st.prev) against the established baseline -- if the
+	// score clears auto_block.score_threshold, BlockChecker.Block runs
+	// synchronously inside it, before this request's own response
+	// returns.
+	doCall("alice", "read_file")
+
+	data, err := os.ReadFile(anomalyPath)
+	if err != nil {
+		t.Fatalf("failed to read anomaly output: %v (stderr: %s)", err, stderr.String())
+	}
+	if !bytes.Contains(data, []byte(`"kind":"ml_score"`)) {
+		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
+	}
+
+	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	defer func() { _ = blockedResp.Body.Close() }()
+	if blockedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for the auto-blocked identity, got %d (stderr: %s)", blockedResp.StatusCode, stderr.String())
+	}
+	if retryAfter := blockedResp.Header.Get("Retry-After"); retryAfter == "" {
+		t.Error("expected a Retry-After header on the blocked response")
+	}
+
+	unblockedResp := postToolCall(t, listenAddr, "bob", "read_file")
+	defer func() { _ = unblockedResp.Body.Close() }()
+	if unblockedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a different, non-blocked identity, got %d (stderr: %s)", unblockedResp.StatusCode, stderr.String())
+	}
+
+	// web_ui's dashboardadapter.NewHandler blocked wiring: the same
+	// BlockChecker main.go handed to the proxy handler above must also be
+	// reachable read-only via the dashboard.
+	blockedListResp, err := http.Get("http://" + listenAddr + "/dashboard/api/anomalies/blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blockedListResp.Body.Close() }()
+	if blockedListResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /dashboard/api/anomalies/blocked, got %d", blockedListResp.StatusCode)
+	}
+	var blockedEntries []map[string]any
+	if err := json.NewDecoder(blockedListResp.Body).Decode(&blockedEntries); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	found := false
+	for _, e := range blockedEntries {
+		if e["identity"] == "alice" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected alice in /dashboard/api/anomalies/blocked, got %+v", blockedEntries)
+	}
+}
+
 // TestValidateConfigEndToEnd_AnomalyOutputNotCreated proves
 // `wardline validate-config` has no filesystem side effects: it must
 // report a valid anomaly block without creating anomaly.output, which an
