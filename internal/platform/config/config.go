@@ -107,6 +107,17 @@ type AnomalyConfig struct {
 // validated (and only meaningful) when the federation feature flag is
 // on, which itself requires anomaly_detection also be on.
 type FederationConfig struct {
+	// InstanceID overrides this process's federation instance ID.
+	// Optional -- when empty (the default), main.go derives it from
+	// os.Hostname() instead. os.Hostname() alone is only unique per host,
+	// not per process: any deployment topology that runs more than one
+	// Wardline process on the same host (bare-metal/VM multi-instance,
+	// or two instances sharing a network namespace) would otherwise have
+	// every instance report the identical instance ID, which silently
+	// caps the Correlator's distinct-instance count at 1 and makes
+	// cross-instance correlation impossible to ever trip -- this override
+	// is the operator's escape hatch for that case.
+	InstanceID                 string `yaml:"instance_id"`
 	PeersFile                  string `yaml:"peers_file"`
 	SigningKeyFile             string `yaml:"signing_key_file"`
 	SharedSecretFile           string `yaml:"shared_secret_file"`
