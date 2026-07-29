@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -9,13 +10,17 @@ import (
 
 // fingerprintState tracks, for one (fingerprint, kind) pair, which
 // instance IDs have reported a sighting and when each was last seen.
-// flagged latches once a CorrelatedAlert has been emitted for this
-// pair, so a sustained cross-instance condition produces one alert, not
-// one per additional sighting -- the same "no flood on sustained
-// condition" lesson anomaly detection's own Detector already learned.
+// flaggedAt records when a CorrelatedAlert was last emitted for this
+// pair (zero means never); it re-arms once a full correlation window has
+// elapsed since that alert, so a sustained cross-instance condition
+// produces one alert per window, not one per state lifetime -- matching
+// the design spec's "once per fingerprint per window" and the same
+// per-window reset anomaly detection's own Detector already applies,
+// rather than latching forever until GC eviction (20 min of total
+// silence by default).
 type fingerprintState struct {
 	instances map[string]time.Time
-	flagged   bool
+	flaggedAt time.Time
 }
 
 // Correlator watches inbound AnomalySummary sightings (this instance's
@@ -75,18 +80,27 @@ func (c *Correlator) recordAndCheck(instanceID string, s domain.AnomalySummary) 
 		st = &fingerprintState{instances: make(map[string]time.Time)}
 		byKind[kindKey] = st
 	}
-	st.instances[instanceID] = c.now()
+	now := c.now()
+	st.instances[instanceID] = now
 
-	if st.flagged {
+	window := time.Duration(c.cfg.CorrelationWindowSeconds) * time.Second
+
+	// Re-arm only once a full window has elapsed since the last alert for
+	// this fingerprint/kind -- before that, this is the same correlated
+	// condition already reported, not a new one.
+	if !st.flaggedAt.IsZero() && now.Sub(st.flaggedAt) < window {
 		return domain.CorrelatedAlert{}, false
 	}
 
-	window := time.Duration(c.cfg.CorrelationWindowSeconds) * time.Second
-	cutoff := c.now().Add(-window)
+	cutoff := now.Add(-window)
 	var distinct []string
+	var firstSeen time.Time
 	for id, seen := range st.instances {
 		if seen.After(cutoff) {
 			distinct = append(distinct, id)
+			if firstSeen.IsZero() || seen.Before(firstSeen) {
+				firstSeen = seen
+			}
 		}
 	}
 
@@ -94,12 +108,17 @@ func (c *Correlator) recordAndCheck(instanceID string, s domain.AnomalySummary) 
 		return domain.CorrelatedAlert{}, false
 	}
 
-	st.flagged = true
+	// map iteration order is nondeterministic and InstanceIDs is now
+	// user-facing JSON via the dashboard -- sort for a stable, readable
+	// wire shape.
+	sort.Strings(distinct)
+
+	st.flaggedAt = now
 	return domain.CorrelatedAlert{
 		Fingerprint: s.Fingerprint,
 		Kind:        s.Kind,
 		InstanceIDs: distinct,
-		FirstSeen:   cutoff,
-		LastSeen:    c.now(),
+		FirstSeen:   firstSeen,
+		LastSeen:    now,
 	}, true
 }

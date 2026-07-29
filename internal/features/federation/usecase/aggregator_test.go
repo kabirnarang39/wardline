@@ -82,6 +82,7 @@ func TestAggregate_EntriesOutsideWindowExcluded(t *testing.T) {
 	anomalies := []anomalydomain.Anomaly{
 		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: start.Add(-time.Second)},     // before window
 		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: end.Add(time.Second)},        // after window
+		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: end},                         // exactly at windowEnd -- must be excluded, window is a half-open [windowStart, windowEnd) interval
 		{Identity: "agent-abc123", Kind: anomalydomain.KindRateSpike, Timestamp: start.Add(30 * time.Second)}, // inside
 	}
 

@@ -181,7 +181,18 @@ func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Requ
 	}
 	after, limit := pagination(r)
 
-	entries := h.federation.Since(after, limit)
+	alerts := h.federation.Since(after, limit)
+	entries := make([]domain.CorrelatedAlertEntry, 0, len(alerts))
+	for _, a := range alerts {
+		entries = append(entries, domain.CorrelatedAlertEntry{
+			ID:          a.ID,
+			Fingerprint: a.Fingerprint,
+			Kind:        string(a.Kind),
+			InstanceIDs: a.InstanceIDs,
+			FirstSeen:   a.FirstSeen.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			LastSeen:    a.LastSeen.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
 	writeJSON(w, entries)
 }
 
