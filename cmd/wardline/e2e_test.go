@@ -2152,12 +2152,10 @@ features:
 		if err != nil {
 			t.Fatalf("GET /federation/summaries at %s: %v", addr, err)
 		}
-		body, _ := io.ReadAll(summariesResp.Body)
 		_ = summariesResp.Body.Close()
-		if summariesResp.StatusCode == http.StatusOK {
-			t.Errorf("expected /federation/summaries to not be reachable at %s when federation is off, got 200 (stderr A: %s, stderr B: %s)", addr, stderrA.String(), stderrB.String())
+		if summariesResp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 (unmatched path routed to the proxy, which rejects the bodyless GET) for /federation/summaries at %s when federation is off, got %d (stderr A: %s, stderr B: %s)", addr, summariesResp.StatusCode, stderrA.String(), stderrB.String())
 		}
-		_ = body
 
 		correlatedResp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated")
 		if err != nil {
