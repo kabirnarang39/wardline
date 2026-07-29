@@ -93,13 +93,19 @@ func signPayload(payload []byte, key *rsa.PrivateKey) ([]byte, error) {
 
 // PublishOnce aggregates every local anomaly since the last publish
 // call into one window ending at now, and sends a signed batch to
-// every configured peer. Returns one error per peer that failed to
-// receive the batch (nil slice means every peer succeeded, including
-// the trivial case of zero peers or zero anomalies to report).
-func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) []error {
+// every configured peer. Returns the summaries computed for this tick
+// (nil when there was nothing to aggregate) alongside one error per
+// peer that failed to receive the batch (nil slice means every peer
+// succeeded, including the trivial case of zero peers or zero
+// anomalies to report). Exposing the summaries lets a caller
+// (cmd/wardline/main.go) feed this instance's own local detections into
+// its Correlator using the exact same aggregation window Publisher just
+// computed, instead of recomputing Aggregate a second time and risking
+// the two windows drifting apart.
+func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) ([]domain.AnomalySummary, []error) {
 	alerts := p.reader.Since(p.lastReadID, 0)
 	if len(alerts) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	anomalies := make([]anomalydomain.Anomaly, len(alerts))
@@ -115,7 +121,7 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) []error {
 	windowStart := now.Add(-time.Duration(p.windowSecs) * time.Second)
 	summaries := Aggregate(anomalies, p.sharedSecret, windowStart, now)
 	if len(summaries) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	batch := domain.SignedSummaryBatch{InstanceID: p.instanceID, Summaries: summaries}
@@ -124,12 +130,12 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) []error {
 		Summaries  []domain.AnomalySummary `json:"summaries"`
 	}{InstanceID: batch.InstanceID, Summaries: batch.Summaries})
 	if err != nil {
-		return []error{fmt.Errorf("marshal summary batch: %w", err)}
+		return summaries, []error{fmt.Errorf("marshal summary batch: %w", err)}
 	}
 
 	sig, err := p.sign(payload, p.signingKey)
 	if err != nil {
-		return []error{fmt.Errorf("sign summary batch: %w", err)}
+		return summaries, []error{fmt.Errorf("sign summary batch: %w", err)}
 	}
 	batch.Signature = sig
 
@@ -139,14 +145,18 @@ func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) []error {
 			errs = append(errs, fmt.Errorf("send to peer %s: %w", peer.ID, err))
 		}
 	}
-	return errs
+	return summaries, errs
 }
 
 // StartPublisher runs PublishOnce on a ticker until stop is closed.
 // Intended to be launched in its own goroutine by the composition root
 // (cmd/wardline/main.go), which owns closing stop on shutdown -- same
-// shape as anomaly/usecase.StartGC.
-func StartPublisher(p *Publisher, interval time.Duration, stop <-chan struct{}, onError func([]error)) {
+// shape as anomaly/usecase.StartGC. onSummaries (may be nil) is called
+// with each tick's aggregated summaries so main.go can also feed this
+// instance's own local anomalies into its Correlator -- see
+// PublishOnce's doc comment for why this is a callback here rather than
+// a second Aggregate call in main.go.
+func StartPublisher(p *Publisher, interval time.Duration, stop <-chan struct{}, onSummaries func([]domain.AnomalySummary), onError func([]error)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -154,7 +164,11 @@ func StartPublisher(p *Publisher, interval time.Duration, stop <-chan struct{}, 
 		case <-stop:
 			return
 		case now := <-ticker.C:
-			if errs := p.PublishOnce(context.Background(), now); len(errs) > 0 && onError != nil {
+			summaries, errs := p.PublishOnce(context.Background(), now)
+			if len(summaries) > 0 && onSummaries != nil {
+				onSummaries(summaries)
+			}
+			if len(errs) > 0 && onError != nil {
 				onError(errs)
 			}
 		}

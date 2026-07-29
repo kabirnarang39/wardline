@@ -742,3 +742,117 @@ audit:
 		t.Errorf("unexpected SigningKeyFile: %q", cfg.Credential.SigningKeyFile)
 	}
 }
+
+func TestLoad_FederationRequiresAnomalyDetection(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  federation: true
+  anomaly_detection: false
+federation:
+  peers_file: "./peers.yaml"
+  signing_key_file: "./key.pem"
+  shared_secret_file: "./secret"
+  publish_interval_seconds: 60
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected an error when federation is on but anomaly_detection is off")
+	}
+}
+
+func TestLoad_FederationMissingPeersFile(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  federation: true
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+federation:
+  signing_key_file: "./key.pem"
+  shared_secret_file: "./secret"
+  publish_interval_seconds: 60
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected an error when federation.peers_file is empty")
+	}
+}
+
+func TestLoad_FederationMinInstancesBelowTwo(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  federation: true
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+federation:
+  peers_file: "./peers.yaml"
+  signing_key_file: "./key.pem"
+  shared_secret_file: "./secret"
+  publish_interval_seconds: 60
+  min_instances_for_correlation: 1
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected an error when min_instances_for_correlation < 2")
+	}
+}
+
+func TestLoad_FederationValidConfig(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  federation: true
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+federation:
+  peers_file: "./peers.yaml"
+  signing_key_file: "./key.pem"
+  shared_secret_file: "./secret"
+  publish_interval_seconds: 60
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected a valid federation config to pass, got: %v", err)
+	}
+	if cfg.Federation.PeersFile != "./peers.yaml" {
+		t.Errorf("unexpected Federation.PeersFile: %q", cfg.Federation.PeersFile)
+	}
+	if cfg.Federation.MinInstancesForCorrelation != 2 {
+		t.Errorf("unexpected Federation.MinInstancesForCorrelation: %d", cfg.Federation.MinInstancesForCorrelation)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"flag"
@@ -34,6 +35,9 @@ import (
 	dashboardadapter "github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
 	dashboarddomain "github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	dashboardusecase "github.com/kabirnarang39/wardline/internal/features/dashboard/usecase"
+	federationadapter "github.com/kabirnarang39/wardline/internal/features/federation/adapter"
+	federationdomain "github.com/kabirnarang39/wardline/internal/features/federation/domain"
+	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 	healthadapter "github.com/kabirnarang39/wardline/internal/features/health/adapter"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	cedaradapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/cedar"
@@ -169,6 +173,86 @@ func runServe(logger *slog.Logger, args []string) {
 		anomalyGCStop = make(chan struct{})
 		go anomalyusecase.StartGC(anomalyDetector, gcInterval, anomalyGCStop)
 		logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
+	}
+
+	// federation requires anomaly_detection (enforced by config.validate()),
+	// so anomalyBuffer above is always non-nil whenever federationEnabled is
+	// true here.
+	federationEnabled := featureFlags.Enabled("federation")
+	var correlator *federationusecase.Correlator
+	var correlatedBuffer *federationusecase.CorrelatedAlertBuffer
+	var federationSummariesHandler http.Handler
+	var federationPublishStop chan struct{}
+	var federationGCStop chan struct{}
+	if federationEnabled {
+		instanceID := deriveInstanceID(logger)
+
+		peers, err := federationadapter.LoadPeers(cfg.Federation.PeersFile)
+		if err != nil {
+			logger.Error("failed to load federation peers file", "error", err)
+			os.Exit(1)
+		}
+		signingKeyPEM, err := os.ReadFile(cfg.Federation.SigningKeyFile)
+		if err != nil {
+			logger.Error("failed to read federation signing key file", "error", err)
+			os.Exit(1)
+		}
+		signingKey, err := federationadapter.ParsePrivateKeyPEM(signingKeyPEM)
+		if err != nil {
+			logger.Error("failed to parse federation signing key", "error", err)
+			os.Exit(1)
+		}
+		// The shared secret is opaque HMAC key material, not PEM -- read raw,
+		// no parsing, matching how RBAC/credential files that aren't
+		// themselves structured configs are handled.
+		sharedSecret, err := os.ReadFile(cfg.Federation.SharedSecretFile)
+		if err != nil {
+			logger.Error("failed to read federation shared secret file", "error", err)
+			os.Exit(1)
+		}
+
+		correlatedBuffer = federationusecase.NewCorrelatedAlertBuffer(ringBufferCapacity)
+		correlator = federationusecase.NewCorrelator(federationdomain.FederationConfig{
+			PublishIntervalSeconds:     cfg.Federation.PublishIntervalSeconds,
+			MinInstancesForCorrelation: cfg.Federation.MinInstancesForCorrelation,
+			CorrelationWindowSeconds:   cfg.Federation.CorrelationWindowSeconds,
+			GCIntervalSeconds:          cfg.Federation.GCIntervalSeconds,
+		}, correlatedBuffer.Add, time.Now)
+
+		// One buffer, two readers -- the dashboard's existing anomalies
+		// handler and this new Publisher both read from the same
+		// anomalyBuffer the anomaly_detection block above already
+		// constructed.
+		publisher := federationusecase.NewPublisher(
+			instanceID, anomalyBuffer, peers, signingKey, sharedSecret,
+			federationadapter.NewHTTPSender(&http.Client{Timeout: 10 * time.Second}),
+			cfg.Federation.PublishIntervalSeconds, time.Now,
+		)
+
+		federationPublishStop = make(chan struct{})
+		// Publisher.PublishOnce also returns the summaries it aggregated for
+		// this tick; feeding them straight into the local Correlator here
+		// means this instance's own detections count toward correlation
+		// using the exact same aggregation window Publisher just computed,
+		// rather than a second, potentially-drifting Aggregate call.
+		go federationusecase.StartPublisher(publisher, time.Duration(cfg.Federation.PublishIntervalSeconds)*time.Second, federationPublishStop,
+			func(summaries []federationdomain.AnomalySummary) {
+				for _, s := range summaries {
+					correlator.Ingest(instanceID, s)
+				}
+			},
+			func(errs []error) {
+				for _, e := range errs {
+					logger.Error("federation publish failed", "error", e)
+				}
+			},
+		)
+
+		federationGCStop = make(chan struct{})
+		go federationusecase.StartCorrelatorGC(correlator, time.Duration(cfg.Federation.GCIntervalSeconds)*time.Second, federationGCStop)
+
+		federationSummariesHandler = federationadapter.NewHandler(peers, correlator.Ingest)
+		logger.Info("federation enabled", "instance_id", instanceID, "peers", len(peers))
 	}
 
 	// Exhaustive over both flags rather than MultiSink{ringBuffer,
@@ -315,7 +399,11 @@ func runServe(logger *slog.Logger, args []string) {
 		if anomalyDetectionEnabled {
 			anomalySource = anomalyBuffer
 		}
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, nil)
+		var federationSource dashboardadapter.FederationSource
+		if federationEnabled {
+			federationSource = correlatedBuffer
+		}
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -325,6 +413,13 @@ func runServe(logger *slog.Logger, args []string) {
 	if credentialIssuanceEnabled {
 		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
 		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
+	}
+	if federationEnabled {
+		// Unconditional on web_ui, unlike the dashboard route above -- a
+		// peer must be able to reach this even when the local dashboard UI
+		// is off, matching /credentials/token's unconditional-when-flag-on
+		// pattern.
+		extraRoutes["/federation/summaries"] = federationSummariesHandler
 	}
 	// Unconditional, unlike every other extraRoutes entry -- every
 	// deployment needs health/readiness checking, it isn't a feature an
@@ -385,6 +480,12 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 			if anomalyGCStop != nil {
 				close(anomalyGCStop)
+			}
+			if federationPublishStop != nil {
+				close(federationPublishStop)
+			}
+			if federationGCStop != nil {
+				close(federationGCStop)
 			}
 			os.Exit(1)
 		}
@@ -451,6 +552,12 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	if anomalyGCStop != nil {
 		close(anomalyGCStop)
+	}
+	if federationPublishStop != nil {
+		close(federationPublishStop)
+	}
+	if federationGCStop != nil {
+		close(federationGCStop)
 	}
 }
 
@@ -582,6 +689,25 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		dir := filepath.Dir(cfg.Anomaly.Output)
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			logger.Error("anomaly.output directory is not usable", "path", cfg.Anomaly.Output, "dir", dir, "error", err)
+			os.Exit(1)
+		}
+	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("federation") {
+		if _, err := federationadapter.LoadPeers(cfg.Federation.PeersFile); err != nil {
+			logger.Error("failed to load federation peers file", "error", err)
+			os.Exit(1)
+		}
+		signingKeyPEM, err := os.ReadFile(cfg.Federation.SigningKeyFile)
+		if err != nil {
+			logger.Error("failed to read federation signing key file", "error", err)
+			os.Exit(1)
+		}
+		if _, err := federationadapter.ParsePrivateKeyPEM(signingKeyPEM); err != nil {
+			logger.Error("failed to parse federation signing key file", "error", err)
+			os.Exit(1)
+		}
+		if _, err := os.ReadFile(cfg.Federation.SharedSecretFile); err != nil {
+			logger.Error("failed to read federation shared secret file", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -797,6 +923,27 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	}
 
 	return buildAuditWriter(logger, cfg.Output), nil
+}
+
+// deriveInstanceID derives this process's federation instance ID from
+// os.Hostname(), falling back to a random suffix (logged as a warning,
+// never fatal) if that fails -- an instance ID is only used to label
+// this instance's own summaries to peers and to the local Correlator,
+// so a missing/unstable hostname must never block startup.
+func deriveInstanceID(logger *slog.Logger) string {
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand.Read failing indicates a broken system entropy
+		// source -- exceptionally rare. Fall back to a fixed suffix rather
+		// than making instance ID derivation itself capable of failing.
+		buf = []byte{0xde, 0xad, 0xbe, 0xef}
+	}
+	instanceID := fmt.Sprintf("wardline-%x", buf)
+	logger.Warn("failed to determine hostname for federation instance ID; using a random suffix instead", "instance_id", instanceID)
+	return instanceID
 }
 
 // anomalyHeuristicConfig translates the operator-facing AnomalyConfig
