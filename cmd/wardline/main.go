@@ -192,6 +192,26 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Error("failed to load federation peers file", "error", err)
 			os.Exit(1)
 		}
+		if len(peers) == 0 {
+			// Not necessarily a misconfiguration (an operator may be
+			// mid-rollout), but silent otherwise -- see peers_loader.go's
+			// LoadPeers doc comment for why this warning lives here rather
+			// than in that pure, logger-free loader.
+			logger.Warn("federation is enabled but peers_file lists no peers; nothing to correlate with yet")
+		}
+		for _, peer := range peers {
+			if peer.ID == instanceID {
+				// Now a more likely misconfiguration than before this cycle:
+				// instance_id defaults to os.Hostname(), which is identical
+				// for co-located processes and was previously undocumented
+				// (see README.md "Federation" and FederationConfig.InstanceID's
+				// doc comment). Warn loudly but don't block startup -- a
+				// self-referential peer entry is harmless (Correlator only
+				// counts an instance ID once via its own Ingest call), just
+				// almost certainly not what the operator intended.
+				logger.Warn("federation peer id matches this instance's own instance_id; likely misconfiguration", "instance_id", instanceID)
+			}
+		}
 		signingKeyPEM, err := os.ReadFile(cfg.Federation.SigningKeyFile)
 		if err != nil {
 			logger.Error("failed to read federation signing key file", "error", err)
@@ -217,7 +237,16 @@ func runServe(logger *slog.Logger, args []string) {
 			MinInstancesForCorrelation: cfg.Federation.MinInstancesForCorrelation,
 			CorrelationWindowSeconds:   cfg.Federation.CorrelationWindowSeconds,
 			GCIntervalSeconds:          cfg.Federation.GCIntervalSeconds,
-		}, correlatedBuffer.Add, time.Now)
+		}, func(a federationdomain.CorrelatedAlert) {
+			// This is the feature's whole payoff signal -- without a log
+			// line here it only ever lives in the in-memory
+			// correlatedBuffer (gone on restart) and the dashboard, so an
+			// operator with web_ui off, or without a dashboard open at the
+			// right moment, would never see it at all.
+			logger.Warn("cross-instance correlated anomaly",
+				"fingerprint", a.Fingerprint, "kind", a.Kind, "instances", a.InstanceIDs)
+			correlatedBuffer.Add(a)
+		}, time.Now)
 
 		// One buffer, two readers -- the dashboard's existing anomalies
 		// handler and this new Publisher both read from the same
@@ -226,7 +255,7 @@ func runServe(logger *slog.Logger, args []string) {
 		publisher := federationusecase.NewPublisher(
 			instanceID, anomalyBuffer, peers, signingKey, sharedSecret,
 			federationadapter.NewHTTPSender(&http.Client{Timeout: 10 * time.Second}),
-			cfg.Federation.PublishIntervalSeconds, time.Now,
+			cfg.Federation.PublishIntervalSeconds,
 		)
 
 		federationPublishStop = make(chan struct{})
@@ -251,7 +280,7 @@ func runServe(logger *slog.Logger, args []string) {
 		federationGCStop = make(chan struct{})
 		go federationusecase.StartCorrelatorGC(correlator, time.Duration(cfg.Federation.GCIntervalSeconds)*time.Second, federationGCStop)
 
-		federationSummariesHandler = federationadapter.NewHandler(peers, correlator.Ingest)
+		federationSummariesHandler = federationadapter.NewHandler(peers, correlator.Ingest, logger)
 		logger.Info("federation enabled", "instance_id", instanceID, "peers", len(peers))
 	}
 
@@ -934,10 +963,19 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 // peers and to the local Correlator, so a missing/unstable hostname
 // must never block startup.
 func deriveInstanceID(logger *slog.Logger, override string) string {
+	return deriveInstanceIDFrom(logger, override, os.Hostname)
+}
+
+// deriveInstanceIDFrom is deriveInstanceID's real logic, taking the
+// hostname lookup as a func so tests can drive both the "hostname
+// resolves" and "hostname lookup fails" paths deterministically --
+// os.Hostname() itself essentially never fails in a real environment,
+// so there'd be no other way to exercise the random-suffix fallback.
+func deriveInstanceIDFrom(logger *slog.Logger, override string, hostname func() (string, error)) string {
 	if override != "" {
 		return override
 	}
-	if host, err := os.Hostname(); err == nil && host != "" {
+	if host, err := hostname(); err == nil && host != "" {
 		return host
 	}
 	buf := make([]byte, 4)
