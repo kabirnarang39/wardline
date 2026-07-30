@@ -321,7 +321,18 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		interArrival = st.prev.interArrivalSum.Seconds() / float64(st.prev.interArrivalN)
 	}
 
-	zRate := st.mlStats.rate.ZScore(rate)
+	// rate's effective stddev is additionally floored at 1.0 -- one whole
+	// call. call_rate is integer-valued, so one call is the smallest amount
+	// it can move by at all, and an operator running ml_score.min_calls at
+	// its allowed minimum (2) can have a baseline mean small enough that the
+	// relative floor alone (0.15 * mean) sits below that quantum -- at which
+	// point the smallest possible real change already scores as a
+	// multi-sigma event. Flooring one integer-valued feature but not the
+	// other would also skew which of them leads the score, since the
+	// unfloored one keeps an artifact-inflated z: cmd/wardline's ml_score
+	// e2e baseline (2-3 calls over 1-2 distinct tools per window) has both
+	// call_rate and tool_diversity in this sub-quantum zone.
+	zRate := st.mlStats.rate.ZScoreFloored(rate, 1.0)
 	zDiversity := st.mlStats.diversity.ZScore(diversity)
 	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
 	// deny_ratio's block-gating z-score additionally floors the effective
