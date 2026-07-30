@@ -135,3 +135,36 @@ identities:
 		t.Fatalf("got (%q, %q, %v), want (\"bob\", %q, nil)", identity, gotTenant, err, tenant.Default)
 	}
 }
+
+// TestTenantOf_LooksUpByIdentityNotSecret covers the cross-tenant revoke
+// check's actual use of TenantOf: looking up a registered identity's own
+// tenant by name, independent of whichever secret it was registered
+// under (the caller of TenantOf never has that secret -- only the
+// identity name, e.g. from a revoke request body).
+func TestTenantOf_LooksUpByIdentityNotSecret(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: alice
+    secret: alice-secret
+    tenant: acme
+  - name: bob
+    secret: bob-secret
+`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := b.TenantOf("alice"); !ok || got != "acme" {
+		t.Errorf("got (%q, %v), want (\"acme\", true)", got, ok)
+	}
+	// bob's entry omits tenant -- must default, not come back empty.
+	if got, ok := b.TenantOf("bob"); !ok || got != tenant.Default {
+		t.Errorf("got (%q, %v), want (%q, true)", got, ok, tenant.Default)
+	}
+	// An identity nobody registered must fail closed, not silently match
+	// some tenant.
+	if _, ok := b.TenantOf("no-such-identity"); ok {
+		t.Error("expected ok=false for an identity that was never registered")
+	}
+}

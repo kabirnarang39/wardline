@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -386,6 +388,16 @@ func runServe(logger *slog.Logger, args []string) {
 		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
 		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
 	}
+	// identityTenantLookup resolves a *target* revoke identity's own
+	// tenant. It's a settable closure for the same reason identityAuth is
+	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
+	// that can actually answer this lookup isn't loaded until the
+	// credentialIssuanceEnabled block further down, but newRevokeAuthorizer
+	// (and the request it services) run later still, after the
+	// reassignment. Defaults to "unknown" so a build with rbac on but
+	// credential_issuance off fails the cross-tenant check closed instead
+	// of panicking on a nil func.
+	identityTenantLookup := func(string) (string, bool) { return "", false }
 	// newRevokeAuthorizer is handed a pointer to the identityAuth variable:
 	// it's declared above (still HeaderIdentity{} at this point) and only
 	// reassigned to bearerIdentity inside the credentialIssuanceEnabled
@@ -395,7 +407,7 @@ func runServe(logger *slog.Logger, args []string) {
 	// always sees identityAuth's final value.
 	var revokeAuthorizer credentialadapter.RevokeAuthorizer
 	if rbacEnabled {
-		revokeAuthorizer = newRevokeAuthorizer(&identityAuth, rbacChecker, logger)
+		revokeAuthorizer = newRevokeAuthorizer(&identityAuth, rbacChecker, func(identity string) (string, bool) { return identityTenantLookup(identity) }, logger)
 	}
 
 	var credentialHandler *credentialadapter.Handler
@@ -406,6 +418,7 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Error("failed to load credentials file", "error", err)
 			os.Exit(1)
 		}
+		identityTenantLookup = bootstrapper.TenantOf
 		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
@@ -661,26 +674,69 @@ func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 
 // newRevokeAuthorizer builds the RevokeAuthorizer wired into
 // /credentials/revoke when rbac is on: a non-loopback caller is allowed
-// through only if identity resolves and the resolved identity holds
-// credential:revoke. identityAuth is a pointer so the returned
-// RevokeAuthorizer -- not invoked until a real request arrives, well
-// after runServe finishes wiring -- always sees identityAuth's final
-// value even though it's built before credential_issuance's later
-// reassignment of that variable (see the comment at this function's call
-// site in runServe).
-func newRevokeAuthorizer(identityAuth *proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker, logger *slog.Logger) credentialadapter.RevokeAuthorizer {
+// through only if identity resolves, the resolved identity holds
+// credential:revoke, and -- unless that grant is global
+// (rbacdomain.Authorizer.IsGlobal, a ClusterRoleBinding) -- the caller's
+// own tenant matches the tenant of the identity being revoked. identityAuth
+// is a pointer so the returned RevokeAuthorizer -- not invoked until a real
+// request arrives, well after runServe finishes wiring -- always sees
+// identityAuth's final value even though it's built before
+// credential_issuance's later reassignment of that variable (see the
+// comment at this function's call site in runServe). identityTenant looks
+// up the *target* identity's tenant (from the loaded credential
+// Bootstrapper's registered identities, once it's loaded -- same
+// call-site-ordering reasoning as identityAuth above); ok is false for an
+// identity identityTenant doesn't recognize, which fails the check closed.
+func newRevokeAuthorizer(identityAuth *proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker, identityTenant func(identity string) (tenant string, ok bool), logger *slog.Logger) credentialadapter.RevokeAuthorizer {
 	return revokeAuthorizerFunc(func(r *http.Request) bool {
-		// The resolved tenant isn't used here yet -- a later task in this
-		// plan tenant-scopes this check (cross-tenant revoke handling); for
-		// now this preserves the existing hardcoded-"default" behavior
-		// exactly.
-		who, _, err := (*identityAuth).Authenticate(r)
+		who, callerTenant, err := (*identityAuth).Authenticate(r)
 		if err != nil {
 			logger.Warn("rbac revoke authorization: identity resolution failed", "remote_addr", r.RemoteAddr)
 			return false
 		}
-		return checker.Check(who, "default", rbacdomain.PermissionCredentialRevoke)
+		if !checker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke) {
+			return false
+		}
+		if checker.IsGlobal(who, rbacdomain.PermissionCredentialRevoke) {
+			return true
+		}
+		targetIdentity, err := targetIdentityFromRequest(r)
+		if err != nil {
+			logger.Warn("rbac revoke authorization: could not determine target identity for tenant check", "remote_addr", r.RemoteAddr)
+			return false
+		}
+		targetTenant, ok := identityTenant(targetIdentity)
+		return ok && targetTenant == callerTenant
 	})
+}
+
+// maxRevokeAuthorizerPeekBytes bounds targetIdentityFromRequest's read of
+// the not-yet-decoded revoke request body -- same 64 KiB headroom as
+// credentialadapter's own maxTokenRequestBodyBytes for a
+// {"identity":"..."} body, kept as a separate constant since that one is
+// unexported from this package.
+const maxRevokeAuthorizerPeekBytes = 64 << 10
+
+// targetIdentityFromRequest reads r.Body far enough to learn the
+// "identity" field of a revoke request, then replaces r.Body with a fresh
+// reader over the same bytes -- http.Request.Body is a single-read
+// stream, and HandleRevoke (internal/features/credential/adapter/http_handler.go)
+// still needs to decode this same body itself after Allowed returns, so
+// this must never leave it drained. Same reset pattern already used in
+// proxy/adapter/handler.go's ServeHTTP for the identical problem.
+func targetIdentityFromRequest(r *http.Request) (string, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRevokeAuthorizerPeekBytes))
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req struct {
+		Identity string `json:"identity"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Identity == "" {
+		return "", fmt.Errorf("no identity in request body")
+	}
+	return req.Identity, nil
 }
 
 // buildTopHandler routes each key of extraRoutes to its handler, and

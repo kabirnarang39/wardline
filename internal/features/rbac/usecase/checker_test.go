@@ -56,3 +56,24 @@ func TestChecker_FlagOnDelegatesToAuthorizer(t *testing.T) {
 		t.Errorf("expected authorizer called with (alice, default, dashboard:view), got (%q, %q, %q)", authorizer.identity, authorizer.tenant, authorizer.perm)
 	}
 }
+
+// TestChecker_IsGlobal_FlagOffAlwaysAllows mirrors
+// TestChecker_FlagOffAlwaysAllows: IsGlobal takes the same flag-gated
+// "flag off means always true" posture as Check, even with an authorizer
+// that would otherwise say no ClusterRoleBinding applies.
+func TestChecker_IsGlobal_FlagOffAlwaysAllows(t *testing.T) {
+	c := usecase.NewChecker(stubFlags{enabled: false}, denyAllAuthorizer{})
+	if !c.IsGlobal("alice", domain.PermissionCredentialRevoke) {
+		t.Error("expected IsGlobal to return true when the flag is off, even with a deny-everything authorizer")
+	}
+}
+
+// TestChecker_IsGlobal_FlagOnDelegatesToAuthorizer mirrors
+// TestChecker_FlagOnDelegatesToAuthorizer for the IsGlobal path.
+func TestChecker_IsGlobal_FlagOnDelegatesToAuthorizer(t *testing.T) {
+	authorizer := &recordingAuthorizer{verdict: true}
+	c := usecase.NewChecker(stubFlags{enabled: true}, authorizer)
+	if !c.IsGlobal("alice", domain.PermissionCredentialRevoke) {
+		t.Error("expected the authorizer's verdict (allow) to be used when flag is on")
+	}
+}

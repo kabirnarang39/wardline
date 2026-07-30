@@ -59,3 +59,15 @@ func (b *Bootstrapper) Authenticate(secret string) (string, string, error) {
 	}
 	return entry.identity, entry.tenant, nil
 }
+
+// TenantOf looks up a registered identity's own tenant by name (not by
+// secret) -- used for the cross-tenant revoke check, which needs the
+// tenant of the identity being revoked, not of whoever is calling.
+func (b *Bootstrapper) TenantOf(identity string) (string, bool) {
+	for _, entry := range b.bySecret {
+		if entry.identity == identity {
+			return entry.tenant, true
+		}
+	}
+	return "", false
+}
