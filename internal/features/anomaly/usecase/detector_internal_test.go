@@ -61,11 +61,25 @@ func distinctTools(n int) []string {
 // baselineSampleCounts is the one thing "did this window get folded into
 // the baseline?" is observable through. toolCalls belongs here for the same
 // reason the other four do, and is not optional just because it is never
-// scored as an ml_score feature in its own right: all five are folded by
-// the same conditional block, so a change that moved or duplicated any one
-// of the five Update calls would desync its count from the rest -- and
-// until it was captured here nothing ever read it back, so no test could
-// have noticed.
+// scored as an ml_score feature in its own right.
+//
+// Since round 12 the five split into two fold groups, and capturing all five
+// together is what makes the split itself assertable:
+//
+//   - rate and interArrival fold whenever the scored window was not
+//     anomalous. Both are volumetric over *all* of a window's traffic
+//     (rate reads windowCounts.total; interArrival's delta count is
+//     total-1), so protocol passthrough and tool-less error entries are
+//     legitimate evidence for them.
+//   - diversity, denyRatio and toolCalls additionally require
+//     st.prev.toolCalls >= MLScore.MinCalls. A window with no real tool
+//     calls carries no information about tool-call behavior at all, and
+//     folding one pinned these three baselines at mean 0 -- see
+//     TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines.
+//
+// So a change that moved, duplicated or mis-grouped any one of the five
+// Update calls desyncs its count from its group -- and until all five were
+// captured here nothing ever read them back, so no test could have noticed.
 type baselineSampleCounts struct {
 	rate, diversity, denyRatio, interArrival, toolCalls int64
 }
@@ -285,6 +299,126 @@ func TestDetector_MLScore_DenyRatioFixedSmallCount_NeverBlocksRegardlessOfVolume
 			t.Errorf("expected the deny-ratio baseline to have learned the habitual denials rather than staying pinned at 0, got %v", mean)
 		}
 	})
+}
+
+// feedPassthroughWindow publishes n MCP protocol-lifecycle passthrough
+// entries spaced by spacing -- the internal-package twin of the padding
+// loop in detector_test.go's ToolCallShareCollapse test. Every one lands in
+// windowCounts.total (so a window of them alone clears the total-based
+// MinCalls gate) and none of them reaches toolCalls, uniqueTools or deny,
+// because isToolCall rejects decision "passthrough" outright.
+func feedPassthroughWindow(d *Detector, clock *internalClock, identity string, n int, spacing time.Duration) {
+	for i := 0; i < n; i++ {
+		d.Publish(auditdomain.Entry{Identity: identity, Tool: "tools/list", Decision: "passthrough"})
+		clock.t = clock.t.Add(spacing)
+	}
+}
+
+// TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines is the
+// regression gate for round 12. checkMLScore's MinCalls gate reads
+// st.prev.total, which counts protocol-lifecycle passthrough and tool-less
+// error entries (see isToolCall's doc comment) -- so a window with *zero*
+// real tool calls clears it. Before round 12, tool_diversity, deny_ratio and
+// toolCalls were scored and folded from such windows anyway, pinning all
+// three baselines at mean 0 with zero variance: a baseline carrying no
+// information whatsoever about tool-call behavior, the exact class MinCalls
+// exists to exclude, just measured against the wrong denominator.
+//
+// The consequence was a permanent lockout. Hand-traced against the
+// pre-round-12 code, the first legitimate window after 12 passthrough-only
+// ones -- 6 calls over 5 distinct tools, ordinary volume, ordinary spacing,
+// zero denials -- scored
+// zDiversity = (5 - 0) / max(1.0, sqrt(0)) = 5.00, past both the 3.0 log
+// threshold and the 4.0 block threshold; and because 5.00 > 3.0 marks the
+// window anomalous, it was never folded, so the baseline stayed at mean 0
+// and every following legitimate window blocked again (the reviewer measured
+// 6 consecutive windows producing 6 Block calls). Reachable by any client
+// that only ever calls tools/list -- an inspector, a capability-discovery
+// bot, a health-check probe -- or by a reconnect loop, or by a client whose
+// every request currently fails to parse.
+//
+// The assertions below are on the split-fold behavior itself, not just on
+// the safe outcome: {diversity, denyRatio, toolCalls} must stay at zero
+// samples through the passthrough-only windows while {rate, interArrival}
+// keep accumulating, and must then start accumulating once real tool-call
+// windows arrive.
+func TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines(t *testing.T) {
+	clock := &internalClock{t: time.Unix(0, 0)}
+	writer := &nopWriter{}
+	blocker := &blockRecorder{}
+	d := NewDetector(mlFloorCfg(), writer, nil, blocker, nil, clock.now)
+
+	// 12 windows of 6 tools/list entries each: total = 6 clears MinCalls
+	// (5), toolCalls is 0 throughout. A window is scored and folded by the
+	// first call of the *following* window, so 12 published windows leaves
+	// 11 scored here.
+	for i := 0; i < 12; i++ {
+		feedPassthroughWindow(d, clock, "alice", 6, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	afterPassthrough := sampleCounts(d.state["alice"])
+	want := baselineSampleCounts{rate: 11, interArrival: 11}
+	if afterPassthrough != want {
+		t.Fatalf("tool-call-free windows must fold into rate/interArrival only, leaving diversity/denyRatio/toolCalls empty\nwant: %+v\ngot:  %+v", want, afterPassthrough)
+	}
+
+	// The first legitimate window: 6 calls (identical volume and spacing to
+	// the passthrough windows, so zRate and zInterArrival are both 0) spread
+	// over 5 distinct tools. Its own first call rolls over and folds
+	// passthrough window 12, taking rate/interArrival to 12 samples while the
+	// other three stay at 0.
+	feedWindow(d, clock, "alice", distinctTools(5), 6, time.Second)
+	if got := sampleCounts(d.state["alice"]); got != (baselineSampleCounts{rate: 12, interArrival: 12}) {
+		t.Fatalf("the last passthrough window must still fold into rate/interArrival only, got %+v", got)
+	}
+
+	// Roll over: this is the call that scores the legitimate window.
+	// zDiversity is 0 -- not because of any new special case, but because
+	// ZScore's own count < minSamplesForZScore guard sees an empty baseline
+	// and reports "not enough signal to judge" instead of dividing by a
+	// degenerate mean-0 stand-in.
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tool_0", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("an ordinary 6-call/5-tool window following tool-call-free traffic must never auto-block, got %+v", blocker.calls)
+	}
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			t.Errorf("expected no ml_score anomaly at all in this run, got %+v", writer.anomalies)
+		}
+	}
+	// The window was not anomalous, so it folded -- and this time all five
+	// baselines advance, because toolCalls (6) clears MinCalls (5). This is
+	// the other half of the fix: a real tool-call window is exactly what
+	// these three baselines are supposed to learn from.
+	if got := sampleCounts(d.state["alice"]); got != (baselineSampleCounts{rate: 13, diversity: 1, denyRatio: 1, interArrival: 13, toolCalls: 1}) {
+		t.Fatalf("a window with real tool calls must fold into all five baselines, got %+v", got)
+	}
+
+	// And it keeps working: 9 more identical legitimate windows carry
+	// diversity's baseline past minSamplesForZScore (8) without ever
+	// producing an anomaly or a block, so the recovery path is real and not
+	// just "the first one happened to be unscoreable".
+	for i := 0; i < 9; i++ {
+		clock.t = clock.t.Add(61 * time.Second)
+		feedWindow(d, clock, "alice", distinctTools(5), 6, time.Second)
+	}
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tool_0", Decision: "allow"})
+
+	if got := d.state["alice"].mlStats.diversity.count; got < minSamplesForZScore {
+		t.Errorf("expected the diversity baseline to have accumulated at least %d real samples, got %d", minSamplesForZScore, got)
+	}
+	if len(blocker.calls) != 0 {
+		t.Errorf("expected zero Block calls across the whole run, got %+v", blocker.calls)
+	}
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindMLScore {
+			t.Errorf("expected no ml_score anomaly across the whole run, got %+v", writer.anomalies)
+		}
+	}
 }
 
 // stateSnapshot is a fully comparable projection of identityState: every

@@ -1087,11 +1087,29 @@ func TestDetector_MLScore_DenyRatioLowVolumeNoise_NeverBlocks(t *testing.T) {
 // tools/list before its first tool call, so this is the ordinary shape of
 // a freshly reconnected client's first window, not a contrived one.
 //
-// Hand-traced: total = 5 (3 passthrough + 2 tool calls) clears MinCalls 5,
-// toolCalls = 2 with 1 denial gives ratio 0.50 and
-// zDeny = (0.50-0.0195455)/0.0041560 = 115.60. The block-gating score is 0
-// outright: 2 real tool calls is below MinCalls, which is the "there is no
-// reliable signal here at all" case rather than one to be scaled down.
+// Round 12 made this guarantee strictly stronger, and deliberately changed
+// what this test asserts. Round 9 gated only deny_ratio's *block-gating*
+// score on toolCalls >= MinCalls, so the window's 1-in-2 deny ratio was
+// still scored and logged: zDeny = (0.50-0.0195455)/0.0041560 = 115.60 drove
+// the log record. Round 12 gates deny_ratio's scoring *and* folding on the
+// same threshold (along with tool_diversity's and toolCalls'), because a
+// 2-observation ratio is not evidence about anything -- so all four of
+// zDiversity/zDeny/zDenyBlock/zToolCalls are now 0 for this window, and
+// deny_ratio no longer appears in the log record at all. Previously: "a
+// passthrough-inflated total must not let a tiny real sample *block*". Now:
+// "...must not even be *scored* from."
+//
+// Hand-traced against the current code: total = 5 (3 passthrough + 2 tool
+// calls) clears MinCalls 5, so the window is scored; toolCalls = 2 is below
+// MinCalls, so deny_ratio, tool_diversity and toolCalls are all 0. What
+// remains is call_rate, which is deliberately volumetric over total and so
+// still sees this reconnect window's real collapse from the baseline's 200
+// calls to 5: against a mean-200 zero-variance baseline the divisor is the
+// relative floor 0.15*200 = 30 (above zCount's count floor sqrt(200) =
+// 14.14), giving zRate = (5-200)/30 = -6.50. Mean inter-arrival is an
+// unchanged 200ms, so zInterArrival = 0. The two-sided log record therefore
+// reports 6.50 on call_rate, and the block-gating score is 0: call_rate's
+// decline is benign-direction, and every other candidate is gated off.
 func TestDetector_MLScore_DenyRatioPassthroughInflatedTotal_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1120,7 +1138,10 @@ func TestDetector_MLScore_DenyRatioPassthroughInflatedTotal_NeverBlocks(t *testi
 	if len(logged) != 1 {
 		t.Fatalf("expected the reconnect window to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
 	}
-	if want := "combined z-score 115.60 (driving feature: deny_ratio)"; !strings.Contains(logged[0].Detail, want) {
+	// deny_ratio must not be the driving feature (or appear at all): 1 denial
+	// out of 2 real tool calls is below MinCalls, so round 12 excludes it from
+	// scoring entirely. What is left is call_rate's genuine volume collapse.
+	if want := "combined z-score 6.50 (driving feature: call_rate)"; !strings.Contains(logged[0].Detail, want) {
 		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
 	}
 }
