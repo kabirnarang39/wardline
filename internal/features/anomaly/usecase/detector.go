@@ -414,24 +414,41 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // catch -- maxAbsZ (used for the ml_score log record) still surfaces it
 // for visibility, but it must never gate a Block call. zDenyBlock is
 // deny_ratio's block-gating variant (see checkMLScore's comment above
-// it), not the raw zDeny used for logging. The inter-arrival candidate is
-// additionally gated on zRate >= 0: calls arriving closer together is only
-// a threat signal paired with volume at or above baseline (an actual
-// burst); a client that simply made fewer calls that happened to land
-// closer together is not one, and treating it as one auto-blocked a
-// legitimate volume decline through this feature. The result is floored at
-// 0: if every feature moved in the benign direction, there is no case for
-// blocking at all, not a large negative "score."
+// it), not the raw zDeny used for logging.
+//
+// Both the deny_ratio and inter_arrival_time candidates are additionally
+// gated on zRate >= 0. deny_ratio, like tool_diversity before round 5's
+// raw-count fix, is a ratio -- and a ratio rises when call volume declines
+// over an unchanged absolute numerator (round 7: an identity with a handful
+// of habitual denied probes scores as increasingly anomalous purely because
+// a quiet window shrank the denominator, no denial behavior having actually
+// changed; unlike diversity, deny_ratio can't simply switch to a raw count
+// without losing the ability to detect a genuine small-absolute-count
+// proportional spike, so it's gated on volume instead. A binomial-SE floor
+// alone cannot close this: the SE shrinks as 1/sqrt(n) while the artifact
+// grows as 1/n). Calls arriving closer together is likewise only a threat
+// signal paired with volume at or above baseline (an actual burst); a
+// client that simply made fewer calls that happened to land closer
+// together, or had a naturally low but proportionally high deny count in a
+// quiet window, is not one. The trade-off in both cases: a genuine attack
+// at conspicuously low volume no longer auto-blocks either -- still logged
+// via the unaffected two-sided score, matching this feature's established
+// posture (see round 4's accepted "quiet slow-drip exfil unblockable"
+// trade-off) of preferring a missed block over a false one.
+//
+// The result is floored at 0: if every feature moved in the benign
+// direction, there is no case for blocking at all, not a large negative
+// "score."
 func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival float64) (float64, string) {
 	best := zRate
 	feature := "call_rate"
 	if v := zDiversity; v > best {
 		best, feature = v, "tool_diversity"
 	}
-	if v := zDenyBlock; v > best {
-		best, feature = v, "deny_ratio"
-	}
 	if zRate >= 0 {
+		if v := zDenyBlock; v > best {
+			best, feature = v, "deny_ratio"
+		}
 		if v := -zInterArrival; v > best {
 			best, feature = v, "inter_arrival_time"
 		}
