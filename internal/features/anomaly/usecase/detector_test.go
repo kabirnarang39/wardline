@@ -1096,6 +1096,11 @@ func TestDetector_MLScore_DenyRatioPassthroughInflatedTotal_NeverBlocks(t *testi
 // neuter real deny-spike detection. No pre-existing test drove a deny
 // *increase* into a Block call at all -- every deny_ratio test before this
 // one covered denials dropping (the benign direction).
+//
+// Round 7 turned the second subtest into a negative case: the zRate >= 0
+// gate on deny_ratio's block candidacy deliberately gives up blocking a
+// deny spike whose window volume collapsed. The first subtest is now the
+// one that carries the "detection still works" claim -- read both together.
 func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 	// Ordinary window size: 20 calls/window with denials alternating 6/7
 	// gives an 11-sample baseline of mean 0.3227273, raw stddev 0.0261116
@@ -1135,13 +1140,30 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		}
 	})
 
-	// Small window, large deviation: the binomial floor scales with sample
-	// size, it does not exempt small windows. Same 200-call-window baseline
-	// as the two false-positive tests above, so se = 0.043776 exactly as in
-	// the 1-deny case -- but 5 denials out of 10 is a 50% ratio, scoring
-	// (0.50-0.0195455)/0.043776 = 10.975. Only the small-*and*-marginal case
-	// is suppressed.
-	t.Run("small window with a large deviation", func(t *testing.T) {
+	// Small window, low volume relative to baseline: this subtest asserted
+	// exactly the opposite (1 Block call) until round 7 gated deny_ratio's
+	// auto-block candidacy on zRate >= 0. That gate deliberately gives this
+	// case up, and this is the *same* class of case the gate exists to close,
+	// not collateral damage: 10 tool calls against a baseline of 200-call
+	// windows scores z_rate = (10-200)/30 = -6.33, so the identity's overall
+	// volume collapsed -- indistinguishable, from the deny *ratio*'s point of
+	// view, from the habitual-denials false positive
+	// TestDetector_MLScore_DenyRatioVolumeDecline_NeverBlocks reproduces
+	// (both have a shrunken denominator; only their numerator differs, and no
+	// ratio-based floor can tell those apart -- the window's own binomial SE
+	// shrinks as 1/sqrt(n) while the ratio artifact grows as 1/n, so
+	// sqrt(n) can never cancel n). Without the gate this window's
+	// block-gating score is (0.50-0.0195455)/0.074855 = 6.42, well past the
+	// 4.0 threshold.
+	//
+	// Accepted trade-off, matching round 4's accepted "quiet slow-drip exfil
+	// is unblockable" posture: a real attack conducted at conspicuously low
+	// volume is logged but not auto-blocked, because preferring a missed
+	// block over a false one is this feature's stated bias. The "ordinary
+	// window size" subtest above is what proves deny-spike *detection* still
+	// works: its baseline and its attack window are both 20 calls, so
+	// z_rate = 0, the gate passes, and it still blocks.
+	t.Run("small window, low volume relative to baseline -- no longer blocks", func(t *testing.T) {
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
@@ -1153,13 +1175,69 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		clock.t = clock.t.Add(61 * time.Second)
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
-		if len(blocker.calls) != 1 {
-			t.Fatalf("expected a 50%% deny ratio to auto-block even in a 10-call window, got %d: %+v", len(blocker.calls), blocker.calls)
+		if len(blocker.calls) != 0 {
+			t.Fatalf("a deny ratio raised by a collapsing call volume must never auto-block, got %d: %+v", len(blocker.calls), blocker.calls)
 		}
-		if !strings.Contains(blocker.calls[0].reason, "deny_ratio") {
-			t.Errorf("expected the block reason to name deny_ratio, got %q", blocker.calls[0].reason)
+		// Guards against a vacuous pass: a baseline that silently failed to
+		// establish would score every feature 0 and report zero Block calls
+		// too. zDeny (the two-sided log score) is untouched by the gate:
+		// (0.50-0.0195455)/0.0041560 = 115.60.
+		logged := mlScoreAnomalies(writer)
+		if len(logged) != 1 {
+			t.Fatalf("expected the quiet high-deny window to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+		}
+		if want := "combined z-score 115.60 (driving feature: deny_ratio)"; !strings.Contains(logged[0].Detail, want) {
+			t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
 		}
 	})
+}
+
+// TestDetector_MLScore_DenyRatioVolumeDecline_NeverBlocks is the regression
+// gate for round 7's Fix 1, and the sixth instance of "a legitimate volume
+// decline gets auto-blocked forever" -- this one reached through deny_ratio,
+// the last remaining feature that is still a ratio. Round 5 fixed the same
+// failure in tool_diversity by scoring a raw count instead; deny_ratio
+// cannot do that without losing genuine small-absolute-count proportional
+// spikes, so it is gated on volume instead.
+//
+// Hand-traced against establishHighVolumeDenyBaseline: an identity that
+// habitually gets a handful of denied probes (3-5 per 200-call window)
+// records the *same 4 absolute denials it always has* in a legitimately
+// quiet 20-call window. Nothing about its denial behavior changed -- only
+// the denominator shrank -- yet ratio = 4/20 = 0.20 is 10x the 0.0195455
+// baseline mean, and pre-fix the block-gating score was
+// (0.20-0.0195455)/0.030954 = 5.83, past the 4.0 threshold. Because a
+// flagged window is never folded into the baseline, that re-blocked at
+// every rollover: permanent lockout.
+//
+// With the gate, z_rate = (20-200)/30 = -6.0 excludes deny_ratio from
+// auto-block candidacy entirely, leaving only benign candidates and a block
+// score floored to 0.
+func TestDetector_MLScore_DenyRatioVolumeDecline_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	establishHighVolumeDenyBaseline(d, clock, "alice")
+
+	publishMixedWindow(d, clock, "alice", 20, 4, 200*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("an unchanged absolute deny count in a quieter window must never auto-block, got %+v", blocker.calls)
+	}
+	// Guards against a vacuous pass, and pins the traced arithmetic: the
+	// two-sided log score is untouched by the gate, so this window is still
+	// surfaced as telemetry at (0.20-0.0195455)/0.0041560 = 43.42.
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the quiet window to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 43.42 (driving feature: deny_ratio)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+	}
 }
 
 // TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks covers the one
