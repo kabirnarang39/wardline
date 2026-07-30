@@ -35,7 +35,7 @@ func TestRecorder_Record_Success(t *testing.T) {
 	r := usecase.NewRecorder(w, nil, nil)
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	r.Record("agent-abc123", "read_file", "allow", "matched rule", "", 42*time.Millisecond, now)
+	r.Record("agent-abc123", "acme", "read_file", "allow", "matched rule", "", 42*time.Millisecond, now)
 
 	if len(w.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(w.entries))
@@ -60,7 +60,7 @@ func TestRecorder_Record_WriteFailureCallsOnError(t *testing.T) {
 	var captured error
 	r := usecase.NewRecorder(w, nil, func(err error) { captured = err })
 
-	r.Record("agent-abc123", "read_file", "allow", "", "", 0, time.Now())
+	r.Record("agent-abc123", "acme", "read_file", "allow", "", "", 0, time.Now())
 
 	if captured == nil {
 		t.Fatal("expected onError to be called")
@@ -71,7 +71,7 @@ func TestRecorder_Record_IncludesTraceID(t *testing.T) {
 	w := &fakeWriter{}
 	r := usecase.NewRecorder(w, nil, nil)
 
-	r.Record("agent-abc123", "read_file", "allow", "matched rule", "4bf92f3577b34da6a3ce929d0e0e4736", time.Millisecond, time.Now())
+	r.Record("agent-abc123", "acme", "read_file", "allow", "matched rule", "4bf92f3577b34da6a3ce929d0e0e4736", time.Millisecond, time.Now())
 
 	if len(w.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(w.entries))
@@ -87,7 +87,7 @@ func TestRecorder_PublishesToLiveSink(t *testing.T) {
 	r := usecase.NewRecorder(w, sink, nil)
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	r.Record("agent-1", "read_file", "allow", "", "trace-abc", 5*time.Millisecond, now)
+	r.Record("agent-1", "acme", "read_file", "allow", "", "trace-abc", 5*time.Millisecond, now)
 
 	if len(sink.published) != 1 {
 		t.Fatalf("expected 1 published entry, got %d", len(sink.published))
@@ -107,9 +107,23 @@ func TestRecorder_NilLiveSinkIsSafe(t *testing.T) {
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Must not panic when sink is nil (web_ui off, no NoopSink wired).
-	r.Record("agent-1", "read_file", "allow", "", "", 5*time.Millisecond, now)
+	r.Record("agent-1", "acme", "read_file", "allow", "", "", 5*time.Millisecond, now)
 
 	if len(w.entries) != 1 {
 		t.Errorf("expected Writer to receive the entry, got %d entries", len(w.entries))
+	}
+}
+
+func TestRecord_SetsTenantOnEntry(t *testing.T) {
+	w := &fakeWriter{}
+	r := usecase.NewRecorder(w, nil, nil)
+
+	r.Record("alice", "acme", "search", "allow", "", "trace-1", 10*time.Millisecond, time.Now())
+
+	if len(w.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(w.entries))
+	}
+	if w.entries[0].Tenant != "acme" {
+		t.Fatalf("got Tenant %q, want \"acme\"", w.entries[0].Tenant)
 	}
 }

@@ -896,6 +896,30 @@ func TestHandler_TenantScopedPolicyRuleGatesRealProxiedCall(t *testing.T) {
 	})
 }
 
+// TestHandler_RecordsResolvedTenantOnAuditEntry proves the tenant resolved
+// by IdentityAuthenticator flows all the way through to the recorded audit
+// Entry — the point of threading tenantName through Handler.finish/record
+// into Recorder.Record.
+func TestHandler_RecordsResolvedTenantOnAuditEntry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newTenantScopedRequest("agent-abc123", "acme", "read_file"))
+
+	if len(writer.entries) != 1 || writer.entries[0].Tenant != "acme" {
+		t.Fatalf("expected audit entry Tenant %q, got %+v", "acme", writer.entries)
+	}
+}
+
 func TestHandler_AutoBlockCheckerNil_BehavesIdenticallyToBefore(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
