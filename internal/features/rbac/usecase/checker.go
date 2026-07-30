@@ -27,3 +27,13 @@ func (c *Checker) Check(identity, tenant string, perm domain.Permission) bool {
 	}
 	return c.authorizer.Authorize(identity, tenant, perm)
 }
+
+// IsGlobal reports whether identity holds perm via a ClusterRoleBinding
+// (every tenant), same flag-gated posture as Check: flag off means every
+// caller is treated as globally granted, matching Check's "always allow".
+func (c *Checker) IsGlobal(identity string, perm domain.Permission) bool {
+	if !c.flags.Enabled(rbacFeatureFlag) {
+		return true
+	}
+	return c.authorizer.IsGlobal(identity, perm)
+}

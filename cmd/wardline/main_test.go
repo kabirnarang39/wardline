@@ -140,16 +140,22 @@ func TestBuildTopHandler_WebUIAndCredentialIssuanceOn_AllRoutesReachCorrectHandl
 // fake for newRevokeAuthorizer's tests.
 type fakeRevokeIdentityAuth struct {
 	identity string
+	tenant   string
 	err      error
 }
 
 func (f fakeRevokeIdentityAuth) Authenticate(r *http.Request) (string, string, error) {
-	return f.identity, "", f.err
+	return f.identity, f.tenant, f.err
 }
 
-// stubAuthorizer is a domain.Authorizer fake whose verdict is fixed.
+// stubAuthorizer is a domain.Authorizer fake whose verdicts are fixed.
+// verdict controls Authorize (the plain permission check); global
+// controls IsGlobal (ClusterRoleBinding vs. tenant-scoped RoleBinding) --
+// kept independent since newRevokeAuthorizer's cross-tenant check only
+// engages once Authorize already granted.
 type stubAuthorizer struct {
 	verdict bool
+	global  bool
 }
 
 func (s stubAuthorizer) Authorize(identity, tenant string, perm rbacdomain.Permission) bool {
@@ -157,7 +163,7 @@ func (s stubAuthorizer) Authorize(identity, tenant string, perm rbacdomain.Permi
 }
 
 func (s stubAuthorizer) IsGlobal(identity string, perm rbacdomain.Permission) bool {
-	return s.verdict
+	return s.global
 }
 
 // panicIfCalledAuthorizer proves newRevokeAuthorizer never reaches
@@ -185,9 +191,14 @@ func testLogger() *slog.Logger {
 
 func TestNewRevokeAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants(t *testing.T) {
 	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice"}
-	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true})
+	// global: true -- this test only cares about the identity-resolves/
+	// checker-grants path, not the cross-tenant check, so it takes the
+	// global-grant escape hatch (covered on its own by
+	// TestNewRevokeAuthorizer_GlobalGrantSkipsTenantCheck) rather than
+	// needing a target-identity lookup wired in too.
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: true})
 
-	authz := newRevokeAuthorizer(&identityAuth, checker, testLogger())
+	authz := newRevokeAuthorizer(&identityAuth, checker, noIdentityTenantLookup, testLogger())
 	if !authz.Allowed(httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil)) {
 		t.Error("expected Allowed to return true when identity resolves and the checker grants")
 	}
@@ -197,7 +208,7 @@ func TestNewRevokeAuthorizer_DeniesWhenCheckerDenies(t *testing.T) {
 	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob"}
 	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: false})
 
-	authz := newRevokeAuthorizer(&identityAuth, checker, testLogger())
+	authz := newRevokeAuthorizer(&identityAuth, checker, noIdentityTenantLookup, testLogger())
 	if authz.Allowed(httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil)) {
 		t.Error("expected Allowed to return false when the checker denies")
 	}
@@ -207,9 +218,125 @@ func TestNewRevokeAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t 
 	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{err: errors.New("no identity")}
 	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
 
-	authz := newRevokeAuthorizer(&identityAuth, checker, testLogger())
+	authz := newRevokeAuthorizer(&identityAuth, checker, noIdentityTenantLookup, testLogger())
 	if authz.Allowed(httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil)) {
 		t.Error("expected Allowed to return false when identity resolution fails")
+	}
+}
+
+// noIdentityTenantLookup is a lookup fake for tests that never expect
+// newRevokeAuthorizer to reach the target-identity-tenant check (either
+// the checker denies first, or the grant is global).
+func noIdentityTenantLookup(identity string) (string, bool) { return "", false }
+
+// TestNewRevokeAuthorizer_DeniesCrossTenantRevoke covers the tenant-scoping
+// this task adds: bob is a tenant-scoped (RoleBinding, not
+// ClusterRoleBinding) admin for tenant "acme" and holds credential:revoke,
+// but alice -- the identity he's trying to revoke -- belongs to a
+// different tenant ("widgets-inc"). Without a global grant, that must be
+// denied even though the permission check itself passes.
+func TestNewRevokeAuthorizer_DeniesCrossTenantRevoke(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+	lookup := func(identity string) (string, bool) {
+		if identity == "alice" {
+			return "widgets-inc", true // alice belongs to a DIFFERENT tenant than bob
+		}
+		return "", false
+	}
+
+	authz := newRevokeAuthorizer(&identityAuth, checker, lookup, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", strings.NewReader(`{"identity":"alice"}`))
+	if authz.Allowed(req) {
+		t.Fatal("bob (tenant acme) must not be allowed to revoke alice (tenant widgets-inc)")
+	}
+}
+
+// TestNewRevokeAuthorizer_AllowsSameTenantRevoke is the positive
+// counterpart: bob (tenant acme) revoking alice, who is also in acme,
+// must be allowed.
+func TestNewRevokeAuthorizer_AllowsSameTenantRevoke(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+	lookup := func(identity string) (string, bool) {
+		if identity == "alice" {
+			return "acme", true
+		}
+		return "", false
+	}
+
+	authz := newRevokeAuthorizer(&identityAuth, checker, lookup, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", strings.NewReader(`{"identity":"alice"}`))
+	if !authz.Allowed(req) {
+		t.Error("expected bob (tenant acme) to be allowed to revoke alice, also tenant acme")
+	}
+}
+
+// TestNewRevokeAuthorizer_GlobalGrantSkipsTenantCheck covers the
+// ClusterRoleBinding escape hatch: a globally-granted caller may revoke
+// across tenants without the target identity needing to resolve at all.
+func TestNewRevokeAuthorizer_GlobalGrantSkipsTenantCheck(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "root", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: true})
+
+	authz := newRevokeAuthorizer(&identityAuth, checker, noIdentityTenantLookup, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", strings.NewReader(`{"identity":"alice"}`))
+	if !authz.Allowed(req) {
+		t.Error("expected a globally-granted caller to be allowed regardless of the target identity's tenant")
+	}
+}
+
+// TestNewRevokeAuthorizer_DeniesWhenTargetIdentityUnknown fails closed:
+// an identityTenant lookup that doesn't recognize the target identity
+// must never be treated as same-tenant.
+func TestNewRevokeAuthorizer_DeniesWhenTargetIdentityUnknown(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+
+	authz := newRevokeAuthorizer(&identityAuth, checker, noIdentityTenantLookup, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", strings.NewReader(`{"identity":"someone-unregistered"}`))
+	if authz.Allowed(req) {
+		t.Error("expected Allowed to return false when the target identity's tenant can't be resolved")
+	}
+}
+
+// TestNewRevokeAuthorizer_PreservesRequestBodyForLaterDecode guards the
+// exact seam bug this task's brief calls out: newRevokeAuthorizer's
+// Allowed closure (via targetIdentityFromRequest) reads r.Body to learn
+// the target identity for the cross-tenant check, but HandleRevoke
+// (internal/features/credential/adapter/http_handler.go) still needs to
+// json.Decode that same body itself, afterward, to get req.Identity for
+// the actual revocation. http.Request.Body is a single-read stream -- if
+// Allowed drained it without replacing it, HandleRevoke's later decode
+// would see EOF and every non-loopback revoke would 400. This test calls
+// Allowed and then performs the exact decode HandleRevoke performs next,
+// against the same *http.Request, to prove the body survives.
+func TestNewRevokeAuthorizer_PreservesRequestBodyForLaterDecode(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+	lookup := func(identity string) (string, bool) {
+		if identity == "alice" {
+			return "acme", true
+		}
+		return "", false
+	}
+
+	authz := newRevokeAuthorizer(&identityAuth, checker, lookup, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", strings.NewReader(`{"identity":"alice"}`))
+
+	if !authz.Allowed(req) {
+		t.Fatal("expected Allowed to return true so we reach the body-reuse check")
+	}
+
+	// This mirrors HandleRevoke's own decode step exactly.
+	var decoded struct {
+		Identity string `json:"identity"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&decoded); err != nil {
+		t.Fatalf("HandleRevoke's later decode failed -- Allowed must have drained req.Body: %v", err)
+	}
+	if decoded.Identity != "alice" {
+		t.Errorf("expected decoded identity %q, got %q", "alice", decoded.Identity)
 	}
 }
 
