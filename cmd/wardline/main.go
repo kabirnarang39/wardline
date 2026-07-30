@@ -712,7 +712,7 @@ func runValidatePolicy(logger *slog.Logger, args []string) {
 		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
-	fmt.Println("policy file is valid")
+	logger.Info("policy file is valid")
 }
 
 // loadPolicyEngine picks the policy.Engine implementation named by
@@ -789,7 +789,7 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
-	fmt.Println("config file is valid")
+	logger.Info("config file is valid")
 }
 
 // runExportEvidence assembles a compliance evidence bundle covering
@@ -966,7 +966,7 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("wrote %s: %d audit entries, %d anomalies\n", output, len(auditEntries), len(anomalies))
+	logger.Info("wrote evidence bundle", "output", output, "audit_entries", len(auditEntries), "anomalies", len(anomalies))
 }
 
 // buildAuditSink picks the audit Writer for the current postgres_storage
