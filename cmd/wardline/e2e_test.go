@@ -1334,18 +1334,19 @@ anomaly:
 	// outlier window is 30 calls over 30 distinct tools against a baseline
 	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
 	// features fire hard and tool_diversity leads by a nose. This config's
-	// min_calls of 2 puts both of them in round 10's sub-quantum zone --
-	// distinct-tool count has baseline mean 1.5 (relative floor
-	// 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375), both
-	// well under one whole tool/call -- so each is floored at 1.0 and the
-	// outlier scores z_diversity = (30-1.5)/1.0 = 28.5, just past
-	// call_rate's z_rate = (30-2.5)/1.0 = 27.5. Their gap is then exactly
-	// the gap between the two baseline means (1.0) and no longer depends on
-	// the raw sample stddev at all, which makes this assertion more
-	// deterministic than the pre-round-10 54.1-vs-52.2 it replaces, not
-	// less. Flooring only one of the two would invert the result: with
-	// diversity floored and call_rate not, call_rate's un-floored 52.2 wins
-	// on an artifact. 30 distinct tools from an identity that normally
+	// min_calls of 2 puts both of them in the sub-quantum zone zCount's count
+	// floor exists for -- distinct-tool count has baseline mean 1.5 (relative
+	// floor 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375),
+	// both well under one whole tool/call -- so each is floored at
+	// max(1.0, sqrt(mean)): 1.2247 for diversity and 1.5811 for rate. The
+	// outlier scores z_diversity = (30-1.5)/1.2247 = 23.27, comfortably past
+	// call_rate's z_rate = (30-2.5)/1.5811 = 17.39. Neither depends on the raw
+	// sample stddev at all, which makes this assertion more deterministic than
+	// the pre-round-10 54.1-vs-52.2 it replaces, not less -- and round 11's
+	// sqrt(mean) floor widens diversity's lead rather than narrowing it, since
+	// the smaller-mean feature gets the smaller divisor. Flooring only one of
+	// the two would invert the result: with diversity floored and call_rate
+	// not, call_rate's un-floored 52.2 wins on an artifact. 30 distinct tools from an identity that normally
 	// touches 1-2 is textbook enumeration, so diversity leading is the
 	// right answer here -- it took the lead only once that feature was
 	// scored as a raw distinct-tool count instead of distinct/total, a
@@ -1466,18 +1467,19 @@ anomaly:
 	// outlier window is 30 calls over 30 distinct tools against a baseline
 	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
 	// features fire hard and tool_diversity leads by a nose. This config's
-	// min_calls of 2 puts both of them in round 10's sub-quantum zone --
-	// distinct-tool count has baseline mean 1.5 (relative floor
-	// 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375), both
-	// well under one whole tool/call -- so each is floored at 1.0 and the
-	// outlier scores z_diversity = (30-1.5)/1.0 = 28.5, just past
-	// call_rate's z_rate = (30-2.5)/1.0 = 27.5. Their gap is then exactly
-	// the gap between the two baseline means (1.0) and no longer depends on
-	// the raw sample stddev at all, which makes this assertion more
-	// deterministic than the pre-round-10 54.1-vs-52.2 it replaces, not
-	// less. Flooring only one of the two would invert the result: with
-	// diversity floored and call_rate not, call_rate's un-floored 52.2 wins
-	// on an artifact. 30 distinct tools from an identity that normally
+	// min_calls of 2 puts both of them in the sub-quantum zone zCount's count
+	// floor exists for -- distinct-tool count has baseline mean 1.5 (relative
+	// floor 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375),
+	// both well under one whole tool/call -- so each is floored at
+	// max(1.0, sqrt(mean)): 1.2247 for diversity and 1.5811 for rate. The
+	// outlier scores z_diversity = (30-1.5)/1.2247 = 23.27, comfortably past
+	// call_rate's z_rate = (30-2.5)/1.5811 = 17.39. Neither depends on the raw
+	// sample stddev at all, which makes this assertion more deterministic than
+	// the pre-round-10 54.1-vs-52.2 it replaces, not less -- and round 11's
+	// sqrt(mean) floor widens diversity's lead rather than narrowing it, since
+	// the smaller-mean feature gets the smaller divisor. Flooring only one of
+	// the two would invert the result: with diversity floored and call_rate
+	// not, call_rate's un-floored 52.2 wins on an artifact. 30 distinct tools from an identity that normally
 	// touches 1-2 is textbook enumeration, so diversity leading is the
 	// right answer here -- it took the lead only once that feature was
 	// scored as a raw distinct-tool count instead of distinct/total, a

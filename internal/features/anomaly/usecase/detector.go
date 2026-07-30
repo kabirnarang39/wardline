@@ -267,6 +267,34 @@ func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (d
 	}, true
 }
 
+// zCount scores a per-window integer-count feature (call_rate,
+// tool_diversity) against its running baseline s, flooring the effective
+// stddev at max(1.0, sqrt(mean)).
+//
+// One whole unit alone (round 10's floor) is the smallest floor that makes
+// sense for an integer count: it is the smallest amount such a feature can
+// move by at all, and the relative floor minStddevRelFraction*mean sits
+// below that quantum whenever the baseline mean is small, at which point the
+// smallest possible real change already scores as a multi-sigma event. But a
+// count's own natural sampling noise is Poisson-like -- stddev on the order
+// of sqrt(mean) -- which exceeds 1.0 for any mean above 1, so a bare 1.0
+// floor is only actually binding at the smallest baselines (round 10's own
+// target, mean 1-3) and under-floors relative to the feature's own
+// variability above that. Round 11: a baseline of 3 calls/window jumping to
+// 8 in one window scored z=5.0 with a 1.0 floor -- past the 4.0 block
+// threshold, for a 2.67x burst the shipped rate_spike heuristic's own
+// default 3.0x multiplier would not even flag -- versus z=2.89 with this
+// floor, correctly below both thresholds.
+//
+// Sharing one definition between call_rate and tool_diversity (round 10
+// introduced two independent literal-1.0 call sites) also closes the risk of
+// the two floors silently drifting apart in a future edit. The floor is
+// monotonically at least as large as round 10's, so this can only ever lower
+// a z-score: no previously-safe scenario can newly become a false block.
+func zCount(s *onlineStat, x float64) float64 {
+	return s.ZScoreFloored(x, math.Max(1.0, math.Sqrt(math.Abs(s.mean))))
+}
+
 // checkMLScore must be called with d.mu held, and only once per completed
 // window -- the caller (recordAndCheck) enforces this by gating the call
 // on windowJustCompleted rather than invoking it on every entry the way
@@ -321,34 +349,16 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		interArrival = st.prev.interArrivalSum.Seconds() / float64(st.prev.interArrivalN)
 	}
 
-	// rate's effective stddev is additionally floored at 1.0 -- one whole
-	// call. call_rate is integer-valued, so one call is the smallest amount
-	// it can move by at all, and an operator running ml_score.min_calls at
-	// its allowed minimum (2) can have a baseline mean small enough that the
-	// relative floor alone (0.15 * mean) sits below that quantum -- at which
-	// point the smallest possible real change already scores as a
-	// multi-sigma event. Flooring one integer-valued feature but not the
-	// other would also skew which of them leads the score, since the
-	// unfloored one keeps an artifact-inflated z: cmd/wardline's ml_score
-	// e2e baseline (2-3 calls over 1-2 distinct tools per window) has both
-	// call_rate and tool_diversity in this sub-quantum zone.
-	zRate := st.mlStats.rate.ZScoreFloored(rate, 1.0)
-	// diversity's effective stddev is additionally floored at 1.0 -- one
-	// whole tool, for the same sub-quantum reason zRate above is floored at
-	// one whole call. tool_diversity is integer-valued, so when its baseline
-	// mean is small (an identity that habitually touches only 1-3 distinct
-	// tools per window, an entirely ordinary shape), the relative floor
-	// alone (0.15 * mean) is smaller than one whole tool: the smallest
-	// possible real change -- exactly one more distinct tool, nothing else
-	// about the window different -- already scores a multi-sigma event on
-	// the shipped example config's own thresholds (mean 1 -> 2 scores
-	// z = 1/0.15 = 6.67, past both 3.0 and 4.0). And because the window is
-	// then flagged it never folds, so the baseline stays pinned at mean 1
-	// and this repeats every window forever -- the same permanent lockout
-	// rounds 4, 5, 7 and 9 each closed for a different feature, showing up
-	// here as a floor smaller than the smallest possible unit of the thing
-	// it is supposed to floor.
-	zDiversity := st.mlStats.diversity.ZScoreFloored(diversity, 1.0)
+	// call_rate and tool_diversity are both integer counts, so both are
+	// scored through zCount's shared count-aware stddev floor rather than the
+	// relative floor alone -- see zCount's doc comment for why, and for the
+	// two false positives (one per feature) that floor closes. Flooring one
+	// integer-valued feature but not the other would additionally skew which
+	// of them leads the score, since the unfloored one keeps an
+	// artifact-inflated z: cmd/wardline's ml_score e2e baseline (2-3 calls
+	// over 1-2 distinct tools per window) has both features in that zone.
+	zRate := zCount(&st.mlStats.rate, rate)
+	zDiversity := zCount(&st.mlStats.diversity, diversity)
 	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
 	// deny_ratio's block-gating z-score additionally floors the effective
 	// stddev at this window's own binomial standard error,
