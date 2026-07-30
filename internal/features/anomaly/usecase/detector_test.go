@@ -1407,6 +1407,88 @@ func TestDetector_MLScore_DenyRatioVolumeDecline_NeverBlocks(t *testing.T) {
 	}
 }
 
+// TestDetector_MLScore_DenyRatioToolCallShareCollapse_NeverBlocks is the
+// regression gate for round 9: round 7 gated deny_ratio's auto-block
+// candidacy on zRate >= 0 to prove "this window's volume didn't decline
+// before we trust the ratio", but zRate is scored from windowCounts.total,
+// which deliberately counts ALL traffic (MCP protocol-lifecycle passthrough
+// and tool-less error entries included). deny_ratio's actual denominator is
+// windowCounts.toolCalls. Pad total back up to the baseline with non-tool-call
+// traffic while the real toolCalls collapses and that gate reads as satisfied
+// while the denominator it exists to protect has shrunk -- re-opening the exact
+// ratio-volume-decline artifact round 7 was built to close.
+//
+// Hand-traced against establishHighVolumeDenyBaseline (11 folded windows,
+// denyRatio mean 0.215/11 = 0.0195455 with raw stddev 0.0041560; rate,
+// diversity and toolCalls all a flat 200, so each is floored to 0.15*200 = 30):
+// an identity carrying the same habitual 4 absolute denials it always has,
+// in a window whose real tool calls collapsed but whose total was padded
+// back to 200 by passthrough/error entries.
+//
+//	toolCalls | ratio | pSmoothed=(0.0195455n+0.5)/(n+1) | se       | zDenyBlock
+//	20        | 0.20  | 0.0424242                        | 0.0450691| 4.0040
+//	10        | 0.40  | 0.0632231                        | 0.0769584| 4.9436
+//
+// Both cleared auto_block's 4.0 threshold through the zRate gate, since
+// zRate = (200-200)/30 = 0 reads as "volume held steady". Gating on
+// zToolCalls instead: (20-200)/30 = -6.0 and (10-200)/30 = -6.33, both
+// negative, so deny_ratio is not an auto-block candidate at all and the
+// block score floors to 0 (zRate 0, zDiversity (toolCalls-200)/30 < 0,
+// -zInterArrival 0 at the baseline's own constant 200ms spacing).
+//
+// Deliberately distinct from TestDetector_MLScore_DenyRatioPassthroughInflatedTotal_NeverBlocks:
+// that window's toolCalls is 2, *below* MLScore.MinCalls, so zDenyBlock is
+// short-circuited to 0 outright and it never exercised any volume-decline
+// protection. Both toolCalls counts here clear MinCalls (5) while sitting far
+// below the baseline's typical 200, which is the actual gap.
+func TestDetector_MLScore_DenyRatioToolCallShareCollapse_NeverBlocks(t *testing.T) {
+	for _, realToolCalls := range []int{20, 10} {
+		t.Run(fmt.Sprintf("%d real tool calls padded to 200 total", realToolCalls), func(t *testing.T) {
+			clock := &fakeClock{t: time.Unix(0, 0)}
+			writer := &recordingWriter{}
+			blocker := &recordingBlocker{}
+			d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+			establishHighVolumeDenyBaseline(d, clock, "alice")
+
+			// The habitual 4 denials, unchanged -- only the denominator moved.
+			publishMixedWindow(d, clock, "alice", realToolCalls, 4, 200*time.Millisecond)
+			// Pad total back to the baseline's 200 with traffic that never
+			// reaches deny_ratio's denominator: protocol-lifecycle passthrough
+			// and tool-less error entries, the two entry kinds isToolCall
+			// rejects. Alternated so neither kind alone carries the scenario.
+			for i := realToolCalls; i < 200; i++ {
+				e := auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"}
+				if i%2 == 1 {
+					e = auditdomain.Entry{Identity: "alice", Tool: "", Decision: "error"}
+				}
+				d.Publish(e)
+				clock.t = clock.t.Add(200 * time.Millisecond)
+			}
+			clock.t = clock.t.Add(61 * time.Second)
+			d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+			if len(blocker.calls) != 0 {
+				t.Errorf("an unchanged absolute deny count over a collapsed tool-call share must never auto-block, however much passthrough traffic padded total, got %+v", blocker.calls)
+			}
+			// Guards against a vacuous pass and pins the traced arithmetic: the
+			// two-sided log score is untouched by the gate, so the window is
+			// still surfaced as telemetry at (ratio-0.0195455)/0.0041560.
+			logged := mlScoreAnomalies(writer)
+			if len(logged) != 1 {
+				t.Fatalf("expected the padded window to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+			}
+			want := "combined z-score 43.42 (driving feature: deny_ratio)"
+			if realToolCalls == 10 {
+				want = "combined z-score 91.54 (driving feature: deny_ratio)"
+			}
+			if !strings.Contains(logged[0].Detail, want) {
+				t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+			}
+		})
+	}
+}
+
 // TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks covers the one
 // feature whose harmful direction is *negative* z -- risk is calls arriving
 // closer together, so maxHarmfulZ compares -z_interArrival. That sign flip
