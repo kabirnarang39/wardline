@@ -1206,6 +1206,99 @@ func TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks(t *testing.T) {
 	}
 }
 
+// establishSlowPacedBaseline publishes 11 windows of 20 calls over
+// fixedTools at spacing alternating 2.5s/2.6s, so inter_arrival_time is the
+// only feature with any variance: mean 2.545455, raw stddev 0.0522233,
+// floored per minStddevRelFraction to 0.15*2.545455 = 0.381818. Call rate
+// is exactly 20 in every window (zero variance, floored to 0.15*20 = 3.0
+// since the relative-stddev-at-zero-variance fix) and the distinct-tool
+// count exactly 5.
+func establishSlowPacedBaseline(d *usecase.Detector, clock *fakeClock, identity string) {
+	for i := 0; i < 11; i++ {
+		spacing := 2500 * time.Millisecond
+		if i%2 == 1 {
+			spacing = 2600 * time.Millisecond
+		}
+		publishWindow(d, clock, identity, fixedTools, "allow", 20, spacing)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+}
+
+// TestDetector_MLScore_FastPaceLowVolume_NeverBlocks is the regression gate
+// for inter_arrival_time's harmful direction firing without any volume
+// behind it. "Calls arriving closer together" is the burst signal, but a
+// burst needs volume: an identity making *half* its usual number of calls,
+// bunched into a shorter stretch, is not one -- and the one-sided gate,
+// which flipped any negative zInterArrival into a positive block score
+// regardless of zRate, auto-blocked it.
+//
+// Hand-traced against the baseline above: a window of 10 calls (half
+// volume) over the same 5 tools with no denials, spaced 300ms apart, scores
+// z_rate = (10-20)/3.0 = -3.333 (correctly benign, volume declined) and
+// z_interArrival = (0.3-2.545455)/0.381818 = -5.881, which sign-flips to
+// +5.881 and cleared the 4.0 block threshold on its own. With the zRate >= 0
+// gate the inter-arrival candidate is not considered at all, leaving only
+// benign candidates and a block score floored to 0.
+func TestDetector_MLScore_FastPaceLowVolume_NeverBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	establishSlowPacedBaseline(d, clock, "alice")
+
+	publishWindow(d, clock, "alice", fixedTools, "allow", 10, 300*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	if len(blocker.calls) != 0 {
+		t.Errorf("fewer calls that happen to land closer together is not a burst and must never auto-block, got %+v", blocker.calls)
+	}
+	// Guards against a vacuous pass: the two-sided log score must show the
+	// inter-arrival signal really was there and really was large.
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the faster pace to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 5.88 (driving feature: inter_arrival_time)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+	}
+}
+
+// TestDetector_MLScore_FastPaceSameVolume_StillBlocks is the other half of
+// the zRate >= 0 gate: at or above baseline volume, a tightening pace is a
+// genuine burst and must still block. Same baseline, same 300ms spacing and
+// therefore the identical z_interArrival = -5.881, but 20 calls instead of
+// 10 -- z_rate = (20-20)/3.0 = 0, which passes the gate, so the sign-flipped
+// +5.881 is considered and clears the 4.0 threshold. Nothing but volume
+// separates this test from the one above.
+func TestDetector_MLScore_FastPaceSameVolume_StillBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	establishSlowPacedBaseline(d, clock, "alice")
+
+	publishWindow(d, clock, "alice", fixedTools, "allow", 20, 300*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the burst to be logged exactly once as ml_score, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 5.88 (driving feature: inter_arrival_time)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+	}
+	if len(blocker.calls) != 1 {
+		t.Fatalf("expected a same-volume burst to auto-block exactly once, got %d: %+v", len(blocker.calls), blocker.calls)
+	}
+	if !strings.Contains(blocker.calls[0].reason, "inter_arrival_time") {
+		t.Errorf("expected the block reason to name inter_arrival_time, got %q", blocker.calls[0].reason)
+	}
+}
+
 // fixedTools is a small, unchanging tool set -- the window shape every
 // pre-existing ml_score test lacked. manyToolNames(n) hands a window n
 // distinct names for n calls, which pins the distinct-tool count to the
