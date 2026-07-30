@@ -18,6 +18,7 @@ func NewDecider(policy policydomain.Engine) *Decider {
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	pc := policydomain.Context{
 		Identity:   call.Identity,
+		Tenant:     call.Tenant,
 		Tool:       call.Tool,
 		Params:     call.Params,
 		Timestamp:  call.Timestamp,

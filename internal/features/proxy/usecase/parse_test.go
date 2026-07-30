@@ -8,14 +8,14 @@ import (
 
 func TestParseRequest_ToolsCall_Valid(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}`)
-	parsed, err := usecase.ParseRequest("agent-abc123", body)
+	parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !parsed.IsToolCall {
 		t.Fatal("expected IsToolCall=true for a tools/call method")
 	}
-	if parsed.Call.Identity != "agent-abc123" || parsed.Call.Tool != "read_file" {
+	if parsed.Call.Identity != "agent-abc123" || parsed.Call.Tool != "read_file" || parsed.Call.Tenant != "acme" {
 		t.Errorf("unexpected call: %+v", parsed.Call)
 	}
 	if parsed.Method != "tools/call" {
@@ -27,7 +27,7 @@ func TestParseRequest_ToolsCall_Valid(t *testing.T) {
 }
 
 func TestParseRequest_MalformedJSON(t *testing.T) {
-	parsed, err := usecase.ParseRequest("agent-abc123", []byte(`not json`))
+	parsed, err := usecase.ParseRequest("agent-abc123", "acme", []byte(`not json`))
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -42,7 +42,7 @@ func TestParseRequest_MissingMethodField(t *testing.T) {
 	// still be a parse error, not silently treated as a passthrough with
 	// an empty method name.
 	body := []byte(`{"jsonrpc":"2.0","id":1,"params":{}}`)
-	_, err := usecase.ParseRequest("agent-abc123", body)
+	_, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err == nil {
 		t.Fatal("expected error for a JSON-RPC envelope missing \"method\"")
 	}
@@ -52,7 +52,7 @@ func TestParseRequest_NonToolCallMethodPassesThrough(t *testing.T) {
 	for _, method := range []string{"initialize", "notifications/initialized", "tools/list", "resources/list", "ping"} {
 		t.Run(method, func(t *testing.T) {
 			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{}}`)
-			parsed, err := usecase.ParseRequest("agent-abc123", body)
+			parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
 			if err != nil {
 				t.Fatalf("unexpected error for method %q: %v", method, err)
 			}
@@ -70,7 +70,7 @@ func TestParseRequest_NotificationWithNoID(t *testing.T) {
 	// JSON-RPC notifications legally omit "id" entirely — must not be
 	// treated as an error just because ID is absent.
 	body := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	parsed, err := usecase.ParseRequest("agent-abc123", body)
+	parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestParseRequest_NotificationWithNoID(t *testing.T) {
 
 func TestParseRequest_ToolsCall_EmptyParams(t *testing.T) {
 	body := []byte(`{"method":"tools/call","params":{}}`)
-	_, err := usecase.ParseRequest("agent-abc123", body)
+	_, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err == nil {
 		t.Fatal("expected error for empty params (no tool name)")
 	}
@@ -92,7 +92,7 @@ func TestParseRequest_ToolsCall_EmptyParams(t *testing.T) {
 
 func TestParseRequest_ToolsCall_MissingParams(t *testing.T) {
 	body := []byte(`{"method":"tools/call"}`)
-	_, err := usecase.ParseRequest("agent-abc123", body)
+	_, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err == nil {
 		t.Fatal("expected error for missing params field")
 	}
@@ -100,7 +100,7 @@ func TestParseRequest_ToolsCall_MissingParams(t *testing.T) {
 
 func TestParseRequest_ToolsCall_EmptyToolName(t *testing.T) {
 	body := []byte(`{"method":"tools/call","params":{"name":""}}`)
-	_, err := usecase.ParseRequest("agent-abc123", body)
+	_, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err == nil {
 		t.Fatal("expected error for empty tool name")
 	}
@@ -108,7 +108,7 @@ func TestParseRequest_ToolsCall_EmptyToolName(t *testing.T) {
 
 func TestParseRequest_ToolsCall_NonObjectParams(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":"oops"}`)
-	parsed, err := usecase.ParseRequest("agent-abc123", body)
+	parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err == nil {
 		t.Fatal("expected error for non-object params")
 	}
@@ -122,7 +122,7 @@ func TestParseRequest_ToolsCall_PreservesRawParams(t *testing.T) {
 	// ToolCall.Params carries the exact params bytes through unchanged.
 	rawParams := `{"name":"read_file", "path":"/tmp/x","extra_field":123}`
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + rawParams + `}`)
-	parsed, err := usecase.ParseRequest("agent-abc123", body)
+	parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
