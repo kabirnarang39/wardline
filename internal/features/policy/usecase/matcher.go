@@ -4,8 +4,9 @@ import "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 
 // Matcher is a domain.Engine backed by an ordered list of rules,
 // first-match-wins, falling back to Default when nothing matches. It only
-// reads Context.Identity and Context.Tool — every other field exists for
-// engines that need richer input than static YAML rules can express.
+// reads Context.Identity, Context.Tool, and Context.Tenant — every other
+// field exists for engines that need richer input than static YAML rules
+// can express.
 type Matcher struct {
 	Rules   []domain.Rule
 	Default domain.Effect
@@ -20,7 +21,7 @@ func (m *Matcher) Evaluate(pc domain.Context) domain.Decision {
 		if r.Identity != pc.Identity {
 			continue
 		}
-		if r.Tool == pc.Tool || r.Tool == "*" {
+		if (r.Tool == pc.Tool || r.Tool == "*") && (r.Tenant == "" || r.Tenant == pc.Tenant) {
 			return domain.Decision{Effect: r.Effect, Reason: "matched rule"}
 		}
 	}

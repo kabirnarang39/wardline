@@ -16,6 +16,7 @@ type ruleYAML struct {
 	Identity string `yaml:"identity"`
 	Tool     string `yaml:"tool"`
 	Effect   string `yaml:"effect"`
+	Tenant   string `yaml:"tenant"`
 }
 
 type policyYAML struct {
@@ -52,7 +53,7 @@ func LoadFile(path string) (*usecase.Matcher, error) {
 		if r.Tool == "" {
 			problems = append(problems, fmt.Sprintf("rule %d: tool must not be empty", i))
 		}
-		rules = append(rules, domain.Rule{Identity: r.Identity, Tool: r.Tool, Effect: effect})
+		rules = append(rules, domain.Rule{Identity: r.Identity, Tool: r.Tool, Effect: effect, Tenant: r.Tenant})
 	}
 
 	def, err := parseEffect(raw.Default)

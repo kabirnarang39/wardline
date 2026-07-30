@@ -65,3 +65,32 @@ func TestMatcher_DefaultAllow(t *testing.T) {
 		t.Errorf("expected default allow, got %q", got.Effect)
 	}
 }
+
+func TestMatcher_TenantScopedRuleOnlyMatchesItsOwnTenant(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "*", Effect: domain.EffectAllow, Tenant: "acme"},
+	}, domain.EffectDeny)
+
+	got := m.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("acme tenant: got %v, want allow", got.Effect)
+	}
+
+	got = m.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "widgets-inc"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("different tenant: got %v, want deny (default)", got.Effect)
+	}
+}
+
+func TestMatcher_UntenantedRuleMatchesAnyTenant(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "*", Effect: domain.EffectAllow},
+	}, domain.EffectDeny)
+
+	for _, tenantName := range []string{"acme", "widgets-inc", ""} {
+		got := m.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: tenantName})
+		if got.Effect != domain.EffectAllow {
+			t.Fatalf("global rule, tenant %q: got %v, want allow", tenantName, got.Effect)
+		}
+	}
+}

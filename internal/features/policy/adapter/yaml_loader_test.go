@@ -122,6 +122,29 @@ default: allow
 	}
 }
 
+func TestLoadFile_TenantScopedRule(t *testing.T) {
+	path := writeTemp(t, `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+    tenant: "acme"
+default: deny
+`)
+	m, err := adapter.LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for matching tenant, got %q", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "widgets-inc"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny for non-matching tenant, got %q", got.Effect)
+	}
+}
+
 func TestLoadFile_UnknownTopLevelKey(t *testing.T) {
 	path := writeTemp(t, `
 rulez:

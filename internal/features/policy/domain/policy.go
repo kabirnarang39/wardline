@@ -15,10 +15,15 @@ const (
 
 // Rule grants or denies a specific identity access to a specific tool.
 // Tool may be "*" to match any tool for that identity.
+//
+// Tenant scopes the rule to a single tenant; "" means the rule is global
+// and matches any tenant, the same "empty means global" convention used by
+// RBAC's RoleBinding/ClusterRoleBinding.
 type Rule struct {
 	Identity string
 	Tool     string
 	Effect   Effect
+	Tenant   string
 }
 
 // Decision is the result of evaluating a Context against policy.
@@ -68,6 +73,10 @@ type Context struct {
 	// limitation, not a bug in this field's current behavior).
 	RemoteAddr string
 	UserAgent  string
+
+	// Tenant is the calling identity's tenant. "" means no tenant scoping
+	// applies to this call (matches only untenanted, global Rules).
+	Tenant string
 }
 
 // Engine evaluates whether a Context's identity may make its tool call.
