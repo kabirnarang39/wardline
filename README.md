@@ -266,9 +266,10 @@ A fourth, independently-toggleable heuristic alongside the three
 rule/statistics ones above:
 
 - **`ml_score`** — a combined z-score over four per-identity, per-window
-  features (call rate, tool-diversity ratio — distinct tools called this
-  window ÷ total calls this window, so a burst hitting one tool repeatedly
-  reads differently from a burst hitting many — deny ratio, mean
+  features (call rate, tool diversity — the count of distinct tools called
+  this window, deliberately a raw count rather than a fraction of call
+  volume, so a quieter window over an unchanged tool set doesn't read as
+  "more diverse" — deny ratio, mean
   inter-arrival time), each scored against its own running mean/variance
   baseline (Welford's algorithm — no stored history, no training data,
   self-baselining exactly like `rate_spike` above). `ml_score.enabled`

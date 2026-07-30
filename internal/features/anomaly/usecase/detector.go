@@ -292,10 +292,17 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		return domain.Anomaly{}, false
 	}
 	rate := float64(st.prev.total)
-	var diversity float64
-	if st.prev.total > 0 {
-		diversity = float64(len(st.prev.uniqueTools)) / float64(st.prev.total)
-	}
+	// diversity is the raw count of distinct tools in this window, not
+	// distinct/total. A ratio *rises* when call volume drops over an
+	// unchanged tool set (the same 5 tools score 0.05 across 100 calls but
+	// 0.25 across 20), so a legitimate volume decline walked straight into
+	// maxHarmfulZ's rising-diversity direction -- re-entering, through this
+	// feature, the exact permanent-lockout failure the one-sided gate
+	// closed for call_rate and deny_ratio. A raw count is volume-invariant
+	// by construction and rises only when the window really does contain
+	// more distinct tools, which is the enumeration signal this feature is
+	// here to catch.
+	diversity := float64(len(st.prev.uniqueTools))
 	var denyRatio float64
 	if st.prev.toolCalls > 0 {
 		denyRatio = float64(st.prev.deny) / float64(st.prev.toolCalls)

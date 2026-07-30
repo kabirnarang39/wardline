@@ -7,7 +7,7 @@ summary: "Rule/statistics and ML-based detection of unusual agent behavior, with
 Rule/statistics detection of unusual per-identity behavior — rate
 spikes, novel tool usage, and deny-rate spikes — plus a fourth,
 independently-toggleable `ml_score` heuristic: a combined z-score over
-four per-identity, per-window features (call rate, tool-diversity ratio,
+four per-identity, per-window features (call rate, distinct-tool count,
 deny ratio, mean inter-arrival time), each scored against its own
 running mean/variance baseline (Welford's algorithm — no stored history,
 no training data). All four are logged for review by default; `ml_score`

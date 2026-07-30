@@ -1028,3 +1028,137 @@ func TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks(t *testing.T) {
 		t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
 	}
 }
+
+// fixedTools is a small, unchanging tool set -- the window shape every
+// pre-existing ml_score test lacked. manyToolNames(n) hands a window n
+// distinct names for n calls, which pins the distinct-tool count to the
+// call count; separating the two is the only way a test can tell a
+// distinct-tool *count* apart from a distinct/total *ratio*.
+var fixedTools = []string{"read_file", "list_dir", "write_file", "search_code", "stat_file"}
+
+// establishFixedToolSetBaseline publishes 11 windows of 90/100/110 calls
+// over fixedTools, so call rate has real variance (mean 99.0909, raw
+// stddev 8.3121, floored per minStddevRelFraction to 0.15*99.0909 =
+// 14.8636) while the distinct-tool count is a flat 5 in every one. 11
+// published windows leave 10 folded; the caller's own next window folds
+// the 11th, so whatever the caller publishes next is scored against an
+// 11-sample baseline. 200ms spacing keeps a 110-call window inside its own
+// 60s boundary, and being constant it holds inter-arrival at zero variance.
+func establishFixedToolSetBaseline(d *usecase.Detector, clock *fakeClock, identity string) {
+	for _, n := range []int{90, 100, 110, 90, 100, 110, 90, 100, 110, 90, 100} {
+		publishWindow(d, clock, identity, fixedTools, "allow", n, 200*time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+}
+
+// TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks is the
+// regression gate for the fifth instance of "a legitimate decline gets
+// auto-blocked forever" -- this one reached through tool_diversity instead
+// of call_rate, because that feature used to be the ratio
+// distinct-tools/total-calls. Holding the tool set fixed and only dropping
+// volume *raises* such a ratio, which is exactly maxHarmfulZ's
+// rising-diversity direction, so the one-sided gate that closed this
+// failure for call_rate and deny_ratio let it back in here. Against the
+// 11-sample baseline above the old ratio (mean 0.050781, floored stddev
+// 0.0076171) scored z_diversity = (5/60 - 0.050781)/0.0076171 = +4.27 for
+// the 40% decline and (5/20 - 0.050781)/0.0076171 = +26.16 for the
+// truncated window -- both past auto_block's 4.0. And since the two-sided
+// score also cleared the 3.0 log threshold, neither window was ever folded
+// into the baseline, so the block re-fired at every rollover forever.
+//
+// Scoring the raw distinct-tool count instead makes the feature
+// volume-invariant: 5 tools is 5 tools whether they appear over 110 calls
+// or 20, so z_diversity is 0 in both sub-cases below and call_rate -- whose
+// decline is benign by maxHarmfulZ's definition -- is all that is left.
+func TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks(t *testing.T) {
+	// A 40% volume drop: z_rate = (60 - 99.0909)/14.8636 = -2.63, which
+	// doesn't even clear the 3.0 log threshold, so this window is folded and
+	// the baseline adapts to the quieter regime rather than fighting it.
+	t.Run("40 percent volume decline", func(t *testing.T) {
+		clock := &fakeClock{t: time.Unix(0, 0)}
+		writer := &recordingWriter{}
+		blocker := &recordingBlocker{}
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+		establishFixedToolSetBaseline(d, clock, "alice")
+		publishWindow(d, clock, "alice", fixedTools, "allow", 60, 200*time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+		if len(blocker.calls) != 0 {
+			t.Errorf("a volume decline over an unchanged tool set must never auto-block, got %+v", blocker.calls)
+		}
+		if logged := mlScoreAnomalies(writer); len(logged) != 0 {
+			t.Errorf("expected a 2.63-scoring window to fall below the 3.0 log threshold entirely, got %+v", logged)
+		}
+	})
+
+	// An identity returning from idle: the window is truncated to 20 calls
+	// over the same 5 tools. z_rate = (20 - 99.0909)/14.8636 = -5.32, so
+	// unlike the sub-case above this one IS logged -- which is what keeps
+	// this test honest: a baseline that silently failed to establish would
+	// score every feature 0 and report zero Block calls vacuously.
+	t.Run("return from idle truncates the window", func(t *testing.T) {
+		clock := &fakeClock{t: time.Unix(0, 0)}
+		writer := &recordingWriter{}
+		blocker := &recordingBlocker{}
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+		establishFixedToolSetBaseline(d, clock, "alice")
+		publishWindow(d, clock, "alice", fixedTools, "allow", 20, 200*time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+		if len(blocker.calls) != 0 {
+			t.Errorf("a truncated return-from-idle window must never auto-block, got %+v", blocker.calls)
+		}
+		logged := mlScoreAnomalies(writer)
+		if len(logged) != 1 {
+			t.Fatalf("expected the truncated window to still be logged exactly once as ml_score telemetry, got %d: %+v", len(logged), writer.anomalies)
+		}
+		if want := "combined z-score 5.32 (driving feature: call_rate)"; !strings.Contains(logged[0].Detail, want) {
+			t.Errorf("expected the logged two-sided score to be %q, got %q", want, logged[0].Detail)
+		}
+	})
+}
+
+// TestDetector_MLScore_ToolEnumeration_StillBlocks is the other half of the
+// raw-count change: making tool_diversity volume-invariant must not neuter
+// it. Call volume is held at a constant 100 across every window (zero
+// variance, so z_rate is 0 and cannot contribute), while the distinct-tool
+// count cycles 4/5/6 -- mean 4.9091, raw stddev 0.8312, above the
+// 0.15*4.9091 = 0.7364 relative floor so it applies unfloored. A window
+// that keeps the same 100 calls but spreads them over 40 distinct tools
+// scores z_diversity = (40 - 4.9091)/0.8312 = +42.22: genuine enumeration,
+// the only thing a raw count still moves on, and it must both log and
+// block. Note the volume is identical to the baseline's, so nothing but
+// diversity could have produced this score.
+func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	for _, distinct := range []int{4, 5, 6, 4, 5, 6, 4, 5, 6, 4, 5} {
+		publishWindow(d, clock, "alice", manyToolNames(distinct), "allow", 100, 200*time.Millisecond)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	publishWindow(d, clock, "alice", manyToolNames(40), "allow", 100, 200*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected tool enumeration to be logged exactly once as ml_score, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 42.22 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected tool_diversity to drive the logged score as %q, got %q", want, logged[0].Detail)
+	}
+	if len(blocker.calls) != 1 {
+		t.Fatalf("expected tool enumeration to auto-block exactly once, got %d: %+v", len(blocker.calls), blocker.calls)
+	}
+	if !strings.Contains(blocker.calls[0].reason, "tool_diversity") {
+		t.Errorf("expected the block reason to name tool_diversity, got %q", blocker.calls[0].reason)
+	}
+}

@@ -9,9 +9,10 @@ package domain
 // into their baselines. This exists for the same reason
 // RateMinCalls/DenyRateMinCalls exist on the other two heuristics: a
 // window with too few calls can't say anything trustworthy about
-// tool-diversity or inter-arrival spacing (a 1-call window is, by
-// construction, "100% diverse" and has no inter-arrival delta at all --
-// range extremes that mean "no observation," not "wild outlier").
+// tool-diversity or inter-arrival spacing: a 1-call window has no
+// inter-arrival delta at all, so that feature falls back to 0.0 -- a
+// range extreme meaning "no observation," not "wild outlier" -- and
+// MinCalls is what keeps such a window from being scored against it.
 type MLScoreConfig struct {
 	Enabled        bool
 	ScoreThreshold float64
