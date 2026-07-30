@@ -447,6 +447,96 @@ audit:
 	}
 }
 
+// TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience covers
+// credential.bootstrap_source: "oidc" -- config_test.go is package
+// config_test (an external test package), so this can't call
+// cfg.validate() directly as the task brief's illustrative snippet does
+// (validate is unexported); it round-trips through config.Load and a
+// temp YAML file like every other test in this file instead.
+func TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for oidc bootstrap_source with no oidc config block")
+	}
+
+	path2 := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    jwks_uri: "https://idp.example.com/jwks.json"
+    audience: "wardline"
+`)
+	cfg, err := config.Load(path2)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.OIDC.IdentityClaim != "sub" {
+		t.Errorf("expected identity_claim to default to %q, got %q", "sub", cfg.Credential.OIDC.IdentityClaim)
+	}
+	if cfg.Credential.OIDC.TenantClaim != "tenant" {
+		t.Errorf("expected tenant_claim to default to %q, got %q", "tenant", cfg.Credential.OIDC.TenantClaim)
+	}
+}
+
+func TestLoad_BootstrapSourceUnknownValueRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "ldap"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal(`expected error for bootstrap_source neither "presharedsecret" nor "oidc"`)
+	}
+}
+
+func TestLoad_BootstrapSourceDefaultsToPresharedSecret(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Credential.BootstrapSource != "presharedsecret" {
+		t.Errorf(`expected bootstrap_source to default to "presharedsecret", got %q`, cfg.Credential.BootstrapSource)
+	}
+}
+
 func TestLoad_RBACDisabledByDefaultNoValidation(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
