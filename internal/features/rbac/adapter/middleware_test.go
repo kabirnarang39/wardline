@@ -22,11 +22,12 @@ func testLogger() *slog.Logger {
 
 type fakeIdentityResolver struct {
 	identity string
+	tenant   string
 	err      error
 }
 
-func (f fakeIdentityResolver) Authenticate(r *http.Request) (string, error) {
-	return f.identity, f.err
+func (f fakeIdentityResolver) Authenticate(r *http.Request) (string, string, error) {
+	return f.identity, f.tenant, f.err
 }
 
 type fakeChecker struct {
@@ -44,7 +45,7 @@ func TestRequirePermission_IdentityResolutionFailureReturns401(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, "default", domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, testLogger())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -60,7 +61,7 @@ func TestRequirePermission_UnauthorizedReturns403(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -79,7 +80,7 @@ func TestRequirePermission_AuthorizedCallsNext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -100,7 +101,7 @@ func TestRequirePermission_ThreadsResolvedIdentityToChecker(t *testing.T) {
 	tenant := "acme"
 	perm := domain.PermissionDashboardView
 
-	h := adapter.RequirePermission(checker, fakeIdentityResolver{identity: resolvedIdentity}, tenant, perm, next, testLogger())
+	h := adapter.RequirePermission(checker, fakeIdentityResolver{identity: resolvedIdentity, tenant: tenant}, perm, next, testLogger())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -130,7 +131,7 @@ func TestRequirePermission_IdentityResolutionFailureLogsAndSetsHeaders(t *testin
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, "default", domain.PermissionDashboardView, next, logger)
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, logger)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -145,7 +146,7 @@ func TestRequirePermission_UnauthorizedLogsIdentityAndSetsHeaders(t *testing.T) 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, "default", domain.PermissionDashboardView, next, logger)
+	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, logger)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 

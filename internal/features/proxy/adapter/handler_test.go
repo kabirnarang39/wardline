@@ -695,8 +695,8 @@ func TestHandler_TraceIDEmptyWhenTracingDisabled(t *testing.T) {
 
 type failingIdentityAuth struct{}
 
-func (failingIdentityAuth) Authenticate(r *http.Request) (string, error) {
-	return "", errors.New("simulated auth failure")
+func (failingIdentityAuth) Authenticate(r *http.Request) (string, string, error) {
+	return "", "", errors.New("simulated auth failure")
 }
 
 func TestHandler_FailedIdentityAuthNeverReachesDeciderBudgetOrRecorder(t *testing.T) {
@@ -755,8 +755,8 @@ type fakeSucceedingAuthenticator struct {
 	identity string
 }
 
-func (f fakeSucceedingAuthenticator) Authenticate(bearerToken string) (string, error) {
-	return f.identity, nil
+func (f fakeSucceedingAuthenticator) Authenticate(bearerToken string) (string, string, error) {
+	return f.identity, "", nil
 }
 
 // fakeAutoBlockChecker is a stub AutoBlockChecker returning a fixed verdict,

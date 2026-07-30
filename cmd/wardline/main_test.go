@@ -143,8 +143,8 @@ type fakeRevokeIdentityAuth struct {
 	err      error
 }
 
-func (f fakeRevokeIdentityAuth) Authenticate(r *http.Request) (string, error) {
-	return f.identity, f.err
+func (f fakeRevokeIdentityAuth) Authenticate(r *http.Request) (string, string, error) {
+	return f.identity, "", f.err
 }
 
 // stubAuthorizer is a domain.Authorizer fake whose verdict is fixed.
