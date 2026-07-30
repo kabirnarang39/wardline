@@ -90,6 +90,13 @@ type RBACConfig struct {
 	ConfigFile string `yaml:"config_file"`
 }
 
+// ScimConfig configures the SCIM 2.0 provisioning API. Only validated
+// (and only meaningful) when the scim feature flag is on.
+type ScimConfig struct {
+	BearerTokenEnv  string `yaml:"bearer_token_env"`
+	PersistPostgres bool   `yaml:"persist_postgres"`
+}
+
 // RateSpikeConfig configures the rate-spike heuristic. Shares
 // AnomalyConfig.WindowSeconds with DenyRateSpikeConfig: both are
 // volumetric counts over the same identity traffic, so one trailing
@@ -181,6 +188,7 @@ type Config struct {
 	Tracing       TracingConfig    `yaml:"tracing"`
 	Credential    CredentialConfig `yaml:"credential"`
 	RBAC          RBACConfig       `yaml:"rbac"`
+	Scim          ScimConfig       `yaml:"scim"`
 	Anomaly       AnomalyConfig    `yaml:"anomaly"`
 	Federation    FederationConfig `yaml:"federation"`
 	Features      map[string]bool  `yaml:"features"`
@@ -293,6 +301,14 @@ func (c *Config) validate() error {
 	}
 	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {
 		problems = append(problems, "rbac.config_file must not be empty when features.rbac is true")
+	}
+	if c.Features["scim"] {
+		if c.Scim.BearerTokenEnv == "" {
+			problems = append(problems, "scim.bearer_token_env must not be empty when features.scim is true")
+		}
+		if c.Scim.PersistPostgres && !c.Features["postgres_storage"] {
+			problems = append(problems, "features.postgres_storage must be true when scim.persist_postgres is true")
+		}
 	}
 	if c.Features["anomaly_detection"] {
 		if c.Anomaly.Output == "" {

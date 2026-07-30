@@ -1243,3 +1243,35 @@ audit:
 		t.Errorf("unexpected Anomaly.AutoBlock.BlockDurationSeconds: %d", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
 	}
 }
+
+func TestValidate_ScimRequiresBearerTokenEnv(t *testing.T) {
+	baseYAML := `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  scim: true
+`
+	if _, err := config.Load(writeTemp(t, baseYAML)); err == nil {
+		t.Fatal("expected validation error for scim with no bearer_token_env")
+	}
+
+	validYAML := baseYAML + `
+scim:
+  bearer_token_env: "WARDLINE_SCIM_TOKEN"
+`
+	if _, err := config.Load(writeTemp(t, validYAML)); err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+
+	persistWithoutPostgresYAML := baseYAML + `
+scim:
+  bearer_token_env: "WARDLINE_SCIM_TOKEN"
+  persist_postgres: true
+`
+	if _, err := config.Load(writeTemp(t, persistWithoutPostgresYAML)); err == nil {
+		t.Fatal("expected validation error for scim.persist_postgres without features.postgres_storage")
+	}
+}
