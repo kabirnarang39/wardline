@@ -1329,16 +1329,22 @@ anomaly:
 		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
 	}
 	// Name the feature that must have driven the score, not just "some
-	// ml_score anomaly fired": the outlier window's 30 calls against a
-	// {2,3}-alternating baseline (mean 2.5, sample stddev 0.527, above the
-	// 0.15*2.5 = 0.375 relative floor so it applies unfloored) score
-	// z_rate = (30-2.5)/0.527 = 52.2, an order of magnitude past the next
-	// feature (tool diversity, z = 4.7). Asserting the driving feature
-	// catches a regression that still fires an anomaly but for the wrong
-	// reason -- which is precisely how the degenerate-window false
-	// positives this fix wave closed would have looked here.
-	if !bytes.Contains(data, []byte(`(driving feature: call_rate)`)) {
-		t.Fatalf("expected the ml_score anomaly to be driven by call_rate in %s, got: %s", anomalyPath, data)
+	// ml_score anomaly fired": asserting the driving feature catches a
+	// regression that still fires an anomaly but for the wrong reason. The
+	// outlier window is 30 calls over 30 distinct tools against a baseline
+	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
+	// features fire hard and tool_diversity leads by a nose. Distinct-tool
+	// count has baseline mean 1.5 and sample stddev 0.527 (above the
+	// 0.15*1.5 = 0.225 relative floor, so unfloored), scoring
+	// z_diversity = (30-1.5)/0.527 = 54.1, just past call_rate's
+	// z_rate = (30-2.5)/0.527 = 52.2. 30 distinct tools from an identity
+	// that normally touches 1-2 is textbook enumeration, so diversity
+	// leading is the right answer here -- it took the lead only once that
+	// feature was scored as a raw distinct-tool count instead of
+	// distinct/total, a ratio that pinned this window to its own 1.0
+	// ceiling (z = 4.7) no matter how many tools the burst actually swept.
+	if !bytes.Contains(data, []byte(`(driving feature: tool_diversity)`)) {
+		t.Fatalf("expected the ml_score anomaly to be driven by tool_diversity in %s, got: %s", anomalyPath, data)
 	}
 
 	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
@@ -1447,16 +1453,22 @@ anomaly:
 		t.Fatalf("expected an ml_score anomaly line in %s, got: %s", anomalyPath, data)
 	}
 	// Name the feature that must have driven the score, not just "some
-	// ml_score anomaly fired": the outlier window's 30 calls against a
-	// {2,3}-alternating baseline (mean 2.5, sample stddev 0.527, above the
-	// 0.15*2.5 = 0.375 relative floor so it applies unfloored) score
-	// z_rate = (30-2.5)/0.527 = 52.2, an order of magnitude past the next
-	// feature (tool diversity, z = 4.7). Asserting the driving feature
-	// catches a regression that still fires an anomaly but for the wrong
-	// reason -- which is precisely how the degenerate-window false
-	// positives this fix wave closed would have looked here.
-	if !bytes.Contains(data, []byte(`(driving feature: call_rate)`)) {
-		t.Fatalf("expected the ml_score anomaly to be driven by call_rate in %s, got: %s", anomalyPath, data)
+	// ml_score anomaly fired": asserting the driving feature catches a
+	// regression that still fires an anomaly but for the wrong reason. The
+	// outlier window is 30 calls over 30 distinct tools against a baseline
+	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
+	// features fire hard and tool_diversity leads by a nose. Distinct-tool
+	// count has baseline mean 1.5 and sample stddev 0.527 (above the
+	// 0.15*1.5 = 0.225 relative floor, so unfloored), scoring
+	// z_diversity = (30-1.5)/0.527 = 54.1, just past call_rate's
+	// z_rate = (30-2.5)/0.527 = 52.2. 30 distinct tools from an identity
+	// that normally touches 1-2 is textbook enumeration, so diversity
+	// leading is the right answer here -- it took the lead only once that
+	// feature was scored as a raw distinct-tool count instead of
+	// distinct/total, a ratio that pinned this window to its own 1.0
+	// ceiling (z = 4.7) no matter how many tools the burst actually swept.
+	if !bytes.Contains(data, []byte(`(driving feature: tool_diversity)`)) {
+		t.Fatalf("expected the ml_score anomaly to be driven by tool_diversity in %s, got: %s", anomalyPath, data)
 	}
 
 	blockedResp := postToolCall(t, listenAddr, "alice", "read_file")
