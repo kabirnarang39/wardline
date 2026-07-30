@@ -38,11 +38,12 @@ caused ordinary traffic to auto-block early on.
 
 `ml_score.min_calls` is the matching floor on the window being scored,
 rather than on the history behind it: a window with fewer calls than this
-is neither scored nor folded into any baseline. Two of the four features
-hit a range extreme on a near-empty window for reasons unrelated to
-behavior — one call to one tool is by construction "100% diverse", and a
-single call has no inter-arrival gap at all — so scoring such a window is
-how an identity that simply went quiet ends up blocked.
+is neither scored nor folded into any baseline. A near-empty window drives
+a feature to a range extreme for reasons unrelated to behavior — a single
+call has no inter-arrival gap at all, so that feature reads as maximally
+bursty — so scoring such a window is how an identity that simply went
+quiet ends up blocked. `min_calls` must be at least 2; config validation
+rejects 1.
 
 ## Known limitations
 

@@ -291,14 +291,15 @@ can tell a window apart from noise.
 `ml_score.min_calls` is a second, orthogonal floor — on the *window*
 rather than on the history behind it. A completed window with fewer than
 `min_calls` calls is neither scored nor folded into any of the four
-baselines: two of the four features hit a range extreme for reasons that
-have nothing to do with behavior. A window with exactly one call is by
-construction "100% diverse" (one call, one tool → ratio 1.0, the high
-extreme) and has no inter-arrival delta at all (defaulting to 0.0
-seconds, the "instantaneous" low extreme). Those extremes mean "no
-observation," not "wild outlier," and scoring them is how an identity
-that simply went quiet for a window gets flagged — and, under
-`auto_block`, blocked. This is the same kind of floor
+baselines, because a near-empty window drives a feature to a range
+extreme for reasons that have nothing to do with behavior: a window with
+exactly one call has no inter-arrival delta at all, so that feature
+defaults to 0.0 seconds — the "instantaneous," maximally-bursty low
+extreme. That extreme means "no observation," not "wild outlier," and
+scoring it is how an identity that simply went quiet for a window gets
+flagged — and, under `auto_block`, blocked. `min_calls` must therefore be
+at least 2 (config validation rejects 1), the smallest window in which
+every feature has a defined value. This is the same kind of floor
 `rate_spike.min_calls` and `deny_rate_spike.min_calls` already apply
 before trusting their own ratios.
 

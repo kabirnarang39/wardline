@@ -292,8 +292,8 @@ func (c *Config) validate() error {
 		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.ScoreThreshold <= 0 {
 			problems = append(problems, "anomaly.ml_score.score_threshold must be > 0 when anomaly.ml_score.enabled is true")
 		}
-		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.MinCalls <= 0 {
-			problems = append(problems, "anomaly.ml_score.min_calls must be > 0 when anomaly.ml_score.enabled is true")
+		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.MinCalls < 2 {
+			problems = append(problems, "anomaly.ml_score.min_calls must be >= 2 when anomaly.ml_score.enabled is true -- a 1-call window has no inter-arrival delta at all, which forces that feature to its harmful-direction range extreme regardless of behavior")
 		}
 		if c.Anomaly.GCIntervalSeconds <= 0 {
 			c.Anomaly.GCIntervalSeconds = defaultAnomalyGCIntervalSeconds

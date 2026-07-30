@@ -904,6 +904,53 @@ audit:
 	}
 }
 
+// TestConfig_Validate_MLScoreMinCallsBelowTwoRejected covers the gap
+// MinCalls > 0 left open: at min_calls: 1 the floor is satisfied by a
+// window that cannot produce an inter-arrival delta at all
+// (interArrivalN == 0 for a single call), so that feature reads 0.0 -- its
+// harmful-direction range extreme -- for a lone call no matter how the
+// identity actually behaved. Against a baseline of 1.0s/1.2s spacings
+// (mean 1.0909, floored stddev 0.15*1.0909 = 0.16364) that scores
+// z = (0-1.0909)/0.16364 = -6.667, which sign-flips to +6.667 and blocks.
+// 2 is the smallest window size at which every feature has a defined
+// value, which is what MinCalls was for in the first place.
+func TestConfig_Validate_MLScoreMinCallsBelowTwoRejected(t *testing.T) {
+	mlScoreConfig := func(minCalls int) string {
+		return fmt.Sprintf(`
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  anomaly_detection: true
+anomaly:
+  output: "./anomaly.jsonl"
+  window_seconds: 60
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: %d
+audit:
+  output: stdout
+`, minCalls)
+	}
+
+	_, err := config.Load(writeTemp(t, mlScoreConfig(1)))
+	if err == nil {
+		t.Fatal("expected error when ml_score.min_calls is 1")
+	}
+	if !strings.Contains(err.Error(), "must be >= 2") {
+		t.Errorf("expected the error to say min_calls must be >= 2, got: %v", err)
+	}
+
+	cfg, err := config.Load(writeTemp(t, mlScoreConfig(2)))
+	if err != nil {
+		t.Fatalf("expected ml_score.min_calls: 2 to pass validation, got: %v", err)
+	}
+	if cfg.Anomaly.MLScore.MinCalls != 2 {
+		t.Errorf("unexpected Anomaly.MLScore.MinCalls: %d", cfg.Anomaly.MLScore.MinCalls)
+	}
+}
+
 func TestConfig_Validate_AutoBlockRequiresMLScoreEnabled(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
