@@ -131,7 +131,13 @@ func (s *ProvisioningService) CreateGroup(displayName string, memberUserIDs []st
 	if err != nil {
 		return domain.Group{}, err
 	}
-	g := domain.Group{ID: id, DisplayName: displayName, Members: memberUserIDs}
+	members := make([]string, 0, len(memberUserIDs))
+	for _, m := range memberUserIDs {
+		if !containsString(members, m) {
+			members = append(members, m)
+		}
+	}
+	g := domain.Group{ID: id, DisplayName: displayName, Members: members}
 	s.groups[id] = g
 	s.syncBindingLocked(g)
 	return g, nil
@@ -187,7 +193,13 @@ func (s *ProvisioningService) PatchGroupMembers(id string, addUserIDs, removeUse
 			members = append(members, add)
 		}
 	}
-	filtered := members[:0]
+	// Fresh backing array -- g.Members (or the pre-add "members" slice
+	// above, which may itself still alias g.Members's original array if
+	// no add grew it past capacity) may already be held by an external
+	// caller via an earlier GetGroup/ListGroups snapshot. Filtering into
+	// that same array in place would silently mutate the caller's copy
+	// out from under it, unsynchronized. See task-13 fix-round review.
+	filtered := make([]string, 0, len(members))
 	for _, m := range members {
 		if !containsString(removeUserIDs, m) {
 			filtered = append(filtered, m)
