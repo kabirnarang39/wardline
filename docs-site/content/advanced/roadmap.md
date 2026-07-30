@@ -9,11 +9,31 @@ Proxy + policy + audit baseline, credential issuance, RBAC, budget
 enforcement, anomaly detection (heuristic), compliance evidence export,
 policy-pack marketplace, HA deployment.
 
+## v2.0 (shipped)
+
+- **Federation** — cross-instance signal sharing: instances publish
+  anomaly summaries to configured peers and correlate them into
+  cross-instance alerts, the natural point that was going to revisit
+  the per-replica limitations documented on the [Budget
+  Enforcement](/features/budget-enforcement/), [Anomaly
+  Detection](/features/anomaly-detection/), and [HA
+  Deployment](/features/ha-deployment/) pages — federation's own
+  correlated-alerts view stays instance-scoped, not tenant-scoped (see
+  [RBAC](/features/rbac/)'s known limitations).
+- **ML-based anomaly detection** — an `ml_score` combined-z-score
+  heuristic augmenting the existing rule/statistics detectors, with an
+  optional `auto_block`.
+- **SSO/SCIM + RBAC tenant isolation** — an OIDC bootstrap adapter and
+  a SCIM 2.0-shaped Users/Groups provisioning API give RBAC's admin
+  surface IdP-backed identity, and `Tenant` now flows and is enforced
+  end to end: policy, budget, audit, anomaly detection, and the
+  dashboard are all tenant-aware, not just RBAC's own authorization
+  check. See [SSO](/features/sso/), [SCIM](/features/scim/), and
+  [RBAC](/features/rbac/)'s known limitations for what's still out of
+  scope (OIDC discovery, full SCIM 2.0 compliance).
+
 ## v2.0 (planned, not yet shipped)
 
-- **Federation** — cross-instance signal sharing, the natural point to revisit the per-replica limitations documented on the [Budget Enforcement](/features/budget-enforcement/), [Anomaly Detection](/features/anomaly-detection/), and [HA Deployment](/features/ha-deployment/) pages.
-- **ML-based anomaly detection** — replacing/augmenting today's rule/statistics heuristics.
-- **SSO/SCIM** — IdP-backed identity for RBAC's admin surface, instead of preshared-secret bootstrap or a raw header.
 - **Auto-generated sandbox policy** — inferring a starter policy from observed traffic.
 - **mTLS/SPIFFE credential bootstrap** — as a credential-issuance adapter for secure bootstrapping.
 - **Refresh tokens + configurable JWT TTL** — issuing short-lived access tokens with refresh token rotation and tunable expiration.

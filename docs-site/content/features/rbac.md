@@ -15,16 +15,28 @@ rbac:
   config_file: "rbac.yaml"
 ```
 
+Tenant isolation is real: every `Authorize`/`IsGlobal` call is fed the
+caller's actual resolved tenant (from the active identity source, not a
+hardcoded literal), and a `RoleBinding` only grants within the tenant it
+names. A `ClusterRoleBinding` (no `tenant:` in `rbac.yaml`, or a SCIM
+group named `wardline:role-<role>` with no tenant segment) still grants
+globally, across every tenant — the "no tenant means global" convention
+`rbac.yaml` and SCIM group naming both share.
+
 ## Known limitations
 
-- Single-tenant only — `RoleBinding`'s tenant field is real and
-  consulted, but every caller resolves against the one implicit tenant
-  `"default"`; there is no isolation *by* tenant yet.
-- File-based role/binding management only — no HTTP API for managing
-  roles/bindings.
-- No SSO/SCIM — the admin identity still comes from whatever identity
-  source is active (preshared-secret bootstrap or the raw header), not
-  an IdP. SSO/SCIM is an explicit v2.0 roadmap item.
+- File-based role/binding management (`rbac.yaml`) is still the only
+  static source — SCIM-provisioned bindings (see [SCIM](/features/scim/))
+  are additive on top, not a replacement.
+- When `credential.bootstrap_source: oidc`, cross-tenant credential-revoke
+  scoping (see [SSO](/features/sso/)) falls back to requiring a global
+  `ClusterRoleBinding` grant for every revoke — the OIDC bootstrapper has
+  no static identity registry to look up an arbitrary target identity's
+  tenant from after the fact, unlike the preshared-secret bootstrapper.
+- Federation's correlated-alerts view is not tenant-scoped — it
+  correlates on an identity fingerprint computed locally, and making
+  that tenant-aware is a separate, not-yet-scheduled change (federation
+  has no dedicated docs page yet).
 - Does not require `credential_issuance` — composes with whatever
   identity source is active, and is only as strong as whatever
   authenticates that identity.
