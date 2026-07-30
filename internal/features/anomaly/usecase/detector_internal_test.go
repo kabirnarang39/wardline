@@ -95,10 +95,12 @@ func mlFloorCfg() domain.HeuristicConfig {
 // regression gate for N2: without MinCalls, a window containing exactly
 // one call scores as a wild outlier by construction, not by behavior.
 // Against the baseline this test builds ({10, 11} alternating, mean 10.5,
-// sample stddev 0.5270, floored per minStddevRelFraction to
-// 0.15*10.5=1.575), a 1-call window scores
-// z_rate = (1 - 10.5) / 1.575 = -6.03 -- past both the 3.0 log
-// threshold and the 4.0 block threshold. An identity that simply went
+// sample stddev 0.5270, floored by zCount to
+// max(0.15*10.5 = 1.575, sqrt(10.5) = 3.2404) = 3.2404), a 1-call window
+// scores z_rate = (1 - 10.5) / 3.2404 = -2.93 -- and scored -6.03 against
+// the relative floor alone, past both the 3.0 log threshold and the 4.0
+// block threshold. Either way the floors are not what saves this case, which
+// is the point of the MinCalls gate. An identity that simply went
 // quiet for one window would be auto-blocked. With the floor, the window
 // is skipped outright: no anomaly, nothing folded, no Block call.
 func TestDetector_MLScore_MinCallsFloor_SkipsSingleCallWindow(t *testing.T) {
@@ -348,8 +350,9 @@ func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
 	}
 
 	// A genuinely wild window: 200 calls across 20 tools, 1ms apart.
-	// z_rate = (200 - 10.5) / 1.575 = 120.3 against the relative-stddev
-	// floor -- far past the 4.0 block threshold.
+	// z_rate = (200 - 10.5) / 3.2404 = 58.48 against zCount's count floor
+	// (sqrt(10.5), above the 1.575 relative floor) -- far past the 4.0 block
+	// threshold.
 	feedWindow(d, clock, "alice", distinctTools(20), 200, time.Millisecond)
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})

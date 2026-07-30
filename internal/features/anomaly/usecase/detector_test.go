@@ -702,9 +702,10 @@ func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.
 // round one -- 4 identical bursts, only the first flagged.
 //
 // Each burst is 200 calls across 20 tools 1ms apart, scored against a
-// frozen 8-sample {10, 11} baseline (mean 10.5, stddev floored to
-// 0.15*10.5 = 1.575): z_rate = (200-10.5)/1.575 = 120.3 every time, far
-// past both the 3.0 log threshold and the 4.0 block threshold. "Frozen" is
+// frozen 8-sample {10, 11} baseline (mean 10.5, stddev floored by zCount to
+// max(0.15*10.5 = 1.575, sqrt(10.5) = 3.2404) = 3.2404):
+// z_rate = (200-10.5)/3.2404 = 58.48 every time, far past both the 3.0 log
+// threshold and the 4.0 block threshold. "Frozen" is
 // the whole point: because no burst is folded, burst 4 is compared against
 // exactly the same baseline burst 1 was.
 func TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged(t *testing.T) {
@@ -753,8 +754,9 @@ func TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged(t *testing.T) {
 // 0.5345; a following window of 13 calls is a 24% increase -- ordinary
 // traffic variation. Unfloored that scores z = (13-10.5)/0.5345 = 4.68,
 // which clears BOTH thresholds below: it would log an anomaly and
-// auto-block the identity. With minStddevRelFraction the divisor is
-// floored at 0.15*10.5 = 1.575 and the same window scores 1.59.
+// auto-block the identity. zCount floors the divisor at
+// max(0.15*10.5 = 1.575, sqrt(10.5) = 3.2404) = 3.2404 and the same window
+// scores 0.77 (1.59 under the relative floor alone).
 func TestDetector_MLScore_OrdinaryGrowth_NeverFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -827,7 +829,8 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
 
 	// 8 baseline windows alternating rate 10/12 (mean 11, m2 = 8, so
-	// sample stddev sqrt(8/7) = 1.069); deny-ratio and inter-arrival held
+	// sample stddev sqrt(8/7) = 1.069, under zCount's sqrt(11) = 3.3166
+	// count floor); deny-ratio and inter-arrival held
 	// constant (no denies, fixed 1s spacing) so they score 0, and
 	// tool_diversity -- a raw distinct-tool count that manyToolNames(n)
 	// pins to the call count -- moves in lockstep with rate and scores
@@ -839,14 +842,21 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 		clock.t = clock.t.Add(61 * time.Second)
 	}
 
-	// Target window: rate 20. minStddevRelFraction floors the divisor at
-	// 0.15*11 = 1.65 (above the real 1.069), so z = (20-11)/1.65 = 5.45 --
-	// real margin on both sides of the 3.0 log threshold and the 8.0 block
-	// threshold. Picked deliberately: the rate of 16 this test used before
-	// the relative-stddev floor scored 3.03 against the floored divisor,
-	// clearing the 3.0 log threshold by 0.03 and making the test's own
-	// premise a coin flip.
-	publishWindow(d, clock, "alice", manyToolNames(20), "allow", 20, time.Second)
+	// Target window: rate 29. zCount floors the divisor at
+	// max(1.069 raw, 0.15*11 = 1.65, sqrt(11) = 3.3166) = 3.3166, so
+	// z = (29-11)/3.3166 = 5.43 -- real margin on both sides of the 3.0 log
+	// threshold and the 8.0 block threshold.
+	//
+	// The driving rate has been raised twice to hold that margin as the floor
+	// this test's divisor comes from grew, and each time only the synthetic
+	// input moved, never an assertion or a threshold: 16 (scored 3.03 against
+	// the relative floor, clearing the log threshold by 0.03 -- a premise
+	// that was a coin flip), then 20 (scored 5.45 against the same floor),
+	// now 29 against round 11's sqrt(mean) count floor, at which 20 would
+	// have scored only 2.71 and logged nothing at all. The claim under test
+	// is the two-threshold design itself -- a score in the gap logs once and
+	// never blocks -- which is orthogonal to how wide the divisor is.
+	publishWindow(d, clock, "alice", manyToolNames(29), "allow", 29, time.Second)
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
@@ -1592,9 +1602,9 @@ func TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks(t *testing.T) {
 // fixedTools at spacing alternating 2.5s/2.6s, so inter_arrival_time is the
 // only feature with any variance: mean 2.545455, raw stddev 0.0522233,
 // floored per minStddevRelFraction to 0.15*2.545455 = 0.381818. Call rate
-// is exactly 20 in every window (zero variance, floored to 0.15*20 = 3.0
-// since the relative-stddev-at-zero-variance fix) and the distinct-tool
-// count exactly 5.
+// is exactly 20 in every window (zero variance, floored by zCount to
+// max(0.15*20 = 3.0, sqrt(20) = 4.4721) = 4.4721) and the distinct-tool
+// count exactly 5 (floored to max(0.75, sqrt(5) = 2.2361) = 2.2361).
 func establishSlowPacedBaseline(d *usecase.Detector, clock *fakeClock, identity string) {
 	for i := 0; i < 11; i++ {
 		spacing := 2500 * time.Millisecond
@@ -1616,7 +1626,8 @@ func establishSlowPacedBaseline(d *usecase.Detector, clock *fakeClock, identity 
 //
 // Hand-traced against the baseline above: a window of 10 calls (half
 // volume) over the same 5 tools with no denials, spaced 300ms apart, scores
-// z_rate = (10-20)/3.0 = -3.333 (correctly benign, volume declined) and
+// z_rate = (10-20)/max(0.15*20 = 3.0, sqrt(20) = 4.4721) = -2.236
+// (correctly benign, volume declined) and
 // z_interArrival = (0.3-2.545455)/0.381818 = -5.881, which sign-flips to
 // +5.881 and cleared the 4.0 block threshold on its own. With the zRate >= 0
 // gate the inter-arrival candidate is not considered at all, leaving only
@@ -1651,7 +1662,7 @@ func TestDetector_MLScore_FastPaceLowVolume_NeverBlocks(t *testing.T) {
 // the zRate >= 0 gate: at or above baseline volume, a tightening pace is a
 // genuine burst and must still block. Same baseline, same 300ms spacing and
 // therefore the identical z_interArrival = -5.881, but 20 calls instead of
-// 10 -- z_rate = (20-20)/3.0 = 0, which passes the gate, so the sign-flipped
+// 10 -- z_rate = (20-20)/4.4721 = 0, which passes the gate, so the sign-flipped
 // +5.881 is considered and clears the 4.0 threshold. Nothing but volume
 // separates this test from the one above.
 func TestDetector_MLScore_FastPaceSameVolume_StillBlocks(t *testing.T) {
@@ -1779,17 +1790,18 @@ func TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks(t *testing.T) {
 // it. Call volume is held at a constant 100 across every window (zero
 // variance, so z_rate is 0 and cannot contribute), while the distinct-tool
 // count cycles 4/5/6 -- mean 4.9091, raw stddev 0.8312, above the
-// 0.15*4.9091 = 0.7364 relative floor. Round 10's absolute floor of one
-// whole tool is what binds here instead: max(0.7364, 0.8312, 1.0) = 1.0,
-// since a baseline this tight is exactly the small-integer zone where a
-// sub-one-tool divisor turns single-quantum noise into a multi-sigma
-// event. A window that keeps the same 100 calls but spreads them over 40
-// distinct tools therefore scores z_diversity = (40 - 4.9091)/1.0 =
-// +35.09: genuine enumeration, the only thing a raw count still moves on,
-// and it must both log and block. The floor cost this case 7.13 of a
-// 35.09 score and nothing at all of the outcome -- it is still ~9x the
-// 4.0 block threshold. Note the volume is identical to the baseline's, so
-// nothing but diversity could have produced this score.
+// 0.15*4.9091 = 0.7364 relative floor. zCount's count floor is what binds
+// here instead: max(0.7364, 0.8312, sqrt(4.9091) = 2.2156) = 2.2156, since a
+// baseline this tight is exactly the small-integer zone where a divisor below
+// the feature's own Poisson-like sampling noise turns ordinary variation into
+// a multi-sigma event. A window that keeps the same 100 calls but spreads
+// them over 40 distinct tools therefore scores
+// z_diversity = (40 - 4.9091)/2.2156 = +15.84: genuine enumeration, the only
+// thing a raw count still moves on, and it must both log and block. The floor
+// costs this case 19.25 of a 35.09 unfloored score (round 10's flat 1.0 floor
+// cost 7.13 of it) and nothing at all of the outcome -- still ~4x the 4.0
+// block threshold. Note the volume is identical to the baseline's, so nothing
+// but diversity could have produced this score.
 func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1809,7 +1821,7 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 	if len(logged) != 1 {
 		t.Fatalf("expected tool enumeration to be logged exactly once as ml_score, got %d: %+v", len(logged), writer.anomalies)
 	}
-	if want := "combined z-score 35.09 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+	if want := "combined z-score 15.84 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
 		t.Errorf("expected tool_diversity to drive the logged score as %q, got %q", want, logged[0].Detail)
 	}
 	if len(blocker.calls) != 1 {
@@ -1832,16 +1844,20 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 // so never reached the short-circuit at all.
 //
 // Hand-traced: diversity mean 5 with zero variance. The relative floor
-// gives 0.15*5 = 0.75, but round 10's absolute floor of one whole tool is
-// larger and therefore binds: max(0.75, 1.0) = 1.0 -- a mean of 5 distinct
-// tools is squarely in the small-integer zone where three quarters of a
-// tool is not a meaningful unit of deviation. A window spreading 100 calls
-// (the baseline's own volume range, so call_rate contributes essentially
-// nothing: z_rate = (100-99.0909)/14.8636 = 0.06) over 60 distinct tools
-// scores z_diversity = (60-5)/1.0 = 55.00. Pre-fix that was 0 and this
+// gives 0.15*5 = 0.75, but zCount's count floor is larger and therefore
+// binds: max(0.75, sqrt(5) = 2.2361) = 2.2361 -- a mean of 5 distinct tools
+// is squarely in the small-integer zone where three quarters of a tool is not
+// a meaningful unit of deviation, and even one whole tool (round 10's flat
+// floor) sits under this count's own sqrt(5) sampling noise. A window
+// spreading 100 calls (the baseline's own volume range, so call_rate
+// contributes essentially nothing: z_rate = (100-99.0909)/14.8636 = 0.06 --
+// mean 99.0909 is the one place the relative floor 14.8636 still exceeds
+// sqrt(99.0909) = 9.95) over 60 distinct tools scores
+// z_diversity = (60-5)/2.2361 = 24.60. Pre-round-6 that was 0 and this
 // blatant enumeration sweep did not even clear the 3.0 log threshold; the
-// 1.0 floor moves it from 73.33 to 55.00, i.e. still ~14x the 4.0 block
-// threshold, so it costs the magnitude and not the outcome.
+// floors move it from 73.33 unfloored to 55.00 (round 10) to 24.60 (round
+// 11), i.e. still ~6x the 4.0 block threshold, so they cost the magnitude
+// and not the outcome.
 func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1858,7 +1874,7 @@ func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *te
 	if len(logged) != 1 {
 		t.Fatalf("expected enumeration against a zero-variance diversity baseline to be logged exactly once, got %d: %+v", len(logged), writer.anomalies)
 	}
-	if want := "combined z-score 55.00 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+	if want := "combined z-score 24.60 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
 		t.Errorf("expected the logged score to be %q, got %q", want, logged[0].Detail)
 	}
 	if len(blocker.calls) != 1 {
@@ -1886,26 +1902,28 @@ func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *te
 // for an identity whose behavior never changed beyond touching one more
 // tool than usual.
 //
-// Hand-traced with the absolute 1.0 floor (one whole tool) against this
-// test's own baseline: diversity is a constant 1 across 11 folded windows
-// (mean 1, zero variance), so the divisor is max(0.15*1, 0, 1.0) = 1.0 and
-// the +1-tool window scores z_diversity = (2-1)/1.0 = 1.00 -- below even
+// Hand-traced with zCount's count floor against this test's own baseline:
+// diversity is a constant 1 across 11 folded windows (mean 1, zero
+// variance), so the divisor is max(0.15*1, 0, sqrt(1) = 1.0) = 1.0 -- mean 1
+// is the one point where round 11's sqrt(mean) floor and round 10's flat 1.0
+// coincide exactly, so this test's own numbers are unchanged by round 11 --
+// and the +1-tool window scores z_diversity = (2-1)/1.0 = 1.00, below even
 // the 3.0 log threshold, a 4x margin under the block threshold. Every other
 // feature is pinned flat by construction: volume is exactly 20 calls in
-// every window including this one, so z_rate = (20-20)/max(0.15*20, 1.0)
-// = 0; spacing is a flat 1s, so z_interArrival = 0; there are no denials,
-// so z_deny = 0 and zDenyBlock = (0-0)/se = 0. Diversity is the only
-// feature that moved at all, which is what makes this a clean isolation of
-// the reported failure.
+// every window including this one, so
+// z_rate = (20-20)/max(0.15*20, sqrt(20)) = 0; spacing is a flat 1s, so
+// z_interArrival = 0; there are no denials, so z_deny = 0 and
+// zDenyBlock = (0-0)/se = 0. Diversity is the only feature that moved at
+// all, which is what makes this a clean isolation of the reported failure.
 //
 // The mean-1 case is asserted rather than the mean-5 -> 9 case from the
-// same family because that one lands on exactly
-// (9-5)/max(0.15*5, 1.0) = (9-5)/1.0 = 4.00. That does not block -- the
-// auto-block gate is a strict `>` -- but an assertion sitting exactly on
-// the threshold is a coin flip dressed up as a test, the same thin-margin
-// problem rounds 6 and 8 corrected in their own cases. It is resolved, not
-// ignored: mean 5 -> 9 logs (4.00 > 3.0) and does not block (4.00 is not
-// > 4.0).
+// same family because under round 10's flat 1.0 floor that one landed on
+// exactly (9-5)/1.0 = 4.00. That did not block -- the auto-block gate is a
+// strict `>` -- but an assertion sitting exactly on the threshold is a coin
+// flip dressed up as a test, the same thin-margin problem rounds 6 and 8
+// corrected in their own cases. Round 11's floor resolves that case outright
+// rather than leaving it on the boundary: (9-5)/max(0.75, sqrt(5) = 2.2361)
+// = 1.79, which no longer even clears the 3.0 log threshold.
 //
 // The paired subtest is what stops the floor from being a free pass, and
 // what keeps the first subtest from passing vacuously: a baseline that
