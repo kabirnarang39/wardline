@@ -48,9 +48,13 @@ func (s *ProvisioningService) GetUser(id string) (domain.User, error) {
 	return u, nil
 }
 
-// GetUserByName is a test/internal convenience -- SCIM's own filter
-// query (?filter=userName eq "...") is implemented at the adapter using
-// this same lookup, see the adapter's ListUsers handling.
+// GetUserByName is a test/internal convenience for asserting on a
+// created User by its unique userName. SCIM's own filter query
+// (?filter=userName eq "...") is NOT implemented anywhere yet -- GET
+// /scim/v2/Users always returns the full list; the adapter parses no
+// query params. That's out of scope this cycle per the design's "no
+// filter language beyond eq" cut, and only this method exists to keep
+// tests from reaching into ProvisioningService.users directly.
 func (s *ProvisioningService) GetUserByName(userName string) (domain.User, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

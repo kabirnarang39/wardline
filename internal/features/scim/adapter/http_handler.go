@@ -50,11 +50,22 @@ type Handler struct {
 	users       UserProvisioner
 	groups      GroupProvisioner
 	bearerToken string
+	logger      *slog.Logger
 	mux         *http.ServeMux
 }
 
-func NewHandler(users UserProvisioner, groups GroupProvisioner, bearerToken string) *Handler {
-	h := &Handler{users: users, groups: groups, bearerToken: bearerToken}
+// NewHandler wires a Handler. bearerToken must be non-empty -- an empty
+// configured token would let an empty "Authorization: Bearer " header
+// pass the constant-time comparison, so this panics rather than silently
+// accepting an unauthenticated deployment (same fail-fast-at-construction
+// posture as credential/adapter.LoadBootstrapper's "must have a secret"
+// check, just via panic since Handler constructors in this codebase
+// don't return an error).
+func NewHandler(users UserProvisioner, groups GroupProvisioner, bearerToken string, logger *slog.Logger) *Handler {
+	if bearerToken == "" {
+		panic("scim: bearerToken must not be empty")
+	}
+	h := &Handler{users: users, groups: groups, bearerToken: bearerToken, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/scim/v2/Users", h.handleUsersCollection)
 	mux.HandleFunc("/scim/v2/Users/", h.handleUserItem)
@@ -67,7 +78,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// remote_addr only -- never log the presented token or the
 		// requested path's identifying detail, which would leak an
 		// enumeration signal to logs for an unauthenticated caller.
-		slog.Warn("scim request authentication failed", "remote_addr", r.RemoteAddr)
+		h.logger.Warn("scim request authentication failed", "remote_addr", r.RemoteAddr)
 		writeSCIMError(w, http.StatusUnauthorized, "invalid bearer token")
 		return
 	}
@@ -106,15 +117,14 @@ func (h *Handler) handleUsersCollection(w http.ResponseWriter, r *http.Request) 
 			writeSCIMError(w, http.StatusConflict, "user already exists")
 			return
 		}
-		w.WriteHeader(http.StatusCreated)
-		writeJSON(w, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
+		writeJSON(w, http.StatusCreated, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 	case http.MethodGet:
 		users := h.users.ListUsers()
 		out := make([]userResource, 0, len(users))
 		for _, u := range users {
 			out = append(out, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 		}
-		writeJSON(w, out)
+		writeJSON(w, http.StatusOK, out)
 	default:
 		writeSCIMError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -133,7 +143,7 @@ func (h *Handler) handleUserItem(w http.ResponseWriter, r *http.Request) {
 			writeSCIMError(w, http.StatusNotFound, "not found")
 			return
 		}
-		writeJSON(w, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
+		writeJSON(w, http.StatusOK, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 	case http.MethodDelete:
 		if err := h.users.DeleteUser(id); err != nil {
 			writeSCIMError(w, http.StatusNotFound, "not found")
@@ -167,8 +177,14 @@ func (h *Handler) handleUserItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+// writeJSON is the only path that writes a success response's status
+// line -- Content-Type must be set before WriteHeader (Go freezes
+// headers at WriteHeader/first-Write time), so status and body are
+// always written together here rather than a caller calling
+// WriteHeader itself first.
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/scim+json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
