@@ -414,8 +414,13 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // catch -- maxAbsZ (used for the ml_score log record) still surfaces it
 // for visibility, but it must never gate a Block call. zDenyBlock is
 // deny_ratio's block-gating variant (see checkMLScore's comment above
-// it), not the raw zDeny used for logging. The result is floored at 0: if
-// every feature moved in the benign direction, there is no case for
+// it), not the raw zDeny used for logging. The inter-arrival candidate is
+// additionally gated on zRate >= 0: calls arriving closer together is only
+// a threat signal paired with volume at or above baseline (an actual
+// burst); a client that simply made fewer calls that happened to land
+// closer together is not one, and treating it as one auto-blocked a
+// legitimate volume decline through this feature. The result is floored at
+// 0: if every feature moved in the benign direction, there is no case for
 // blocking at all, not a large negative "score."
 func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival float64) (float64, string) {
 	best := zRate
@@ -426,8 +431,10 @@ func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival float64) (float64,
 	if v := zDenyBlock; v > best {
 		best, feature = v, "deny_ratio"
 	}
-	if v := -zInterArrival; v > best {
-		best, feature = v, "inter_arrival_time"
+	if zRate >= 0 {
+		if v := -zInterArrival; v > best {
+			best, feature = v, "inter_arrival_time"
+		}
 	}
 	if best < 0 {
 		best = 0
