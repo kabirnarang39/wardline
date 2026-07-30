@@ -96,6 +96,7 @@ type contextInput struct {
 	Timestamp  string `json:"timestamp"`
 	RemoteAddr string `json:"remote_addr"`
 	UserAgent  string `json:"user_agent"`
+	Tenant     string `json:"tenant"`
 }
 
 // Evaluate runs the prepared query against pc and extracts an allow/deny
@@ -170,5 +171,6 @@ func buildInput(pc domain.Context) (contextInput, error) {
 		Timestamp:  pc.Timestamp.UTC().Format(time.RFC3339),
 		RemoteAddr: pc.RemoteAddr,
 		UserAgent:  pc.UserAgent,
+		Tenant:     pc.Tenant,
 	}, nil
 }

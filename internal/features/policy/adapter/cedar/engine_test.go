@@ -295,6 +295,56 @@ func TestCedarEngine_FloatParamsDeniedNotCoerced(t *testing.T) {
 	}
 }
 
+const tenantScopedSource = `
+permit(
+  principal == Wardline::Identity::"alice",
+  action == Wardline::Action::"call_tool",
+  resource == Wardline::Tool::"search"
+) when {
+  context.tenant == "acme"
+};
+`
+
+// TestCedarEngine_TenantReachesContext proves domain.Context.Tenant is
+// wired through to context.tenant, not just present on the struct.
+func TestCedarEngine_TenantReachesContext(t *testing.T) {
+	e, err := cedar.NewCedarEngine("tenant.cedar", []byte(tenantScopedSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("acme tenant: got %v, want allow (reason: %q)", got.Effect, got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "widgets-inc"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("different tenant: got %v, want deny", got.Effect)
+	}
+}
+
+// TestCedarEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy proves the
+// new context.tenant key is purely additive: a policy fixture that never
+// references context.tenant (allowDenySource, already used above)
+// evaluates identically whether or not Context.Tenant is set.
+func TestCedarEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T) {
+	e, err := cedar.NewCedarEngine("policy.cedar", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow (existing policy ignores tenant), got %q (reason: %q)", got.Effect, got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "someone-else", Tool: "read_file", Tenant: "acme"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny, got %q", got.Effect)
+	}
+}
+
 func TestNewCedarEngine_SyntaxError(t *testing.T) {
 	_, err := cedar.NewCedarEngine("bad.cedar", []byte(`this is not { valid cedar`))
 	if err == nil {
