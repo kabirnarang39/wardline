@@ -1014,10 +1014,10 @@ func establishHighVolumeDenyBaseline(d *usecase.Detector, clock *fakeClock, iden
 // record still reports, correctly, as "this window's deny ratio is far
 // off baseline". But 1-in-10 cannot distinguish 10% from 2%: the window's
 // own binomial standard error, computed from the continuity-corrected
-// pSmoothed = (0.0195455*11+0.5)/12 = 0.0595833, is
-// se = sqrt(0.0595833*0.9404167/10) = 0.074855, well above the 0.0041560
+// pSmoothed = (0.0195455*10+0.5)/(10+1) = 0.0632231, is
+// se = sqrt(0.0632231*0.9367769/10) = 0.0769584, well above the 0.0041560
 // historical stddev, so the block-gating score is
-// (0.10-0.0195455)/0.074855 = 1.075 -- nowhere near the 4.0 block
+// (0.10-0.0195455)/0.0769584 = 1.045 -- nowhere near the 4.0 block
 // threshold. MinCalls (5) is no defense: 10 calls clears it. (Round 7's
 // zRate >= 0 gate independently excludes deny_ratio here too, since
 // z_rate = (10-200)/30 = -6.33; both suppressions are live, and the
@@ -1110,18 +1110,19 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 	// gives an 11-sample baseline of mean 0.3227273, raw stddev 0.0261116
 	// floored per minStddevRelFraction to 0.15*0.3227273 = 0.0484091. The
 	// window's own binomial standard error uses the continuity-corrected
-	// pSmoothed = (0.3227273*11+0.5)/12 = 0.3375, giving
-	// se = sqrt(0.3375*0.6625/20) = 0.1057340, which exceeds that floor and
-	// so becomes the divisor. A window of 20 calls with 17 denials (0.85)
-	// therefore scores (0.85-0.3227273)/0.1057340 = 4.987 -- 25% clear of
+	// pSmoothed = (0.3227273*20+0.5)/(20+1) = 0.3311688, giving
+	// se = sqrt(0.3311688*0.6688312/20) = 0.1052369, which exceeds that floor
+	// and so becomes the divisor. A window of 20 calls with 17 denials (0.85)
+	// therefore scores (0.85-0.3227273)/0.1052369 = 5.010 -- 25% clear of
 	// the 4.0 threshold. The log record keeps the unfloored
 	// (0.85-0.3227273)/0.0484091 = 10.89.
 	//
 	// 17, not the 15 this subtest used before round 7: pSmoothed pulls the
 	// baseline mean toward 0.5 and so widens se slightly (0.1045405 ->
-	// 0.1057340), which dropped 15 denials from 4.087 to 4.041 -- a 1.0%
-	// margin above the block threshold, i.e. an assertion whose own premise
-	// was a coin flip. Volume is identical to the baseline's in every case,
+	// 0.1052369), which drops 15 denials to (0.75-0.3227273)/0.1052369 =
+	// 4.060 -- a 1.5% margin above the block threshold, i.e. an assertion
+	// whose own premise was a coin flip. Volume is identical to the
+	// baseline's in every case,
 	// so z_rate = 0 and nothing but deny_ratio could produce this score --
 	// which is also what makes this the subtest that carries the "detection
 	// still works" claim after round 7's zRate >= 0 gate.
@@ -1154,7 +1155,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		// this is the one subtest whose whole point is that the margin above
 		// the 4.0 threshold is real, and a bare "names deny_ratio" check
 		// would pass just as happily at 4.01.
-		if want := "ml_score 4.99 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
+		if want := "ml_score 5.01 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
 			t.Errorf("expected the block reason to be %q, got %q", want, blocker.calls[0].reason)
 		}
 	})
@@ -1172,7 +1173,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 	// ratio-based floor can tell those apart -- the window's own binomial SE
 	// shrinks as 1/sqrt(n) while the ratio artifact grows as 1/n, so
 	// sqrt(n) can never cancel n). Without the gate this window's
-	// block-gating score is (0.50-0.0195455)/0.074855 = 6.42, well past the
+	// block-gating score is (0.50-0.0195455)/0.0769584 = 6.24, well past the
 	// 4.0 threshold.
 	//
 	// Accepted trade-off, matching round 4's accepted "quiet slow-drip exfil
@@ -1223,10 +1224,18 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 // Hand-traced: 11 baseline windows of 20 calls with zero denials, then an
 // attack window of 20 calls where all 20 are denied (rate, diversity and
 // spacing held constant, so deny_ratio is the only signal). The continuity
-// correction gives pSmoothed = (0*11+0.5)/(11+1) = 0.0416667 and
-// se = sqrt(0.0416667*0.9583333/20) = 0.0446825, so the block-gating score
-// is (1.0-0)/0.0446825 = 22.38 -- far past 4.0. Pre-fix: 0 anomalies, 0
+// correction gives pSmoothed = (0*20+0.5)/(20+1) = 0.0238095 and
+// se = sqrt(0.0238095*0.9761905/20) = 0.0340901, so the block-gating score
+// is (1.0-0)/0.0340901 = 29.33 -- far past 4.0. Pre-fix: 0 anomalies, 0
 // blocks, a 0%->100% deny spike completely invisible.
+//
+// Round 8 moved this from 22.38 to 29.33: the continuity correction is now
+// keyed to this window's own toolCalls (20) rather than the baseline's
+// folded-window count (11), which is what closed round 7's own
+// clean-history false positive (see
+// TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks).
+// The outcome this test asserts is unchanged -- a 0%->100% spike still
+// blocks, and by a wider margin.
 //
 // Fix 1's zRate >= 0 gate does not interfere: volume is 20 in the attack
 // window and 20 in the baseline, so z_rate = 0 exactly. The two fixes are
@@ -1257,10 +1266,96 @@ func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 	if len(blocker.calls) != 1 {
 		t.Fatalf("expected a 0%%->100%% deny spike to auto-block exactly once, got %d: %+v", len(blocker.calls), blocker.calls)
 	}
-	// Pins the traced 22.38 rather than just the feature name: the number is
+	// Pins the traced 29.33 rather than just the feature name: the number is
 	// the whole claim here, since pre-fix this exact scenario scored 0.
-	if want := "ml_score 22.38 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
+	if want := "ml_score 29.33 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
 		t.Errorf("expected the block reason to be %q, got %q", want, blocker.calls[0].reason)
+	}
+}
+
+// TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks is the
+// regression gate for round 8: round 7's own continuity correction derived
+// its pseudo-evidence from mlStats.denyRatio.count -- the number of baseline
+// windows folded so far, which grows for as long as an identity stays
+// active. At p=0 that made pSmoothed = 0.5/(count+1) shrink without bound,
+// the invented SE shrink with it, and a single ordinary policy denial score
+// an ever-larger z the *longer* the identity had been behaving. Running
+// cleanly for longer is not a threat signal; it was scoring as one.
+//
+// Hand-traced, one denial in a 20-call window (ratio 0.05) against a
+// spotless baseline of 20-call windows. Only the fold count differs between
+// the two subtests, and that is the entire point:
+//
+//	fold count | pre-round-8 z                    | round-8 z
+//	20         | 0.5/21   -> se 0.0340901 -> 1.47 | 1.47 (no block)
+//	200        | 0.5/201  -> se 0.0111386 -> 4.49 | 1.47 (no block)
+//
+// So the 20-window subtest is the control -- it passed before this fix too,
+// because there fold count happened to equal the window's toolCalls -- and
+// the 200-window subtest is the one that reproduced the bug (4.49 > the 4.0
+// block threshold). Round 8 keys the correction to this window's own
+// toolCalls (always 20 here), so both now score
+// pSmoothed = (0*20+0.5)/(20+1) = 0.0238095,
+// se = sqrt(0.0238095*0.9761905/20) = 0.0340901,
+// z = (0.05-0)/0.0340901 = 1.4667 -- identical, and comfortably below 4.0.
+//
+// Round 7's zRate >= 0 gate is not what saves this case: the denial window
+// is 20 calls against a 20-call baseline, so z_rate = 0 exactly and
+// deny_ratio is a live block candidate. The binomial SE is doing the work.
+//
+// The paired spike assertion is what keeps this non-vacuous, and it carries
+// the independence claim directly: the *same* baselines with a 0%->100% deny
+// window must both block at exactly 29.33. Pre-round-8 those two scored
+// 29.33 and 89.78 -- the same attack judged 3x more severe purely for having
+// been preceded by more clean history. No ml_score log record is asserted
+// because there is none to assert: zDeny stays 0 against a zero-mean,
+// zero-variance baseline (see DenySpikeFromCleanHistory's note), which is
+// also why this false positive was invisible in telemetry.
+func TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks(t *testing.T) {
+	establishCleanDenyBaseline := func(d *usecase.Detector, clock *fakeClock, windows int) {
+		for i := 0; i < windows; i++ {
+			publishMixedWindow(d, clock, "alice", 20, 0, time.Second)
+			clock.t = clock.t.Add(61 * time.Second)
+		}
+	}
+	// rollWindow closes the window publishMixedWindow just filled, so the
+	// detector scores it.
+	rollWindow := func(d *usecase.Detector, clock *fakeClock) {
+		clock.t = clock.t.Add(61 * time.Second)
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	}
+
+	for _, baselineWindows := range []int{20, 200} {
+		t.Run(fmt.Sprintf("%d clean windows of history", baselineWindows), func(t *testing.T) {
+			clock := &fakeClock{t: time.Unix(0, 0)}
+			blocker := &recordingBlocker{}
+			d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now)
+
+			establishCleanDenyBaseline(d, clock, baselineWindows)
+			publishMixedWindow(d, clock, "alice", 20, 1, time.Second)
+			rollWindow(d, clock)
+
+			if len(blocker.calls) != 0 {
+				t.Errorf("one ordinary denial in a 20-call window must never auto-block, however long the identity has run cleanly (%d windows), got %+v", baselineWindows, blocker.calls)
+			}
+
+			// Same baseline, same window size, a real 0%->100% spike: must
+			// still block, and at the same score regardless of fold count.
+			spikeClock := &fakeClock{t: time.Unix(0, 0)}
+			spikeBlocker := &recordingBlocker{}
+			spikeD := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, spikeBlocker, nil, spikeClock.now)
+
+			establishCleanDenyBaseline(spikeD, spikeClock, baselineWindows)
+			publishMixedWindow(spikeD, spikeClock, "alice", 20, 20, time.Second)
+			rollWindow(spikeD, spikeClock)
+
+			if len(spikeBlocker.calls) != 1 {
+				t.Fatalf("expected a 0%%->100%% deny spike to still auto-block exactly once after %d clean windows, got %d: %+v", baselineWindows, len(spikeBlocker.calls), spikeBlocker.calls)
+			}
+			if want := "ml_score 29.33 (feature: deny_ratio)"; !strings.Contains(spikeBlocker.calls[0].reason, want) {
+				t.Errorf("expected the spike's block score to be %q independent of the %d-window fold count, got %q", want, baselineWindows, spikeBlocker.calls[0].reason)
+			}
+		})
 	}
 }
 
