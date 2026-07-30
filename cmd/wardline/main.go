@@ -434,10 +434,10 @@ func runServe(logger *slog.Logger, args []string) {
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker)
 		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer)
-		identityAuth = proxyadapter.NewBearerIdentity(bearerAuthenticatorFunc(func(bearerToken string) (string, error) {
-			identity, _, err := verification.Authenticate(bearerToken)
-			return identity, err
-		}))
+		// verification already satisfies proxyadapter.Authenticator directly
+		// -- both return (identity, tenant, err) -- so no adapter shim is
+		// needed to bridge the two.
+		identityAuth = proxyadapter.NewBearerIdentity(verification)
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
 
@@ -480,7 +480,7 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource)
 		if rbacEnabled {
-			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, "default", rbacdomain.PermissionDashboardView, dashboardRoute, logger)
+			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
@@ -659,17 +659,6 @@ type revokeAuthorizerFunc func(r *http.Request) bool
 
 func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 
-// bearerAuthenticatorFunc adapts a plain function to proxyadapter.Authenticator.
-// credentialusecase.VerificationService.Authenticate now returns
-// (identity, tenant, err) so it can carry tenant through the credential
-// feature, but proxyadapter.Authenticator/IdentityAuthenticator still only
-// carry identity through the proxy request path -- a later task widens
-// those to thread tenant all the way to policy/budget evaluation. Until
-// then this shim discards the resolved tenant.
-type bearerAuthenticatorFunc func(bearerToken string) (identity string, err error)
-
-func (f bearerAuthenticatorFunc) Authenticate(bearerToken string) (string, error) { return f(bearerToken) }
-
 // newRevokeAuthorizer builds the RevokeAuthorizer wired into
 // /credentials/revoke when rbac is on: a non-loopback caller is allowed
 // through only if identity resolves and the resolved identity holds
@@ -681,7 +670,11 @@ func (f bearerAuthenticatorFunc) Authenticate(bearerToken string) (string, error
 // site in runServe).
 func newRevokeAuthorizer(identityAuth *proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker, logger *slog.Logger) credentialadapter.RevokeAuthorizer {
 	return revokeAuthorizerFunc(func(r *http.Request) bool {
-		who, err := (*identityAuth).Authenticate(r)
+		// The resolved tenant isn't used here yet -- a later task in this
+		// plan tenant-scopes this check (cross-tenant revoke handling); for
+		// now this preserves the existing hardcoded-"default" behavior
+		// exactly.
+		who, _, err := (*identityAuth).Authenticate(r)
 		if err != nil {
 			logger.Warn("rbac revoke authorization: identity resolution failed", "remote_addr", r.RemoteAddr)
 			return false

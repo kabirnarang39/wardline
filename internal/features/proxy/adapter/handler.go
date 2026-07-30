@@ -131,8 +131,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// never reaches policy, budget, or the audit log (see
 	// docs/superpowers/specs/2026-07-27-credential-issuance-design.md
 	// "Error handling"). HeaderIdentity (the default) never errors, so
-	// this is a no-op when credential_issuance is off.
-	identity, err := h.identityAuth.Authenticate(r)
+	// this is a no-op when credential_issuance is off. The resolved
+	// tenant isn't threaded into policy/budget evaluation yet -- a later
+	// task in this plan does that; this handler only needs identity.
+	identity, _, err := h.identityAuth.Authenticate(r)
 	if err != nil {
 		h.logger.Warn("identity authentication failed", "remote_addr", r.RemoteAddr)
 		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeUnauthorized, nil, "unauthorized")
