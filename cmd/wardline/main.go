@@ -413,6 +413,7 @@ func runServe(logger *slog.Logger, args []string) {
 		Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
 	}
 	var scimHandler http.Handler
+	var bindingStoreCloser io.Closer
 	if scimEnabled {
 		if cfg.Scim.PersistPostgres {
 			pbs, err := scimadapter.NewPostgresBindingStore(cfg.Audit.PostgresDSN, logger)
@@ -421,6 +422,9 @@ func runServe(logger *slog.Logger, args []string) {
 				os.Exit(1)
 			}
 			scimBindingStore = pbs
+			// Registered as a closer so its connection pool is released on
+			// exit -- mirrors oidcCloser below (M2).
+			bindingStoreCloser = pbs
 			logger.Info("scim-provisioned bindings backed by postgres (shared across replicas)")
 		} else {
 			scimBindingStore = scimusecase.NewBindingStore()
@@ -683,6 +687,11 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("oidc bootstrapper shutdown failed", "error", err)
 				}
 			}
+			if bindingStoreCloser != nil {
+				if err := bindingStoreCloser.Close(); err != nil {
+					logger.Error("scim binding store shutdown failed", "error", err)
+				}
+			}
 			if healthDB != nil {
 				if err := healthDB.Close(); err != nil {
 					logger.Error("health-check database pool shutdown failed", "error", err)
@@ -761,6 +770,11 @@ func runServe(logger *slog.Logger, args []string) {
 	if oidcCloser != nil {
 		if err := oidcCloser.Close(); err != nil {
 			logger.Error("oidc bootstrapper shutdown failed", "error", err)
+		}
+	}
+	if bindingStoreCloser != nil {
+		if err := bindingStoreCloser.Close(); err != nil {
+			logger.Error("scim binding store shutdown failed", "error", err)
 		}
 	}
 	if healthDB != nil {
