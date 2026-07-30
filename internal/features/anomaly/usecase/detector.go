@@ -333,7 +333,22 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	// e2e baseline (2-3 calls over 1-2 distinct tools per window) has both
 	// call_rate and tool_diversity in this sub-quantum zone.
 	zRate := st.mlStats.rate.ZScoreFloored(rate, 1.0)
-	zDiversity := st.mlStats.diversity.ZScore(diversity)
+	// diversity's effective stddev is additionally floored at 1.0 -- one
+	// whole tool, for the same sub-quantum reason zRate above is floored at
+	// one whole call. tool_diversity is integer-valued, so when its baseline
+	// mean is small (an identity that habitually touches only 1-3 distinct
+	// tools per window, an entirely ordinary shape), the relative floor
+	// alone (0.15 * mean) is smaller than one whole tool: the smallest
+	// possible real change -- exactly one more distinct tool, nothing else
+	// about the window different -- already scores a multi-sigma event on
+	// the shipped example config's own thresholds (mean 1 -> 2 scores
+	// z = 1/0.15 = 6.67, past both 3.0 and 4.0). And because the window is
+	// then flagged it never folds, so the baseline stays pinned at mean 1
+	// and this repeats every window forever -- the same permanent lockout
+	// rounds 4, 5, 7 and 9 each closed for a different feature, showing up
+	// here as a floor smaller than the smallest possible unit of the thing
+	// it is supposed to floor.
+	zDiversity := st.mlStats.diversity.ZScoreFloored(diversity, 1.0)
 	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
 	// deny_ratio's block-gating z-score additionally floors the effective
 	// stddev at this window's own binomial standard error,
