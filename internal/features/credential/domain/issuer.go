@@ -12,9 +12,9 @@ var ErrTokenExpired = errors.New("token expired")
 var ErrTokenInvalid = errors.New("token invalid")
 
 // Issuer mints a signed, short-lived token for an already-authenticated
-// identity.
+// identity and the tenant it belongs to.
 type Issuer interface {
-	Issue(identity string) (token string, err error)
+	Issue(identity, tenant string) (token string, err error)
 }
 
 // Verifier checks a bearer token's signature and expiry and returns the

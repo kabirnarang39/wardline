@@ -29,7 +29,7 @@ func (fakeHandlerBootstrapper) Authenticate(secret string) (string, string, erro
 
 type fakeHandlerIssuer struct{}
 
-func (fakeHandlerIssuer) Issue(identity string) (string, error) {
+func (fakeHandlerIssuer) Issue(identity, tenant string) (string, error) {
 	return "signed-jwt-for-" + identity, nil
 }
 

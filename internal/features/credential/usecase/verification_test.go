@@ -40,7 +40,7 @@ func (f *fakeRevoker) IsRevoked(identity string) bool {
 
 func TestVerificationService_ValidUnrevokedTokenReturnsIdentity(t *testing.T) {
 	s := usecase.NewVerificationService(fakeVerifier{claims: domain.Claims{Subject: "agent-abc123"}}, &fakeRevoker{})
-	identity, err := s.Authenticate("some-token")
+	identity, _, err := s.Authenticate("some-token")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestVerificationService_ValidUnrevokedTokenReturnsIdentity(t *testing.T) {
 
 func TestVerificationService_VerifierFailurePropagates(t *testing.T) {
 	s := usecase.NewVerificationService(fakeVerifier{err: domain.ErrTokenExpired}, &fakeRevoker{})
-	_, err := s.Authenticate("expired-token")
+	_, _, err := s.Authenticate("expired-token")
 	if !errors.Is(err, domain.ErrTokenExpired) {
 		t.Errorf("expected ErrTokenExpired, got %v", err)
 	}
@@ -60,7 +60,7 @@ func TestVerificationService_VerifierFailurePropagates(t *testing.T) {
 func TestVerificationService_RevokedIdentityIsRejected(t *testing.T) {
 	revoker := &fakeRevoker{revoked: map[string]bool{"agent-abc123": true}}
 	s := usecase.NewVerificationService(fakeVerifier{claims: domain.Claims{Subject: "agent-abc123"}}, revoker)
-	_, err := s.Authenticate("valid-but-revoked-token")
+	_, _, err := s.Authenticate("valid-but-revoked-token")
 	if !errors.Is(err, usecase.ErrRevoked) {
 		t.Errorf("expected ErrRevoked, got %v", err)
 	}

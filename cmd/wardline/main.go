@@ -434,7 +434,10 @@ func runServe(logger *slog.Logger, args []string) {
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker)
 		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer)
-		identityAuth = proxyadapter.NewBearerIdentity(verification)
+		identityAuth = proxyadapter.NewBearerIdentity(bearerAuthenticatorFunc(func(bearerToken string) (string, error) {
+			identity, _, err := verification.Authenticate(bearerToken)
+			return identity, err
+		}))
 		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
 
@@ -655,6 +658,17 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 type revokeAuthorizerFunc func(r *http.Request) bool
 
 func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
+
+// bearerAuthenticatorFunc adapts a plain function to proxyadapter.Authenticator.
+// credentialusecase.VerificationService.Authenticate now returns
+// (identity, tenant, err) so it can carry tenant through the credential
+// feature, but proxyadapter.Authenticator/IdentityAuthenticator still only
+// carry identity through the proxy request path -- a later task widens
+// those to thread tenant all the way to policy/budget evaluation. Until
+// then this shim discards the resolved tenant.
+type bearerAuthenticatorFunc func(bearerToken string) (identity string, err error)
+
+func (f bearerAuthenticatorFunc) Authenticate(bearerToken string) (string, error) { return f(bearerToken) }
 
 // newRevokeAuthorizer builds the RevokeAuthorizer wired into
 // /credentials/revoke when rbac is on: a non-loopback caller is allowed

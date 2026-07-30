@@ -18,11 +18,9 @@ func NewIssuanceService(bootstrapper domain.Bootstrapper, issuer domain.Issuer) 
 // domain.ErrInvalidCredentials for a bad secret — so the HTTP handler
 // (Task 6) can map it to a generic 401 without caring which stage failed.
 func (s *IssuanceService) Bootstrap(secret string) (token string, err error) {
-	// Tenant is resolved but not yet threaded into the issued token --
-	// Issuer.Issue and Claims.Tenant wiring lands in a later task.
-	identity, _, err := s.bootstrapper.Authenticate(secret)
+	identity, tenant, err := s.bootstrapper.Authenticate(secret)
 	if err != nil {
 		return "", err
 	}
-	return s.issuer.Issue(identity)
+	return s.issuer.Issue(identity, tenant)
 }
