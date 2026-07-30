@@ -33,6 +33,13 @@ globally, across every tenant — the "no tenant means global" convention
   `ClusterRoleBinding` grant for every revoke — the OIDC bootstrapper has
   no static identity registry to look up an arbitrary target identity's
   tenant from after the fact, unlike the preshared-secret bootstrapper.
+- **Credential revocation itself is keyed by identity name only, not
+  `(tenant, identity)`** — see [Credential issuance](/features/credential-issuance/)'s
+  known limitations for the full explanation. The revoke *authorization*
+  check above (whether a caller may revoke a given target) is correctly
+  tenant-scoped; the underlying revoked-identities store it feeds into is
+  not, so an authorized, correctly-scoped revoke of your own tenant's
+  `alice` currently revokes every tenant's `alice`.
 - Federation's correlated-alerts view is not tenant-scoped — it
   correlates on an identity fingerprint computed locally, and making
   that tenant-aware is a separate, not-yet-scheduled change (federation
