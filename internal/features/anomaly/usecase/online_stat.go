@@ -49,24 +49,47 @@ const minSamplesForZScore = 8
 const minStddevRelFraction = 0.15
 
 // ZScore reports how many standard deviations x is from the running
-// mean. Returns 0 (never anomalous) when there isn't enough history yet
-// (fewer than minSamplesForZScore samples) or the running variance is
-// zero (every prior sample was identical) -- both are "not enough signal
-// to judge", treated as the conservative non-anomalous case rather than
-// an undefined division. The divisor is floored at
-// minStddevRelFraction of the mean's magnitude; see that constant for
-// why a tight baseline alone must not manufacture a large score.
+// mean. Returns 0 when there isn't enough history yet (fewer than
+// minSamplesForZScore samples). The divisor is floored at
+// minStddevRelFraction of the mean's magnitude even when the running
+// variance is exactly zero (every prior sample identical) -- a baseline
+// that has never varied at all still must not be treated as "nothing
+// could ever deviate from it": a raw-count feature whose baseline
+// happens to be perfectly constant (e.g. tool_diversity over a
+// genuinely fixed tool set) previously returned z=0 unconditionally
+// here regardless of how far a later window's value strayed, blind to
+// real deviations because no floor was ever reached to compare against.
 func (s *onlineStat) ZScore(x float64) float64 {
+	return s.ZScoreFloored(x, 0)
+}
+
+// ZScoreFloored is ZScore with an additional caller-supplied floor on
+// the effective stddev, applied on top of the standard
+// minStddevRelFraction floor -- used by deny_ratio's block-gating score
+// to also floor at that window's own binomial standard error, which
+// minStddevRelFraction alone can't express since it only knows the
+// baseline's typical variance, not how many real observations this
+// particular window was computed from.
+func (s *onlineStat) ZScoreFloored(x, extraFloor float64) float64 {
 	if s.count < minSamplesForZScore {
 		return 0
 	}
 	variance := s.m2 / float64(s.count-1)
-	if variance <= 0 {
-		return 0
+	stddev := 0.0
+	if variance > 0 {
+		stddev = math.Sqrt(variance)
 	}
-	stddev := math.Sqrt(variance)
 	if floor := math.Abs(s.mean) * minStddevRelFraction; stddev < floor {
 		stddev = floor
+	}
+	if extraFloor > stddev {
+		stddev = extraFloor
+	}
+	if stddev == 0 {
+		// mean is also 0 and no extra floor was supplied -- there is no
+		// scale to measure a deviation against at all (e.g. a
+		// deny_ratio baseline that has never once seen a deny).
+		return 0
 	}
 	return (x - s.mean) / stddev
 }
