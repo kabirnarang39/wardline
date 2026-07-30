@@ -87,8 +87,11 @@ func (s *onlineStat) ZScoreFloored(x, extraFloor float64) float64 {
 	}
 	if stddev == 0 {
 		// mean is also 0 and no extra floor was supplied -- there is no
-		// scale to measure a deviation against at all (e.g. a
-		// deny_ratio baseline that has never once seen a deny).
+		// scale to measure a deviation against at all. Reachable only from
+		// plain ZScore: deny_ratio's block-gating caller always supplies a
+		// continuity-corrected binomial SE, precisely so a never-denied
+		// baseline is not permanently blind to its first deny spike (see
+		// checkMLScore's pSmoothed comment).
 		return 0
 	}
 	return (x - s.mean) / stddev
