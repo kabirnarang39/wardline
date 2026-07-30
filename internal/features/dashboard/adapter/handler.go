@@ -208,6 +208,7 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 			ID:        a.ID,
 			Timestamp: a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			Identity:  a.Identity,
+			Tenant:    a.Tenant,
 			Kind:      string(a.Kind),
 			Detail:    a.Detail,
 			Tool:      a.Entry.Tool,

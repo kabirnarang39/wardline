@@ -25,6 +25,7 @@ type AnomalyEntry struct {
 	ID        int64  `json:"id"`
 	Timestamp string `json:"timestamp"`
 	Identity  string `json:"identity"`
+	Tenant    string `json:"tenant"`
 	Kind      string `json:"kind"`
 	Detail    string `json:"detail"`
 	Tool      string `json:"tool,omitempty"`
