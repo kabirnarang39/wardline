@@ -137,6 +137,16 @@ func (p *PostgresBindingStore) Bindings(identity string) (cluster []rbacdomain.C
 			scoped = append(scoped, rbacdomain.RoleBinding{Subject: identity, RoleName: role, Tenant: tenantName})
 		}
 	}
+	// rows.Next() returns false both on genuine exhaustion AND when the
+	// loop was cut short by a scan/connection error mid-iteration --
+	// checking rows.Err() after the loop is the only way to tell those
+	// apart. Treat a real error the same as the initial QueryContext
+	// error above: fail open by discarding whatever partial results were
+	// scanned, rather than silently returning an authorization decision
+	// based on an incomplete read.
+	if err := rows.Err(); err != nil {
+		return nil, nil
+	}
 	return cluster, scoped
 }
 
