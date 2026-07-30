@@ -19,6 +19,10 @@ func (denyAllAuthorizer) Authorize(identity, tenant string, perm domain.Permissi
 	return false
 }
 
+func (denyAllAuthorizer) IsGlobal(identity string, perm domain.Permission) bool {
+	return false
+}
+
 func TestChecker_FlagOffAlwaysAllows(t *testing.T) {
 	c := usecase.NewChecker(stubFlags{enabled: false}, denyAllAuthorizer{})
 	if !c.Check("alice", "default", domain.PermissionDashboardView) {
@@ -34,6 +38,10 @@ type recordingAuthorizer struct {
 
 func (r *recordingAuthorizer) Authorize(identity, tenant string, perm domain.Permission) bool {
 	r.identity, r.tenant, r.perm = identity, tenant, perm
+	return r.verdict
+}
+
+func (r *recordingAuthorizer) IsGlobal(identity string, perm domain.Permission) bool {
 	return r.verdict
 }
 

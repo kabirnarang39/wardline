@@ -207,3 +207,24 @@ func TestLoadAuthorizer_EmptyFileLoadsSuccessfully(t *testing.T) {
 		t.Error("expected zero bindings (and thus no granted permissions) from an empty rbac.yaml")
 	}
 }
+
+func TestIsGlobal_TrueOnlyForClusterRoleBinding(t *testing.T) {
+	path := writeRBACFile(t, `
+bindings:
+  - subject: alice
+    role: admin
+  - subject: bob
+    role: admin
+    tenant: acme
+`)
+	a, err := adapter.LoadAuthorizer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.IsGlobal("alice", domain.PermissionCredentialRevoke) {
+		t.Fatal("alice has a ClusterRoleBinding, want IsGlobal true")
+	}
+	if a.IsGlobal("bob", domain.PermissionCredentialRevoke) {
+		t.Fatal("bob only has a tenant-scoped RoleBinding, want IsGlobal false")
+	}
+}
