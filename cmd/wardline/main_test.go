@@ -156,12 +156,20 @@ func (s stubAuthorizer) Authorize(identity, tenant string, perm rbacdomain.Permi
 	return s.verdict
 }
 
+func (s stubAuthorizer) IsGlobal(identity string, perm rbacdomain.Permission) bool {
+	return s.verdict
+}
+
 // panicIfCalledAuthorizer proves newRevokeAuthorizer never reaches
 // checker.Check (and thus never reaches the underlying domain.Authorizer)
 // when identity resolution fails.
 type panicIfCalledAuthorizer struct{}
 
 func (panicIfCalledAuthorizer) Authorize(identity, tenant string, perm rbacdomain.Permission) bool {
+	panic("authorizer must not be called when identity resolution fails")
+}
+
+func (panicIfCalledAuthorizer) IsGlobal(identity string, perm rbacdomain.Permission) bool {
 	panic("authorizer must not be called when identity resolution fails")
 }
 

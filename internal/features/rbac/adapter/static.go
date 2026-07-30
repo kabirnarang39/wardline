@@ -149,6 +149,15 @@ func (a *StaticAuthorizer) Authorize(identity, tenant string, perm domain.Permis
 	return false
 }
 
+func (a *StaticAuthorizer) IsGlobal(identity string, perm domain.Permission) bool {
+	for _, b := range a.clusterRoleBindings {
+		if b.Subject == identity && a.roleHasPermission(b.RoleName, perm) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *StaticAuthorizer) roleHasPermission(roleName string, perm domain.Permission) bool {
 	role, ok := a.roles[roleName]
 	if !ok {
