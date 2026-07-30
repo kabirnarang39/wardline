@@ -76,3 +76,85 @@ func TestCreateGroup_DedupesMembers(t *testing.T) {
 		t.Fatalf("expected deduped members, got %v", g.Members)
 	}
 }
+
+// TestPatchUserActive_False_RevokesDerivedBinding is a C1 regression
+// test: PATCH {"op":"replace","path":"active","value":false} is the
+// primary offboarding signal from every IdP this feature targets, and
+// used to leave the deactivated user's derived RoleBinding in place.
+func TestPatchUserActive_False_RevokesDerivedBinding(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	store := usecase.NewBindingStore()
+	svc.SetBindingStore(store)
+
+	alice, err := svc.CreateUser("alice", true)
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if _, err := svc.CreateGroup("wardline:tenant-acme:role-admin", []string{alice.ID}); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	if _, scoped := store.Bindings("alice"); len(scoped) != 1 {
+		t.Fatalf("expected alice to hold a scoped binding before deactivation, got %+v", scoped)
+	}
+
+	if err := svc.PatchUserActive(alice.ID, false); err != nil {
+		t.Fatalf("deactivate alice: %v", err)
+	}
+
+	if _, scoped := store.Bindings("alice"); len(scoped) != 0 {
+		t.Fatalf("expected alice's scoped binding revoked after deactivation, got %+v", scoped)
+	}
+}
+
+// TestDeleteUser_RevokesDerivedBinding is a C1 regression test: deleting
+// a SCIM user used to leave a stale BindingStore entry keyed on their
+// username, surviving until some other group happened to be mutated.
+func TestDeleteUser_RevokesDerivedBinding(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	store := usecase.NewBindingStore()
+	svc.SetBindingStore(store)
+
+	alice, err := svc.CreateUser("alice", true)
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if _, err := svc.CreateGroup("wardline:tenant-acme:role-admin", []string{alice.ID}); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	if _, scoped := store.Bindings("alice"); len(scoped) != 1 {
+		t.Fatalf("expected alice to hold a scoped binding before deletion, got %+v", scoped)
+	}
+
+	if err := svc.DeleteUser(alice.ID); err != nil {
+		t.Fatalf("delete alice: %v", err)
+	}
+
+	if _, scoped := store.Bindings("alice"); len(scoped) != 0 {
+		t.Fatalf("expected alice's scoped binding revoked after deletion, got %+v", scoped)
+	}
+}
+
+// TestSyncBinding_InactiveMemberNeverGrantedBinding is a C1 regression
+// test covering the third probe finding: an inactive member must never
+// be granted a binding in the first place, including via a global
+// (ClusterRoleBinding) group.
+func TestSyncBinding_InactiveMemberNeverGrantedBinding(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	store := usecase.NewBindingStore()
+	svc.SetBindingStore(store)
+
+	mallory, err := svc.CreateUser("mallory", false) // inactive from creation
+	if err != nil {
+		t.Fatalf("create mallory: %v", err)
+	}
+	if _, err := svc.CreateGroup("wardline:role-admin", []string{mallory.ID}); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	cluster, scoped := store.Bindings("mallory")
+	if len(cluster) != 0 || len(scoped) != 0 {
+		t.Fatalf("expected inactive mallory granted no binding, got cluster=%+v scoped=%+v", cluster, scoped)
+	}
+}

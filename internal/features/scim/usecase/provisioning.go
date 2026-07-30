@@ -114,6 +114,12 @@ func (s *ProvisioningService) DeleteUser(id string) error {
 		return domain.ErrNotFound
 	}
 	delete(s.users, id)
+	// The deleted user's username may still be sitting in one or more
+	// groups' Members (by ID, which no longer resolves) or -- since
+	// syncBindingLocked pushes by username -- in the BindingStore itself
+	// from before this delete. Re-push every group's now-filtered
+	// membership so any binding derived from this user is revoked (C1).
+	s.resyncAllGroupsLocked()
 	return nil
 }
 
@@ -126,6 +132,13 @@ func (s *ProvisioningService) PatchUserActive(id string, active bool) error {
 	}
 	u.Active = active
 	s.users[id] = u
+	// Deactivating (or reactivating) a user changes which of their
+	// groups' memberships should currently be reflected as bindings --
+	// re-derive every group so a deactivated user's bindings are
+	// revoked immediately, matching this feature's design spec and
+	// docs (C1). PATCH active=false is the primary offboarding signal
+	// from every IdP this feature targets (Okta, Entra ID).
+	s.resyncAllGroupsLocked()
 	return nil
 }
 
@@ -223,22 +236,39 @@ func (s *ProvisioningService) PatchGroupMembers(id string, addUserIDs, removeUse
 
 // syncBindingLocked pushes g's current membership (resolved from User ID
 // to UserName, since BindingStore keys on identity name, not ID) to the
-// wired BindingStore. A member ID that doesn't resolve to a known User
-// is silently skipped rather than erroring -- an IdP is free to reference
-// a User this ProvisioningService hasn't seen (yet, or ever) and that
-// must not break the rest of the group's binding. Must be called with
-// s.mu held.
+// wired BindingStore. A member ID that doesn't resolve to a known User,
+// or that resolves to a User who is not Active, is silently skipped
+// rather than erroring -- an IdP is free to reference a User this
+// ProvisioningService hasn't seen (yet, or ever), and an inactive member
+// must never be granted a binding in the first place (C1: `active` is
+// the deprovisioning signal these bindings are derived from). Must be
+// called with s.mu held.
 func (s *ProvisioningService) syncBindingLocked(g domain.Group) {
 	if s.bindings == nil {
 		return
 	}
 	userNames := make([]string, 0, len(g.Members))
 	for _, id := range g.Members {
-		if u, ok := s.users[id]; ok {
+		if u, ok := s.users[id]; ok && u.Active {
 			userNames = append(userNames, u.UserName)
 		}
 	}
 	s.bindings.SetGroupMembers(g.DisplayName, userNames)
+}
+
+// resyncAllGroupsLocked re-pushes every group's (now Active-filtered)
+// membership to the wired BindingStore. Called from PatchUserActive and
+// DeleteUser, whose mutation of s.users can change syncBindingLocked's
+// filtered output for any group the affected user belongs to, without
+// touching s.groups itself. Must be called with s.mu held; lock order
+// stays ProvisioningService.mu -> BindingStore.mu, unchanged.
+func (s *ProvisioningService) resyncAllGroupsLocked() {
+	if s.bindings == nil {
+		return
+	}
+	for _, g := range s.groups {
+		s.syncBindingLocked(g)
+	}
 }
 
 func randomID() (string, error) {
