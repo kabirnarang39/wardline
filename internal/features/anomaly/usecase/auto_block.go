@@ -25,8 +25,8 @@ func (e blockEntry) expired(now time.Time) bool {
 }
 
 // BlockChecker tracks strictly time-bounded per-(tenant, identity) blocks,
-// in-memory only. Satisfies Task 2's blocker interface (Block(tenantName,
-// identity, reason string)) structurally -- Detector depends on that
+// in-memory only. Satisfies Task 2's blocker interface (Block(identity,
+// tenantName, reason string)) structurally -- Detector depends on that
 // narrow interface, not on this concrete type.
 type BlockChecker struct {
 	cfg domain.AutoBlockConfig
@@ -43,10 +43,10 @@ func NewBlockChecker(cfg domain.AutoBlockConfig, now func() time.Time) *BlockChe
 	return &BlockChecker{cfg: cfg, now: now, blocked: make(map[string]blockEntry)}
 }
 
-// Block records (tenantName, identity) as blocked for
+// Block records (identity, tenantName) as blocked for
 // cfg.BlockDurationSeconds from now, with reason recorded for both the
 // proxy's audit entry and the dashboard's blocked-list view.
-func (b *BlockChecker) Block(tenantName, identity, reason string) {
+func (b *BlockChecker) Block(identity, tenantName, reason string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -54,11 +54,11 @@ func (b *BlockChecker) Block(tenantName, identity, reason string) {
 	b.blocked[tenantIdentityKey(tenantName, identity)] = blockEntry{until: until, reason: reason, tenant: tenantName, identity: identity}
 }
 
-// Check reports whether (tenantName, identity) may proceed at time now. A
+// Check reports whether (identity, tenantName) may proceed at time now. A
 // block whose TTL has already elapsed reads as "not blocked" without any
 // separate invalidation step -- every call compares now against the
 // stored until directly.
-func (b *BlockChecker) Check(tenantName, identity string, now time.Time) domain.BlockVerdict {
+func (b *BlockChecker) Check(identity, tenantName string, now time.Time) domain.BlockVerdict {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

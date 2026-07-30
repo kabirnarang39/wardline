@@ -806,7 +806,7 @@ type recordingBlocker struct {
 	calls []struct{ identity, reason string }
 }
 
-func (b *recordingBlocker) Block(tenantName, identity, reason string) {
+func (b *recordingBlocker) Block(identity, tenantName, reason string) {
 	b.calls = append(b.calls, struct{ identity, reason string }{identity, reason})
 }
 
@@ -843,13 +843,13 @@ func TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline(t *testing.T) 
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
 
-	if v := blocker.Check("acme", "alice", clock.now()); v.Allowed {
+	if v := blocker.Check("alice", "acme", clock.now()); v.Allowed {
 		t.Fatal("acme's alice should be auto-blocked after the wild burst")
 	}
 	// A DIFFERENT tenant's identically-named "alice", who has sent zero
 	// traffic at all, must be completely unaffected -- proves the block
 	// map is keyed by (tenant, identity), not identity alone.
-	if v := blocker.Check("widgets-inc", "alice", clock.now()); !v.Allowed {
+	if v := blocker.Check("alice", "widgets-inc", clock.now()); !v.Allowed {
 		t.Fatal("widgets-inc's alice must not be blocked by acme's alice's anomaly -- cross-tenant bleed")
 	}
 }
