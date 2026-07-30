@@ -137,12 +137,12 @@ func LoadAuthorizer(path string) (*StaticAuthorizer, error) {
 
 func (a *StaticAuthorizer) Authorize(identity, tenant string, perm domain.Permission) bool {
 	for _, b := range a.clusterRoleBindings {
-		if b.Subject == identity && a.roleHasPermission(b.RoleName, perm) {
+		if b.Subject == identity && a.RoleHasPermission(b.RoleName, perm) {
 			return true
 		}
 	}
 	for _, b := range a.roleBindings {
-		if b.Subject == identity && b.Tenant == tenant && a.roleHasPermission(b.RoleName, perm) {
+		if b.Subject == identity && b.Tenant == tenant && a.RoleHasPermission(b.RoleName, perm) {
 			return true
 		}
 	}
@@ -151,14 +151,19 @@ func (a *StaticAuthorizer) Authorize(identity, tenant string, perm domain.Permis
 
 func (a *StaticAuthorizer) IsGlobal(identity string, perm domain.Permission) bool {
 	for _, b := range a.clusterRoleBindings {
-		if b.Subject == identity && a.roleHasPermission(b.RoleName, perm) {
+		if b.Subject == identity && a.RoleHasPermission(b.RoleName, perm) {
 			return true
 		}
 	}
 	return false
 }
 
-func (a *StaticAuthorizer) roleHasPermission(roleName string, perm domain.Permission) bool {
+// RoleHasPermission reports whether roleName (as defined in this
+// StaticAuthorizer's roles, built-in or from rbac.yaml) grants perm.
+// Exported so rbac.usecase.CompositeAuthorizer can evaluate a role name
+// referenced by a SCIM-provisioned binding against the same role
+// definitions, without a second role registry.
+func (a *StaticAuthorizer) RoleHasPermission(roleName string, perm domain.Permission) bool {
 	role, ok := a.roles[roleName]
 	if !ok {
 		return false
