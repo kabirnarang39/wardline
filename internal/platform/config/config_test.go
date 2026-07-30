@@ -310,6 +310,36 @@ audit:
 	}
 }
 
+// TestLoad_BudgetTenantEmptyKeyRejected is an M7 regression test: an
+// empty-string tenant key in budget.tenants would apply the override to
+// any caller resolving to Tenant == "" -- exactly the pre-upgrade-token
+// tenant value (see I4) -- silently and unintentionally.
+func TestLoad_BudgetTenantEmptyKeyRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tenants:
+    "":
+      requests_per_window: 1
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when budget.tenants has an empty-string key")
+	}
+	if !strings.Contains(err.Error(), "budget.tenants must not have an empty-string tenant key") {
+		t.Errorf("expected a clear empty-key error message, got %q", err.Error())
+	}
+}
+
 // TestLoad_BudgetTenantValidOverrideAccepted proves a well-formed tenant
 // override still loads cleanly -- the new validation isn't over-strict.
 func TestLoad_BudgetTenantValidOverrideAccepted(t *testing.T) {

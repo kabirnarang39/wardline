@@ -292,6 +292,9 @@ func (c *Config) validate() error {
 		sort.Strings(tenantNames)
 		for _, name := range tenantNames {
 			t := c.Budget.Tenants[name]
+			if name == "" {
+				problems = append(problems, "budget.tenants must not have an empty-string tenant key")
+			}
 			if t.RequestsPerWindow <= 0 {
 				problems = append(problems, fmt.Sprintf("budget.tenants.%s.requests_per_window must be > 0 when features.budget_enforcement is true", name))
 			}
