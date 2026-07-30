@@ -285,26 +285,24 @@ func TestOPAEngine_TenantReachesRegoInput(t *testing.T) {
 }
 
 // TestOPAEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy proves the
-// new tenant input field is purely additive: a policy fixture that never
-// references input.tenant (allowDenySource, already used above) evaluates
-// identically whether or not Context.Tenant is set.
+// new tenant input field is purely additive: evaluating the exact same
+// Context (same identity, same tool) against a policy fixture that never
+// references input.tenant (allowDenySource, already used above) must
+// produce the identical Decision — same Effect AND same Reason — whether
+// Context.Tenant is unset or set to some value.
 func TestOPAEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T) {
 	e, err := opa.NewOPAEngine("policy.rego", []byte(allowDenySource))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
-	if got.Effect != domain.EffectAllow {
-		t.Errorf("expected allow (existing policy ignores tenant), got %q", got.Effect)
+	withoutTenant := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: ""})
+	withTenant := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
+	if withoutTenant != withTenant {
+		t.Errorf("expected identical Decision regardless of Tenant, got %+v (Tenant unset) vs %+v (Tenant=acme)", withoutTenant, withTenant)
 	}
-	if got.Reason != "matched read_file rule" {
-		t.Errorf("expected reason from rule, got %q", got.Reason)
-	}
-
-	got = e.Evaluate(domain.Context{Identity: "someone-else", Tool: "read_file", Tenant: "acme"})
-	if got.Effect != domain.EffectDeny {
-		t.Errorf("expected deny, got %q", got.Effect)
+	if withTenant.Effect != domain.EffectAllow {
+		t.Errorf("expected allow (existing policy ignores tenant), got %q", withTenant.Effect)
 	}
 }
 

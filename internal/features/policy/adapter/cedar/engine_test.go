@@ -325,23 +325,24 @@ func TestCedarEngine_TenantReachesContext(t *testing.T) {
 }
 
 // TestCedarEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy proves the
-// new context.tenant key is purely additive: a policy fixture that never
-// references context.tenant (allowDenySource, already used above)
-// evaluates identically whether or not Context.Tenant is set.
+// new context.tenant key is purely additive: evaluating the exact same
+// Context (same identity, same tool) against a policy fixture that never
+// references context.tenant (allowDenySource, already used above) must
+// produce the identical Decision — same Effect AND same Reason — whether
+// Context.Tenant is unset or set to some value.
 func TestCedarEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T) {
 	e, err := cedar.NewCedarEngine("policy.cedar", []byte(allowDenySource))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
-	if got.Effect != domain.EffectAllow {
-		t.Errorf("expected allow (existing policy ignores tenant), got %q (reason: %q)", got.Effect, got.Reason)
+	withoutTenant := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: ""})
+	withTenant := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
+	if withoutTenant != withTenant {
+		t.Errorf("expected identical Decision regardless of Tenant, got %+v (Tenant unset) vs %+v (Tenant=acme)", withoutTenant, withTenant)
 	}
-
-	got = e.Evaluate(domain.Context{Identity: "someone-else", Tool: "read_file", Tenant: "acme"})
-	if got.Effect != domain.EffectDeny {
-		t.Errorf("expected deny, got %q", got.Effect)
+	if withTenant.Effect != domain.EffectAllow {
+		t.Errorf("expected allow (existing policy ignores tenant), got %q (reason: %q)", withTenant.Effect, withTenant.Reason)
 	}
 }
 
