@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // TestInMemoryLimiter_EvictsExpiredBucketsOnSweep proves the periodic sweep
@@ -39,7 +41,7 @@ func TestInMemoryLimiter_EvictsExpiredBucketsOnSweep(t *testing.T) {
 	if got := len(l.buckets); got != 1 {
 		t.Fatalf("expected sweep to evict all stale buckets, leaving only same-id's bucket; got %d buckets", got)
 	}
-	if _, ok := l.buckets["same-id"]; !ok {
+	if _, ok := l.buckets[tenant.Key("", "same-id")]; !ok {
 		t.Fatal("expected same-id's own bucket to survive")
 	}
 }
