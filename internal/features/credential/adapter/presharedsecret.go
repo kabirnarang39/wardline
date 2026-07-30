@@ -63,11 +63,34 @@ func (b *Bootstrapper) Authenticate(secret string) (string, string, error) {
 // TenantOf looks up a registered identity's own tenant by name (not by
 // secret) -- used for the cross-tenant revoke check, which needs the
 // tenant of the identity being revoked, not of whoever is calling.
+//
+// bySecret is keyed by secret, so the same identity name can legitimately
+// appear more than once -- two credentials.yaml entries with name
+// "alice" and different tenants are two distinct map entries. Iterating
+// b.bySecret directly and returning on first match let map iteration's
+// randomized order make this security check a coin flip: the same call
+// could return "acme" or "widgets-inc" from one invocation to the next.
+// Collect every distinct tenant the name resolves to instead, and fail
+// closed -- return ("", false) -- on ambiguity; the caller (the
+// cross-tenant revoke check) already treats that as deny.
 func (b *Bootstrapper) TenantOf(identity string) (string, bool) {
+	var found string
+	matched := false
 	for _, entry := range b.bySecret {
-		if entry.identity == identity {
-			return entry.tenant, true
+		if entry.identity != identity {
+			continue
+		}
+		if !matched {
+			found = entry.tenant
+			matched = true
+			continue
+		}
+		if entry.tenant != found {
+			return "", false
 		}
 	}
-	return "", false
+	if !matched {
+		return "", false
+	}
+	return found, true
 }

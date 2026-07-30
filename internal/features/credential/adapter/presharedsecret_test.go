@@ -168,3 +168,41 @@ identities:
 		t.Error("expected ok=false for an identity that was never registered")
 	}
 }
+
+// TestTenantOf_AmbiguousIdentityFailsClosed is an I3 regression test.
+// bySecret is keyed by secret, so the same identity name ("alice") can
+// legitimately be registered in two different tenants -- two SCIM IdPs
+// both provisioning "alice", say. Before the fix, TenantOf iterated the
+// map directly and returned on first match, so which tenant it returned
+// depended on Go's randomized map iteration order -- a coin flip for the
+// cross-tenant revoke check that is TenantOf's only caller. It must now
+// fail closed: ("", false), every single call, deterministically.
+func TestTenantOf_AmbiguousIdentityFailsClosed(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: alice
+    secret: alice-acme-secret
+    tenant: acme
+  - name: alice
+    secret: alice-widgets-secret
+    tenant: widgets-inc
+  - name: bob
+    secret: bob-secret
+    tenant: acme
+`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 50; i++ {
+		if got, ok := b.TenantOf("alice"); ok {
+			t.Fatalf("call %d: expected ambiguous identity to fail closed, got (%q, true)", i, got)
+		}
+	}
+	// An unambiguous name in the same Bootstrapper must still resolve
+	// normally -- the fail-closed path must not over-fire.
+	if got, ok := b.TenantOf("bob"); !ok || got != "acme" {
+		t.Fatalf("got (%q, %v), want (\"acme\", true)", got, ok)
+	}
+}
