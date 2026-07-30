@@ -315,10 +315,32 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	zRate := st.mlStats.rate.ZScore(rate)
 	zDiversity := st.mlStats.diversity.ZScore(diversity)
 	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
+	// deny_ratio's block-gating z-score additionally floors the effective
+	// stddev at this window's own binomial standard error,
+	// sqrt(p*(1-p)/toolCalls) with p the baseline mean -- a ratio's
+	// sampling noise depends on how many real tool calls it was computed
+	// from, and the existing floors (calibrated from the baseline's
+	// typical window size) have no way to know this window's toolCalls is
+	// far smaller. 1 deny out of 10 real tool calls against a baseline
+	// built from 200-call windows is statistically indistinguishable from
+	// noise (se=0.044, z=1.84) even though the raw ratio (10%) is 5x the
+	// baseline mean (2%). This is separate from zDeny (used for the
+	// ml_score log record and the anomalous/fold-conditionally decision) so
+	// a small, noisy window still gets logged as telemetry -- it just
+	// can't gate an auto-block. Below MinCalls real tool calls specifically
+	// (as distinct from the existing MinCalls gate on total, which
+	// passthrough traffic inflates without adding a single tool call),
+	// there's no reliable signal at all: treated as 0.
+	var zDenyBlock float64
+	if st.prev.toolCalls >= d.cfg.MLScore.MinCalls {
+		p := st.mlStats.denyRatio.mean
+		se := math.Sqrt(p * (1 - p) / float64(st.prev.toolCalls))
+		zDenyBlock = st.mlStats.denyRatio.ZScoreFloored(denyRatio, se)
+	}
 	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
 
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
-	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDeny, zInterArrival)
+	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival)
 	anomalous := score > d.cfg.MLScore.ScoreThreshold
 
 	// ponytail: only fold a window's raw values into the baseline when the
@@ -390,16 +412,18 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // decline in any of these (quieter traffic, fewer denials, less
 // diversity, slower calls) is not a threat signal auto-block exists to
 // catch -- maxAbsZ (used for the ml_score log record) still surfaces it
-// for visibility, but it must never gate a Block call. The result is
-// floored at 0: if every feature moved in the benign direction, there is
-// no case for blocking at all, not a large negative "score."
-func maxHarmfulZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) {
+// for visibility, but it must never gate a Block call. zDenyBlock is
+// deny_ratio's block-gating variant (see checkMLScore's comment above
+// it), not the raw zDeny used for logging. The result is floored at 0: if
+// every feature moved in the benign direction, there is no case for
+// blocking at all, not a large negative "score."
+func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival float64) (float64, string) {
 	best := zRate
 	feature := "call_rate"
 	if v := zDiversity; v > best {
 		best, feature = v, "tool_diversity"
 	}
-	if v := zDeny; v > best {
+	if v := zDenyBlock; v > best {
 		best, feature = v, "deny_ratio"
 	}
 	if v := -zInterArrival; v > best {
