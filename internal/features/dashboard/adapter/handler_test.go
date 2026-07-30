@@ -22,12 +22,16 @@ type fakeAuditSource struct {
 	entries []domain.LiveEntry
 }
 
-func (f *fakeAuditSource) Since(afterID int64, limit int) []domain.LiveEntry {
+func (f *fakeAuditSource) Since(afterID int64, limit int, tenantFilter string) []domain.LiveEntry {
 	var out []domain.LiveEntry
 	for _, e := range f.entries {
-		if e.ID > afterID {
-			out = append(out, e)
+		if e.ID <= afterID {
+			continue
 		}
+		if tenantFilter != "" && e.Tenant != tenantFilter {
+			continue
+		}
+		out = append(out, e)
 	}
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
@@ -47,8 +51,17 @@ type fakeAnomalySource struct {
 	entries []usecase.Alert
 }
 
-func (f *fakeAnomalySource) Since(afterID int64, limit int) []usecase.Alert {
-	return f.entries
+func (f *fakeAnomalySource) Since(afterID int64, limit int, tenantFilter string) []usecase.Alert {
+	if tenantFilter == "" {
+		return f.entries
+	}
+	var out []usecase.Alert
+	for _, a := range f.entries {
+		if a.Tenant == tenantFilter {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 type fakeFederationSource struct {
@@ -63,8 +76,29 @@ type fakeBlockedSource struct {
 	entries []anomalydomain.BlockedEntry
 }
 
-func (f *fakeBlockedSource) List() []anomalydomain.BlockedEntry {
-	return f.entries
+func (f *fakeBlockedSource) List(tenantFilter string) []anomalydomain.BlockedEntry {
+	if tenantFilter == "" {
+		return f.entries
+	}
+	var out []anomalydomain.BlockedEntry
+	for _, e := range f.entries {
+		if e.Tenant == tenantFilter {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// fakeTenantScopeResolver is a settable stub for adapter.TenantScopeResolver
+// -- returns tenant for every request regardless of what the request
+// itself carries, matching the real closure's semantics (derived from the
+// resolved caller identity only).
+type fakeTenantScopeResolver struct {
+	tenant string
+}
+
+func (f fakeTenantScopeResolver) TenantFilter(r *http.Request) string {
+	return f.tenant
 }
 
 func testAssets() fstest.MapFS {
@@ -79,7 +113,7 @@ func TestHandler_AuditEndpoint_ReturnsJSON(t *testing.T) {
 		{ID: 1, Identity: "agent-1", Tool: "read_file", Decision: "allow"},
 		{ID: 2, Identity: "agent-2", Tool: "write_file", Decision: "deny"},
 	}}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=0&limit=10", nil)
 	rec := httptest.NewRecorder()
@@ -99,7 +133,7 @@ func TestHandler_AuditEndpoint_ReturnsJSON(t *testing.T) {
 
 func TestHandler_AuditEndpoint_BadQueryParamsDefaultSanely(t *testing.T) {
 	audit := &fakeAuditSource{entries: []domain.LiveEntry{{ID: 1, Identity: "agent-1"}}}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=not-a-number&limit=also-not-a-number", nil)
 	rec := httptest.NewRecorder()
@@ -116,7 +150,7 @@ func TestHandler_AuditEndpoint_LimitClampedToMax(t *testing.T) {
 		entries[i] = domain.LiveEntry{ID: int64(i + 1), Identity: "agent-1"}
 	}
 	audit := &fakeAuditSource{entries: entries}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=0&limit=5000", nil)
 	rec := httptest.NewRecorder()
@@ -136,7 +170,7 @@ func TestHandler_AuditEndpoint_LimitClampedToMax(t *testing.T) {
 
 func TestHandler_PolicyEndpoint_ReturnsJSON(t *testing.T) {
 	policy := domain.PolicyInfo{Backend: "yaml", Source: "rules: []\ndefault: deny\n"}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, policy, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, policy, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/policy", nil)
 	rec := httptest.NewRecorder()
@@ -156,7 +190,7 @@ func TestHandler_PolicyEndpoint_ReturnsJSON(t *testing.T) {
 
 func TestHandler_StatusEndpoint_ReturnsJSON(t *testing.T) {
 	status := domain.StatusInfo{Version: "0.5.0-dev", UptimeSeconds: 42, Listen: ":8080", Upstream: "http://localhost:9000", Features: map[string]bool{"web_ui": true}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{status: status}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{status: status}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -175,7 +209,7 @@ func TestHandler_StatusEndpoint_ReturnsJSON(t *testing.T) {
 }
 
 func TestHandler_ServesKnownStaticAsset(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/app.js", nil)
 	rec := httptest.NewRecorder()
@@ -190,7 +224,7 @@ func TestHandler_ServesKnownStaticAsset(t *testing.T) {
 }
 
 func TestHandler_UnknownPathFallsBackToIndexHTML(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/some/unknown/client/route", nil)
 	rec := httptest.NewRecorder()
@@ -205,7 +239,7 @@ func TestHandler_UnknownPathFallsBackToIndexHTML(t *testing.T) {
 }
 
 func TestHandler_JSONEndpoints_RejectNonGETMethods(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	for _, path := range []string{"/dashboard/api/audit", "/dashboard/api/policy", "/dashboard/api/status"} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
@@ -219,7 +253,7 @@ func TestHandler_JSONEndpoints_RejectNonGETMethods(t *testing.T) {
 }
 
 func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	for _, path := range []string{"/dashboard/api/audit", "/dashboard/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -236,7 +270,7 @@ func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
 }
 
 func TestHandler_RootServesIndexHTML(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	rec := httptest.NewRecorder()
@@ -260,7 +294,7 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 			Entry:     auditdomain.Entry{Tool: "read_file"},
 		}},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies", nil)
 	rec := httptest.NewRecorder()
@@ -279,7 +313,7 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 }
 
 func TestHandler_HandleAnomalies_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies", nil)
 	rec := httptest.NewRecorder()
@@ -298,7 +332,7 @@ func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *test
 			InstanceIDs: []string{"eu-cluster", "us-cluster"},
 		}},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
 	rec := httptest.NewRecorder()
@@ -326,7 +360,7 @@ func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *test
 }
 
 func TestHandler_HandleFederationCorrelated_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
 	rec := httptest.NewRecorder()
@@ -342,7 +376,7 @@ func TestHandler_HandleBlocked_ReturnsListAsJSON(t *testing.T) {
 	blocked := &fakeBlockedSource{entries: []anomalydomain.BlockedEntry{
 		{Identity: "alice", BlockedUntil: until, Reason: "rate_spike"},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, blocked)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked", nil)
 	rec := httptest.NewRecorder()
@@ -361,7 +395,7 @@ func TestHandler_HandleBlocked_ReturnsListAsJSON(t *testing.T) {
 }
 
 func TestHandler_HandleBlocked_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked", nil)
 	rec := httptest.NewRecorder()
@@ -369,5 +403,155 @@ func TestHandler_HandleBlocked_NilSourceReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 when blocked is not wired (feature off), got %d", rec.Code)
+	}
+}
+
+// --- Task 23: tenant-filtered dashboard views ---
+
+func tenantScopedFixtures() (*fakeAuditSource, *fakeAnomalySource, *fakeBlockedSource) {
+	audit := &fakeAuditSource{entries: []domain.LiveEntry{
+		{ID: 1, Identity: "alice", Tenant: "acme", Tool: "read_file"},
+		{ID: 2, Identity: "bob", Tenant: "widgets-inc", Tool: "write_file"},
+	}}
+	anomalies := &fakeAnomalySource{entries: []usecase.Alert{
+		{ID: 1, Anomaly: anomalydomain.Anomaly{Identity: "alice", Tenant: "acme", Kind: anomalydomain.KindNovelTool}},
+		{ID: 2, Anomaly: anomalydomain.Anomaly{Identity: "bob", Tenant: "widgets-inc", Kind: anomalydomain.KindRateSpike}},
+	}}
+	blocked := &fakeBlockedSource{entries: []anomalydomain.BlockedEntry{
+		{Identity: "alice", Tenant: "acme", Reason: "rate_spike"},
+		{Identity: "bob", Tenant: "widgets-inc", Reason: "rate_spike"},
+	}}
+	return audit, anomalies, blocked
+}
+
+// TestHandler_TenantScopedCaller_OnlySeesOwnTenant proves property (1):
+// a tenant-scoped caller (scope.TenantFilter returns a non-empty tenant)
+// never sees another tenant's audit, anomaly, or blocked entries across
+// every endpoint Task 23 touches.
+func TestHandler_TenantScopedCaller_OnlySeesOwnTenant(t *testing.T) {
+	audit, anomalies, blocked := tenantScopedFixtures()
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var gotAudit []domain.LiveEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &gotAudit); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(gotAudit) != 1 || gotAudit[0].Identity != "alice" {
+		t.Fatalf("tenant-scoped caller's /api/audit = %+v, want only acme's alice entry", gotAudit)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var gotAnomalies []domain.AnomalyEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &gotAnomalies); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(gotAnomalies) != 1 || gotAnomalies[0].Identity != "alice" {
+		t.Fatalf("tenant-scoped caller's /api/anomalies = %+v, want only acme's alice entry", gotAnomalies)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var gotBlocked []anomalydomain.BlockedEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &gotBlocked); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(gotBlocked) != 1 || gotBlocked[0].Identity != "alice" {
+		t.Fatalf("tenant-scoped caller's /api/anomalies/blocked = %+v, want only acme's alice entry", gotBlocked)
+	}
+}
+
+// TestHandler_GloballyGrantedCaller_SeesAllTenants proves property (2):
+// a globally-granted caller (scope.TenantFilter returns "") sees every
+// tenant's entries, unfiltered -- today's behavior, preserved.
+func TestHandler_GloballyGrantedCaller_SeesAllTenants(t *testing.T) {
+	audit, anomalies, blocked := tenantScopedFixtures()
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: ""})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var gotAudit []domain.LiveEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &gotAudit); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(gotAudit) != 2 {
+		t.Fatalf("globally-granted caller's /api/audit = %+v, want both tenants' entries", gotAudit)
+	}
+}
+
+// TestHandler_NilScopeResolver_Unfiltered proves rbac-off parity: when
+// Handler is constructed with a nil TenantScopeResolver (rbac disabled
+// entirely, matching every pre-Task-23 NewHandler call site in this
+// file), every endpoint stays unfiltered exactly as before this task.
+func TestHandler_NilScopeResolver_Unfiltered(t *testing.T) {
+	audit, anomalies, blocked := tenantScopedFixtures()
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var gotAudit []domain.LiveEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &gotAudit); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(gotAudit) != 2 {
+		t.Fatalf("nil-scope /api/audit = %+v, want both tenants' entries (rbac off => unfiltered)", gotAudit)
+	}
+}
+
+// TestHandler_TenantFilterIgnoresClientSuppliedTenantParam is the core
+// IDOR regression test: a tenant-scoped caller cannot widen or redirect
+// their own filter by supplying a "tenant" query parameter (or any other
+// client-controlled input) naming a different tenant. The filter must
+// come only from scope.TenantFilter (derived from the RBAC-resolved
+// caller identity), never from r.URL.Query() or headers.
+func TestHandler_TenantFilterIgnoresClientSuppliedTenantParam(t *testing.T) {
+	audit, anomalies, blocked := tenantScopedFixtures()
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?tenant=widgets-inc", nil)
+	req.Header.Set("X-Tenant", "widgets-inc")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got []domain.LiveEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(got) != 1 || got[0].Identity != "alice" {
+		t.Fatalf("client-supplied tenant param/header must be ignored -- got %+v, want only acme's alice entry", got)
+	}
+}
+
+// TestHandler_FederationRoute_StaysUnfiltered proves property (3): the
+// federation correlated-alerts view is untouched by Task 23 -- it has no
+// tenantFilter parameter at all (FederationSource.Since's signature is
+// unchanged) and returns every tenant's correlated alerts regardless of
+// what scope.TenantFilter resolves to, matching the design spec's
+// explicit call-out that federation's own tenant filtering is a future
+// cycle's work, not this task's.
+func TestHandler_FederationRoute_StaysUnfiltered(t *testing.T) {
+	federation := &fakeFederationSource{entries: []federationusecase.CorrelatedAlertEntry{
+		{ID: 1, CorrelatedAlert: federationdomain.CorrelatedAlert{Fingerprint: "fp1", InstanceIDs: []string{"eu-cluster"}}},
+		{ID: 2, CorrelatedAlert: federationdomain.CorrelatedAlert{Fingerprint: "fp2", InstanceIDs: []string{"us-cluster"}}},
+	}}
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, fakeTenantScopeResolver{tenant: "acme"})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got []domain.CorrelatedAlertEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("federation route must stay unfiltered even with a tenant-scoped caller -- got %+v, want both entries", got)
 	}
 }

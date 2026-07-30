@@ -23,9 +23,14 @@ import (
 // Returns anomalyusecase.Alert (not plain anomalydomain.Anomaly) because
 // each Alert's ID is what lets PublishOnce advance its read cursor --
 // afterID=0, limit=0 mean "from the start"/"no cap", matching
-// AlertBuffer.Since's own semantics.
+// AlertBuffer.Since's own semantics. The tenantFilter parameter added to
+// AlertBuffer.Since for dashboard tenant isolation (Task 23) is always
+// passed as "" here -- Publisher aggregates every local tenant's
+// anomalies into cross-instance summaries; per-tenant filtering of the
+// federation view is an explicit future-cycle item, not this task's
+// scope.
 type AlertReader interface {
-	Since(afterID int64, limit int) []anomalyusecase.Alert
+	Since(afterID int64, limit int, tenantFilter string) []anomalyusecase.Alert
 }
 
 // BatchSender delivers one SignedSummaryBatch to one peer endpoint.
@@ -92,7 +97,7 @@ func rsaSignPSS(payload []byte, key *rsa.PrivateKey) ([]byte, error) {
 // computed, instead of recomputing Aggregate a second time and risking
 // the two windows drifting apart.
 func (p *Publisher) PublishOnce(ctx context.Context, now time.Time) ([]domain.AnomalySummary, []error) {
-	alerts := p.reader.Since(p.lastReadID, 0)
+	alerts := p.reader.Since(p.lastReadID, 0, "")
 	if len(alerts) == 0 {
 		return nil, nil
 	}

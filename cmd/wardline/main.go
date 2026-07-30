@@ -577,7 +577,31 @@ func runServe(logger *slog.Logger, args []string) {
 		if blockChecker != nil {
 			blockedSource = blockChecker
 		}
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource)
+
+		// scopeResolver derives each dashboard request's tenant filter from
+		// the RBAC-resolved caller identity only -- never from anything the
+		// request itself carries. nil (rbac off) keeps every view unfiltered,
+		// identical to pre-Task-23 behavior. identityAuth is captured by
+		// value here (not by pointer, unlike newRevokeAuthorizer's use of it)
+		// because this closure and RequirePermission's own use of identityAuth
+		// just below are both built after every reassignment of that variable
+		// earlier in runServe (see bearer-identity wiring above) has already
+		// happened -- there is no later reassignment for it to miss.
+		var scopeResolver dashboardadapter.TenantScopeResolver
+		if rbacEnabled {
+			scopeResolver = tenantScopeResolverFunc(func(r *http.Request) string {
+				who, callerTenant, err := identityAuth.Authenticate(r)
+				if err != nil {
+					return callerTenant // unreachable in practice -- RequirePermission already rejected an auth failure before this runs
+				}
+				if rbacChecker.IsGlobal(who, rbacdomain.PermissionDashboardView) {
+					return ""
+				}
+				return callerTenant
+			})
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -774,6 +798,14 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 type revokeAuthorizerFunc func(r *http.Request) bool
 
 func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
+
+// tenantScopeResolverFunc adapts a plain function to
+// dashboardadapter.TenantScopeResolver, matching revokeAuthorizerFunc's
+// pattern immediately above -- the scopeResolver closure built in
+// runServe doesn't need its own named type there either.
+type tenantScopeResolverFunc func(r *http.Request) string
+
+func (f tenantScopeResolverFunc) TenantFilter(r *http.Request) string { return f(r) }
 
 // newRevokeAuthorizer builds the RevokeAuthorizer wired into
 // /credentials/revoke when rbac is on: a non-loopback caller is allowed
