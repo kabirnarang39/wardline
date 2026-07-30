@@ -289,6 +289,7 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 		{ID: 1, Anomaly: anomalydomain.Anomaly{
 			Timestamp: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC),
 			Identity:  "alice",
+			Tenant:    "acme",
 			Kind:      anomalydomain.KindNovelTool,
 			Detail:    "first call from this identity to tool read_file",
 			Entry:     auditdomain.Entry{Tool: "read_file"},
@@ -307,7 +308,9 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if len(got) != 1 || got[0].Identity != "alice" || got[0].Kind != "novel_tool" || got[0].Tool != "read_file" {
+	// I5 regression: Tenant must round-trip through the wire shape, not
+	// be dropped even though it's available on the source Alert.
+	if len(got) != 1 || got[0].Identity != "alice" || got[0].Tenant != "acme" || got[0].Kind != "novel_tool" || got[0].Tool != "read_file" {
 		t.Errorf("unexpected decoded response: %+v", got)
 	}
 }
