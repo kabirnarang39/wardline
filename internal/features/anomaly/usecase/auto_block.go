@@ -74,8 +74,11 @@ func (b *BlockChecker) Check(tenantName, identity string, now time.Time) domain.
 // like it does in Check, rather than lingering in the dashboard's view for
 // up to a full GC interval after it actually expired (StartBlockGC's
 // interval is memory hygiene for the map, not a promise about what List
-// shows).
-func (b *BlockChecker) List() []domain.BlockedEntry {
+// shows). tenantFilter == "" means unfiltered (today's behavior, and the
+// only behavior when rbac is off or the caller holds a global grant); a
+// non-empty value drops every entry whose tenant doesn't match it
+// exactly.
+func (b *BlockChecker) List(tenantFilter string) []domain.BlockedEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -83,6 +86,9 @@ func (b *BlockChecker) List() []domain.BlockedEntry {
 	entries := make([]domain.BlockedEntry, 0, len(b.blocked))
 	for _, e := range b.blocked {
 		if e.expired(now) {
+			continue
+		}
+		if tenantFilter != "" && e.tenant != tenantFilter {
 			continue
 		}
 		entries = append(entries, domain.BlockedEntry{Identity: e.identity, Tenant: e.tenant, BlockedUntil: e.until, Reason: e.reason})

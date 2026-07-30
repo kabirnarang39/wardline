@@ -17,7 +17,7 @@ func TestBlockGC_DropsExpiredEntries(t *testing.T) {
 	current = current.Add(2 * time.Hour) // well past both the block TTL and any reasonable GC interval
 	usecase.GCBlocksOnce(b, current)
 
-	if len(b.List()) != 0 {
+	if len(b.List("")) != 0 {
 		t.Fatal("expected the expired block entry to be dropped after GC")
 	}
 }
@@ -31,7 +31,7 @@ func TestBlockGC_KeepsActiveEntries(t *testing.T) {
 	current = current.Add(1 * time.Minute) // well within the 1h block
 	usecase.GCBlocksOnce(b, current)
 
-	if len(b.List()) != 1 {
+	if len(b.List("")) != 1 {
 		t.Fatal("expected the still-active block entry to survive GC")
 	}
 }

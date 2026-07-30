@@ -9,6 +9,7 @@ type LiveEntry struct {
 	ID        int64
 	Timestamp time.Time
 	Identity  string
+	Tenant    string
 	Tool      string
 	Decision  string
 	LatencyMS int64

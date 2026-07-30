@@ -54,8 +54,13 @@ func (b *AlertBuffer) Add(a domain.Anomaly) {
 // 0 means no cap). Identical semantics to
 // dashboard/usecase.RingBuffer.Since, including the same restart
 // handling: an afterID ahead of nextID (Wardline restarted since the
-// client last polled) is treated as "from the start".
-func (b *AlertBuffer) Since(afterID int64, limit int) []Alert {
+// client last polled) is treated as "from the start". tenantFilter == ""
+// means unfiltered (federation's Publisher, which aggregates every local
+// tenant's anomalies for cross-instance summaries, always passes "";
+// the dashboard's AnomalySource passes the RBAC-resolved caller's own
+// tenant, or "" for a globally-granted caller) -- a non-empty value
+// drops every entry whose Tenant doesn't match it exactly.
+func (b *AlertBuffer) Since(afterID int64, limit int, tenantFilter string) []Alert {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -65,9 +70,13 @@ func (b *AlertBuffer) Since(afterID int64, limit int) []Alert {
 
 	out := make([]Alert, 0, len(b.entries))
 	for _, e := range b.entries {
-		if e.ID > afterID {
-			out = append(out, e)
+		if e.ID <= afterID {
+			continue
 		}
+		if tenantFilter != "" && e.Tenant != tenantFilter {
+			continue
+		}
+		out = append(out, e)
 	}
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]

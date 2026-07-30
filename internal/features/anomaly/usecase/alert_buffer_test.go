@@ -12,7 +12,7 @@ func TestAlertBuffer_SinceFromStartReturnsEverything(t *testing.T) {
 	b.Add(domain.Anomaly{Identity: "alice", Kind: domain.KindNovelTool})
 	b.Add(domain.Anomaly{Identity: "bob", Kind: domain.KindRateSpike})
 
-	got := b.Since(0, 0)
+	got := b.Since(0, 0, "")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(got))
 	}
@@ -23,8 +23,8 @@ func TestAlertBuffer_SinceReturnsOnlyNewerEntries(t *testing.T) {
 	b.Add(domain.Anomaly{Identity: "alice", Kind: domain.KindNovelTool})
 	b.Add(domain.Anomaly{Identity: "bob", Kind: domain.KindRateSpike})
 
-	first := b.Since(0, 0)[0]
-	got := b.Since(first.ID, 0)
+	first := b.Since(0, 0, "")[0]
+	got := b.Since(first.ID, 0, "")
 	if len(got) != 1 || got[0].Identity != "bob" {
 		t.Fatalf("expected only bob's entry after the first ID, got %+v", got)
 	}
@@ -36,7 +36,7 @@ func TestAlertBuffer_EvictsOldestPastCapacity(t *testing.T) {
 	b.Add(domain.Anomaly{Identity: "two"})
 	b.Add(domain.Anomaly{Identity: "three"})
 
-	got := b.Since(0, 0)
+	got := b.Since(0, 0, "")
 	if len(got) != 2 {
 		t.Fatalf("expected capacity to bound the buffer at 2, got %d", len(got))
 	}
@@ -51,7 +51,7 @@ func TestAlertBuffer_LimitCapsResultToMostRecent(t *testing.T) {
 	b.Add(domain.Anomaly{Identity: "two"})
 	b.Add(domain.Anomaly{Identity: "three"})
 
-	got := b.Since(0, 2)
+	got := b.Since(0, 2, "")
 	if len(got) != 2 || got[0].Identity != "two" || got[1].Identity != "three" {
 		t.Fatalf("expected the 2 most recent entries, got %+v", got)
 	}
@@ -61,8 +61,24 @@ func TestAlertBuffer_AfterIDAheadOfNextIDTreatedAsFromStart(t *testing.T) {
 	b := usecase.NewAlertBuffer(10)
 	b.Add(domain.Anomaly{Identity: "one"})
 
-	got := b.Since(999, 0)
+	got := b.Since(999, 0, "")
 	if len(got) != 1 {
 		t.Fatalf("expected an afterID ahead of nextID to reset to \"from start\", got %d entries", len(got))
+	}
+}
+
+func TestAlertBuffer_SinceFiltersByTenant(t *testing.T) {
+	b := usecase.NewAlertBuffer(10)
+	b.Add(domain.Anomaly{Identity: "alice", Tenant: "acme", Kind: domain.KindNovelTool})
+	b.Add(domain.Anomaly{Identity: "bob", Tenant: "widgets-inc", Kind: domain.KindRateSpike})
+
+	got := b.Since(0, 0, "acme")
+	if len(got) != 1 || got[0].Identity != "alice" {
+		t.Fatalf("tenant-filtered Since = %+v, want only alice's acme entry", got)
+	}
+
+	got = b.Since(0, 0, "")
+	if len(got) != 2 {
+		t.Fatalf("unfiltered Since = %+v, want both entries", got)
 	}
 }

@@ -19,7 +19,7 @@ type fakeAlertReader struct {
 	alerts []anomalyusecase.Alert
 }
 
-func (f *fakeAlertReader) Since(afterID int64, limit int) []anomalyusecase.Alert {
+func (f *fakeAlertReader) Since(afterID int64, limit int, tenantFilter string) []anomalyusecase.Alert {
 	var out []anomalyusecase.Alert
 	for _, a := range f.alerts {
 		if a.ID > afterID {

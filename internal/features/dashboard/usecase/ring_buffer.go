@@ -59,6 +59,7 @@ func FromAuditEntry(id int64, e auditdomain.Entry) domain.LiveEntry {
 		ID:        id,
 		Timestamp: e.Timestamp,
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Tool:      e.Tool,
 		Decision:  e.Decision,
 		LatencyMS: e.LatencyMS,
@@ -70,8 +71,14 @@ func FromAuditEntry(id int64, e auditdomain.Entry) domain.LiveEntry {
 // Since returns entries with ID > afterID, oldest first, capped to the
 // most recent `limit` of them (afterID=0 means "from the start" — used
 // for a client's initial load; a positive afterID is used for polling
-// "what's new since I last asked"). limit <= 0 means no cap.
-func (b *RingBuffer) Since(afterID int64, limit int) []domain.LiveEntry {
+// "what's new since I last asked"). limit <= 0 means no cap. tenantFilter
+// == "" means unfiltered (today's behavior, and the only behavior when
+// rbac is off or the caller holds a global grant); a non-empty value
+// drops every entry whose Tenant doesn't match it exactly. The caller
+// (dashboard/adapter.Handler) is the only place tenantFilter may
+// originate, and it must derive it from the RBAC-resolved caller
+// identity only -- never from a request parameter.
+func (b *RingBuffer) Since(afterID int64, limit int, tenantFilter string) []domain.LiveEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -85,9 +92,13 @@ func (b *RingBuffer) Since(afterID int64, limit int) []domain.LiveEntry {
 
 	out := make([]domain.LiveEntry, 0, len(b.entries))
 	for _, e := range b.entries {
-		if e.ID > afterID {
-			out = append(out, e)
+		if e.ID <= afterID {
+			continue
 		}
+		if tenantFilter != "" && e.Tenant != tenantFilter {
+			continue
+		}
+		out = append(out, e)
 	}
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]

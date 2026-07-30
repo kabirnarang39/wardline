@@ -46,7 +46,7 @@ func TestRingBuffer_SinceReturnsOnlyNewer(t *testing.T) {
 	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now}) // ID 2
 	b.Publish(auditdomain.Entry{Identity: "c", Timestamp: now}) // ID 3
 
-	got := b.Since(1, 10)
+	got := b.Since(1, 10, "")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries after ID 1, got %d", len(got))
 	}
@@ -61,7 +61,7 @@ func TestRingBuffer_SinceZeroReturnsAll(t *testing.T) {
 	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now})
 	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now})
 
-	got := b.Since(0, 10)
+	got := b.Since(0, 10, "")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(got))
 	}
@@ -77,7 +77,7 @@ func TestRingBuffer_SinceAfterIDAheadOfNextIDReturnsAll(t *testing.T) {
 	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now}) // ID 1
 	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now}) // ID 2
 
-	got := b.Since(9999, 10)
+	got := b.Since(9999, 10, "")
 	if len(got) != 2 {
 		t.Fatalf("expected all 2 currently-buffered entries when afterID > nextID, got %d", len(got))
 	}
@@ -93,7 +93,7 @@ func TestRingBuffer_SinceRespectsLimit_KeepsMostRecent(t *testing.T) {
 		b.Publish(auditdomain.Entry{Identity: id, Timestamp: now})
 	}
 
-	got := b.Since(0, 2)
+	got := b.Since(0, 2, "")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries (limit), got %d", len(got))
 	}
@@ -109,7 +109,7 @@ func TestRingBuffer_EvictsOldestPastCapacity(t *testing.T) {
 		b.Publish(auditdomain.Entry{Identity: id, Timestamp: now})
 	}
 
-	got := b.Since(0, 10)
+	got := b.Since(0, 10, "")
 	if len(got) != 3 {
 		t.Fatalf("expected buffer capped at 3, got %d", len(got))
 	}
@@ -134,12 +134,12 @@ func TestRingBuffer_ConcurrentPublishAndSince(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = b.Since(0, 10)
+			_ = b.Since(0, 10, "")
 		}()
 	}
 	wg.Wait()
 
-	got := b.Since(0, 1000)
+	got := b.Since(0, 1000, "")
 	if len(got) != 50 {
 		t.Errorf("expected 50 published entries, got %d", len(got))
 	}
@@ -151,7 +151,7 @@ func TestRingBuffer_ZeroCapacityDoesNotPanic(t *testing.T) {
 	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now})
 	b.Publish(auditdomain.Entry{Identity: "b", Timestamp: now})
 
-	got := b.Since(0, 10)
+	got := b.Since(0, 10, "")
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entry in capacity-1 buffer, got %d", len(got))
 	}
@@ -165,8 +165,24 @@ func TestRingBuffer_NegativeCapacityDoesNotPanic(t *testing.T) {
 	now := time.Now()
 	b.Publish(auditdomain.Entry{Identity: "a", Timestamp: now})
 
-	got := b.Since(0, 10)
+	got := b.Since(0, 10, "")
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entry in capacity-1 buffer, got %d", len(got))
+	}
+}
+
+func TestRingBuffer_SinceFiltersByTenant(t *testing.T) {
+	b := usecase.NewRingBuffer(10)
+	b.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "search"})
+	b.Publish(auditdomain.Entry{Identity: "bob", Tenant: "widgets-inc", Tool: "search"})
+
+	got := b.Since(0, 0, "acme")
+	if len(got) != 1 || got[0].Identity != "alice" {
+		t.Fatalf("tenant-filtered Since = %+v, want only alice's acme entry", got)
+	}
+
+	got = b.Since(0, 0, "")
+	if len(got) != 2 {
+		t.Fatalf("unfiltered Since = %+v, want both entries", got)
 	}
 }

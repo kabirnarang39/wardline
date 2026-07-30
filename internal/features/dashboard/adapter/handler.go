@@ -16,9 +16,11 @@ import (
 // AuditSource is the subset of RingBuffer's behavior Handler depends on —
 // a narrow interface so tests can supply a fake without importing the
 // real usecase package, matching the BudgetChecker pattern in
-// proxy/adapter/handler.go.
+// proxy/adapter/handler.go. tenantFilter == "" means unfiltered; Handler
+// derives it once per request (see tenantFilter method below) and never
+// takes it from anything the client sends.
 type AuditSource interface {
-	Since(afterID int64, limit int) []domain.LiveEntry
+	Since(afterID int64, limit int, tenantFilter string) []domain.LiveEntry
 }
 
 // StatusSource is the subset of StatusProvider's behavior Handler depends
@@ -36,7 +38,7 @@ type StatusSource interface {
 // still converts to this package's own domain.AnomalyEntry before
 // writing, so the endpoint's wire shape is not tied to that type.
 type AnomalySource interface {
-	Since(afterID int64, limit int) []anomalyusecase.Alert
+	Since(afterID int64, limit int, tenantFilter string) []anomalyusecase.Alert
 }
 
 // FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
@@ -48,7 +50,21 @@ type FederationSource interface {
 // BlockedSource is the subset of anomaly/usecase.BlockChecker's behavior
 // Handler depends on.
 type BlockedSource interface {
-	List() []anomalydomain.BlockedEntry
+	List(tenantFilter string) []anomalydomain.BlockedEntry
+}
+
+// TenantScopeResolver derives the effective tenant filter for the
+// caller of a request: empty string means "no filter" (a global,
+// ClusterRoleBinding-scoped caller, or rbac off entirely); a non-empty
+// value scopes every view to that tenant only. Wired only when rbac is
+// on (see main.go) -- nil means "always unfiltered," preserving today's
+// behavior exactly when rbac is off. The tenant filter must NEVER be
+// derived from anything the client supplies (a query parameter or
+// header) -- only from the RBAC-resolved caller identity -- or a
+// tenant-scoped caller could simply edit the request to see another
+// tenant's data (IDOR).
+type TenantScopeResolver interface {
+	TenantFilter(r *http.Request) string
 }
 
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
@@ -72,6 +88,7 @@ type Handler struct {
 	anomalies  AnomalySource
 	federation FederationSource
 	blocked    BlockedSource
+	scope      TenantScopeResolver
 	mux        *http.ServeMux
 }
 
@@ -85,9 +102,11 @@ type Handler struct {
 // likewise be nil (the federation feature is off) -- /dashboard/api/federation/correlated
 // then answers 404 the same way. blocked may likewise be nil (the
 // anomaly_detection feature is off) -- /dashboard/api/anomalies/blocked
-// then answers 404 the same way.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked}
+// then answers 404 the same way. scope may likewise be nil (rbac is off)
+// -- every view then answers unfiltered, identical to today's behavior;
+// see tenantFilter's doc comment.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -144,13 +163,28 @@ func pagination(r *http.Request) (after int64, limit int) {
 	return after, limit
 }
 
+// tenantFilter derives the effective tenant filter for r via h.scope --
+// "" (unfiltered) when h.scope is nil (rbac off, preserving today's
+// behavior exactly) or when the resolved caller holds a global grant.
+// This is the ONLY place a tenant filter may originate: it is derived
+// from the RBAC-resolved caller identity via h.scope, never from
+// anything r itself carries (a query parameter or header) -- doing the
+// latter would let a tenant-scoped caller simply edit the request to
+// see another tenant's data.
+func (h *Handler) tenantFilter(r *http.Request) string {
+	if h.scope == nil {
+		return ""
+	}
+	return h.scope.TenantFilter(r)
+}
+
 func (h *Handler) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowed(w, r) {
 		return
 	}
 	after, limit := pagination(r)
 
-	entries := h.audit.Since(after, limit)
+	entries := h.audit.Since(after, limit, h.tenantFilter(r))
 	if entries == nil {
 		entries = []domain.LiveEntry{}
 	}
@@ -167,7 +201,7 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	}
 	after, limit := pagination(r)
 
-	alerts := h.anomalies.Since(after, limit)
+	alerts := h.anomalies.Since(after, limit, h.tenantFilter(r))
 	entries := make([]domain.AnomalyEntry, 0, len(alerts))
 	for _, a := range alerts {
 		entries = append(entries, domain.AnomalyEntry{
@@ -215,7 +249,7 @@ func (h *Handler) handleBlocked(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, h.blocked.List())
+	writeJSON(w, h.blocked.List(h.tenantFilter(r)))
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {

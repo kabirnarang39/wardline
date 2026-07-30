@@ -88,7 +88,7 @@ func TestBlockChecker_List_ReturnsCurrentlyBlockedEntries(t *testing.T) {
 
 	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
-	entries := b.List()
+	entries := b.List("")
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 blocked entry, got %d", len(entries))
 	}
@@ -116,8 +116,26 @@ func TestBlockChecker_List_FiltersExpiredEntriesWithoutGC(t *testing.T) {
 	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
 	current = current.Add(301 * time.Second) // past the 300s TTL, GC interval typically much longer (e.g. 600s) and never run here
-	entries := b.List()
+	entries := b.List("")
 	if len(entries) != 0 {
 		t.Fatalf("expected List() to filter out the expired entry on its own, got %+v", entries)
+	}
+}
+
+func TestBlockChecker_List_FiltersByTenant(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
+
+	b.Block("acme", "alice", "ml_score exceeded threshold")
+	b.Block("widgets-inc", "bob", "ml_score exceeded threshold")
+
+	got := b.List("acme")
+	if len(got) != 1 || got[0].Identity != "alice" {
+		t.Fatalf("tenant-filtered List = %+v, want only acme's alice entry", got)
+	}
+
+	got = b.List("")
+	if len(got) != 2 {
+		t.Fatalf("unfiltered List = %+v, want both entries", got)
 	}
 }
