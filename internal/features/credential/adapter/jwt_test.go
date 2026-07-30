@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwt"
+
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 func TestIssueAndVerify_RoundTripsTenant(t *testing.T) {
@@ -54,6 +58,47 @@ func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
 	}
 	if !claims.ExpiresAt.After(claims.IssuedAt) {
 		t.Errorf("expected ExpiresAt after IssuedAt, got iat=%v exp=%v", claims.IssuedAt, claims.ExpiresAt)
+	}
+}
+
+// TestJWTIssuerVerifier_Verify_NoTenantClaimDefaultsToTenantDefault is an
+// I4 regression test: a pre-upgrade-issued token carries no "tenant"
+// claim at all (unlike Issue's own output, which always sets an
+// explicit, possibly-empty claim). Verify must default that absence to
+// tenant.Default, consistent with every other read boundary in this
+// codebase (jsonl_reader.go, postgres_writer.go's scan loop,
+// HeaderIdentity.Authenticate) -- not leave it as "", which matches only
+// untenanted policy rules and is invisible to every tenant-scoped
+// dashboard view.
+func TestJWTIssuerVerifier_Verify_NoTenantClaimDefaultsToTenantDefault(t *testing.T) {
+	iv, err := NewJWTIssuerVerifier("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a token deliberately without Issue, since Issue always sets
+	// an explicit "tenant" claim -- this must simulate a genuinely absent
+	// claim, the pre-upgrade-token shape.
+	tok, err := jwt.NewBuilder().
+		Subject("alice").
+		IssuedAt(time.Now()).
+		Expiration(time.Now().Add(tokenTTL)).
+		JwtID("pre-upgrade-jti").
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), iv.privateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claims, err := iv.Verify(string(signed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Tenant != tenant.Default {
+		t.Fatalf("got Tenant=%q, want %q", claims.Tenant, tenant.Default)
 	}
 }
 

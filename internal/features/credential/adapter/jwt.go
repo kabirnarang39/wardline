@@ -15,6 +15,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // tokenTTL is a fixed 15-minute lifetime for every issued token this
@@ -139,6 +140,20 @@ func (j *JWTIssuerVerifier) Verify(token string) (domain.Claims, error) {
 	jti, _ := parsed.JwtID()
 	var tenantName string
 	_ = parsed.Get("tenant", &tenantName)
+	if tenantName == "" {
+		// A pre-upgrade-issued token (or any token that otherwise lacks
+		// a "tenant" claim) must default the same way every other read
+		// boundary in this codebase does (jsonl_reader.go,
+		// postgres_writer.go's scan loop, HeaderIdentity.Authenticate)
+		// -- an empty tenant is a distinct, dangerous value (it matches
+		// only untenanted policy rules and reads as globally-invisible
+		// to every tenant-scoped dashboard view), not an equivalent one.
+		// This is specific to Wardline's own reissued JWTs: the OIDC
+		// bootstrapper's Authenticate deliberately does NOT default an
+		// absent tenant claim -- an SSO-sourced identity with no tenant
+		// is rejected outright, a different and deliberate design choice.
+		tenantName = tenant.Default
+	}
 	return domain.Claims{Subject: sub, Tenant: tenantName, IssuedAt: iat, ExpiresAt: exp, ID: jti}, nil
 }
 
