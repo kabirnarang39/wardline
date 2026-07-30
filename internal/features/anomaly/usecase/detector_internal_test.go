@@ -30,7 +30,7 @@ type blockRecorder struct {
 	calls []string
 }
 
-func (b *blockRecorder) Block(tenantName, identity, reason string) {
+func (b *blockRecorder) Block(identity, tenantName, reason string) {
 	b.calls = append(b.calls, identity+": "+reason)
 }
 

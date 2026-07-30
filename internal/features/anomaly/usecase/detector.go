@@ -24,7 +24,7 @@ type alertSink interface {
 // here beyond a nil check. tenantName is threaded through so Block keys
 // on (tenant, identity), not identity alone -- see tenantIdentityKey.
 type blocker interface {
-	Block(tenantName, identity, reason string)
+	Block(identity, tenantName, reason string)
 }
 
 // Detector implements audit/domain.LiveSink: every published audit entry
@@ -522,7 +522,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	}
 
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
-		d.blocker.Block(e.Tenant, e.Identity, fmt.Sprintf(
+		d.blocker.Block(e.Identity, e.Tenant, fmt.Sprintf(
 			"ml_score %.2f (feature: %s) exceeded auto-block threshold %.2f",
 			blockScore, blockFeature, d.cfg.AutoBlock.ScoreThreshold))
 	}
