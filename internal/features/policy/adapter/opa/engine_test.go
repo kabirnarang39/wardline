@@ -254,6 +254,60 @@ func TestLoadRegoFile_Valid(t *testing.T) {
 	}
 }
 
+const tenantScopedSource = `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "alice"
+	input.tool == "search"
+	input.tenant == "acme"
+}
+`
+
+// TestOPAEngine_TenantReachesRegoInput proves domain.Context.Tenant is
+// wired through to input.tenant, not just present on the struct.
+func TestOPAEngine_TenantReachesRegoInput(t *testing.T) {
+	e, err := opa.NewOPAEngine("tenant.rego", []byte(tenantScopedSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("acme tenant: got %v, want allow", got.Effect)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "alice", Tool: "search", Tenant: "widgets-inc"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("different tenant: got %v, want deny", got.Effect)
+	}
+}
+
+// TestOPAEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy proves the
+// new tenant input field is purely additive: a policy fixture that never
+// references input.tenant (allowDenySource, already used above) evaluates
+// identically whether or not Context.Tenant is set.
+func TestOPAEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Tenant: "acme"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow (existing policy ignores tenant), got %q", got.Effect)
+	}
+	if got.Reason != "matched read_file rule" {
+		t.Errorf("expected reason from rule, got %q", got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "someone-else", Tool: "read_file", Tenant: "acme"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected deny, got %q", got.Effect)
+	}
+}
+
 func TestLoadRegoFile_MissingFile(t *testing.T) {
 	_, err := opa.LoadRegoFile("/nonexistent/policy.rego")
 	if err == nil {

@@ -118,5 +118,6 @@ func buildContext(pc domain.Context) (types.Record, error) {
 		"timestamp":   types.String(pc.Timestamp.UTC().Format(time.RFC3339)),
 		"remote_addr": types.String(pc.RemoteAddr),
 		"user_agent":  types.String(pc.UserAgent),
+		"tenant":      types.String(pc.Tenant),
 	}), nil
 }
