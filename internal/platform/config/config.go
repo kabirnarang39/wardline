@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -25,9 +26,13 @@ type AuditConfig struct {
 // default unchanged — so a deployment that never sets budget.tenants
 // behaves byte-for-byte identically to before per-tenant overrides existed.
 type BudgetConfig struct {
-	RequestsPerWindow int                     `yaml:"requests_per_window"`
-	WindowSeconds     int                     `yaml:"window_seconds"`
-	Tenants           map[string]BudgetConfig `yaml:"tenants"`
+	RequestsPerWindow int `yaml:"requests_per_window"`
+	WindowSeconds     int `yaml:"window_seconds"`
+	// Tenants is recursively self-typed (it reuses BudgetConfig), but only
+	// one level deep is ever wired up (see cmd/wardline/main.go) -- a
+	// nested tenants.acme.tenants.* entry is syntactically valid YAML that
+	// is silently ignored. Do not nest.
+	Tenants map[string]BudgetConfig `yaml:"tenants"`
 }
 
 // maxBudgetWindowSeconds bounds budget.window_seconds to 24h, a reasonable
@@ -273,6 +278,28 @@ func (c *Config) validate() error {
 			problems = append(problems, "budget.window_seconds must be > 0 when features.budget_enforcement is true")
 		} else if c.Budget.WindowSeconds > maxBudgetWindowSeconds {
 			problems = append(problems, fmt.Sprintf("budget.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", maxBudgetWindowSeconds, c.Budget.WindowSeconds))
+		}
+		// Same two checks as the global default above, per tenant override.
+		// An unvalidated 0 requests_per_window would silently deny every
+		// request for that tenant forever; an unvalidated 0 window_seconds
+		// would silently make the override a no-op (bucket resets every
+		// call) -- both are footguns an operator gets no warning about
+		// without this. Sorted for deterministic error ordering.
+		tenantNames := make([]string, 0, len(c.Budget.Tenants))
+		for name := range c.Budget.Tenants {
+			tenantNames = append(tenantNames, name)
+		}
+		sort.Strings(tenantNames)
+		for _, name := range tenantNames {
+			t := c.Budget.Tenants[name]
+			if t.RequestsPerWindow <= 0 {
+				problems = append(problems, fmt.Sprintf("budget.tenants.%s.requests_per_window must be > 0 when features.budget_enforcement is true", name))
+			}
+			if t.WindowSeconds <= 0 {
+				problems = append(problems, fmt.Sprintf("budget.tenants.%s.window_seconds must be > 0 when features.budget_enforcement is true", name))
+			} else if t.WindowSeconds > maxBudgetWindowSeconds {
+				problems = append(problems, fmt.Sprintf("budget.tenants.%s.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", name, maxBudgetWindowSeconds, t.WindowSeconds))
+			}
 		}
 	}
 	if c.Features["otel_tracing"] {
