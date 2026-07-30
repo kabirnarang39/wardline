@@ -1333,16 +1333,24 @@ anomaly:
 	// regression that still fires an anomaly but for the wrong reason. The
 	// outlier window is 30 calls over 30 distinct tools against a baseline
 	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
-	// features fire hard and tool_diversity leads by a nose. Distinct-tool
-	// count has baseline mean 1.5 and sample stddev 0.527 (above the
-	// 0.15*1.5 = 0.225 relative floor, so unfloored), scoring
-	// z_diversity = (30-1.5)/0.527 = 54.1, just past call_rate's
-	// z_rate = (30-2.5)/0.527 = 52.2. 30 distinct tools from an identity
-	// that normally touches 1-2 is textbook enumeration, so diversity
-	// leading is the right answer here -- it took the lead only once that
-	// feature was scored as a raw distinct-tool count instead of
-	// distinct/total, a ratio that pinned this window to its own 1.0
-	// ceiling (z = 4.7) no matter how many tools the burst actually swept.
+	// features fire hard and tool_diversity leads by a nose. This config's
+	// min_calls of 2 puts both of them in round 10's sub-quantum zone --
+	// distinct-tool count has baseline mean 1.5 (relative floor
+	// 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375), both
+	// well under one whole tool/call -- so each is floored at 1.0 and the
+	// outlier scores z_diversity = (30-1.5)/1.0 = 28.5, just past
+	// call_rate's z_rate = (30-2.5)/1.0 = 27.5. Their gap is then exactly
+	// the gap between the two baseline means (1.0) and no longer depends on
+	// the raw sample stddev at all, which makes this assertion more
+	// deterministic than the pre-round-10 54.1-vs-52.2 it replaces, not
+	// less. Flooring only one of the two would invert the result: with
+	// diversity floored and call_rate not, call_rate's un-floored 52.2 wins
+	// on an artifact. 30 distinct tools from an identity that normally
+	// touches 1-2 is textbook enumeration, so diversity leading is the
+	// right answer here -- it took the lead only once that feature was
+	// scored as a raw distinct-tool count instead of distinct/total, a
+	// ratio that pinned this window to its own 1.0 ceiling (z = 4.7) no
+	// matter how many tools the burst actually swept.
 	if !bytes.Contains(data, []byte(`(driving feature: tool_diversity)`)) {
 		t.Fatalf("expected the ml_score anomaly to be driven by tool_diversity in %s, got: %s", anomalyPath, data)
 	}
@@ -1457,16 +1465,24 @@ anomaly:
 	// regression that still fires an anomaly but for the wrong reason. The
 	// outlier window is 30 calls over 30 distinct tools against a baseline
 	// alternating 2-3 calls over 1-2 distinct tools, so both volumetric
-	// features fire hard and tool_diversity leads by a nose. Distinct-tool
-	// count has baseline mean 1.5 and sample stddev 0.527 (above the
-	// 0.15*1.5 = 0.225 relative floor, so unfloored), scoring
-	// z_diversity = (30-1.5)/0.527 = 54.1, just past call_rate's
-	// z_rate = (30-2.5)/0.527 = 52.2. 30 distinct tools from an identity
-	// that normally touches 1-2 is textbook enumeration, so diversity
-	// leading is the right answer here -- it took the lead only once that
-	// feature was scored as a raw distinct-tool count instead of
-	// distinct/total, a ratio that pinned this window to its own 1.0
-	// ceiling (z = 4.7) no matter how many tools the burst actually swept.
+	// features fire hard and tool_diversity leads by a nose. This config's
+	// min_calls of 2 puts both of them in round 10's sub-quantum zone --
+	// distinct-tool count has baseline mean 1.5 (relative floor
+	// 0.15*1.5 = 0.225) and call rate mean 2.5 (relative floor 0.375), both
+	// well under one whole tool/call -- so each is floored at 1.0 and the
+	// outlier scores z_diversity = (30-1.5)/1.0 = 28.5, just past
+	// call_rate's z_rate = (30-2.5)/1.0 = 27.5. Their gap is then exactly
+	// the gap between the two baseline means (1.0) and no longer depends on
+	// the raw sample stddev at all, which makes this assertion more
+	// deterministic than the pre-round-10 54.1-vs-52.2 it replaces, not
+	// less. Flooring only one of the two would invert the result: with
+	// diversity floored and call_rate not, call_rate's un-floored 52.2 wins
+	// on an artifact. 30 distinct tools from an identity that normally
+	// touches 1-2 is textbook enumeration, so diversity leading is the
+	// right answer here -- it took the lead only once that feature was
+	// scored as a raw distinct-tool count instead of distinct/total, a
+	// ratio that pinned this window to its own 1.0 ceiling (z = 4.7) no
+	// matter how many tools the burst actually swept.
 	if !bytes.Contains(data, []byte(`(driving feature: tool_diversity)`)) {
 		t.Fatalf("expected the ml_score anomaly to be driven by tool_diversity in %s, got: %s", anomalyPath, data)
 	}

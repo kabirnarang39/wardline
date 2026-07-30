@@ -665,10 +665,14 @@ func TestDetector_MLScore_DisabledFlag_NeverFires(t *testing.T) {
 // sequence below (10/11 alternating) is the reviewer's exact
 // reproduction: under the old count<2 floor, a baseline of {10, 11}
 // produced z=7.78 (an auto-block) for a third window of an entirely
-// ordinary 50% swing. diversity/deny-ratio/inter-arrival are held
-// constant (unique tool per call, no denies, fixed 1s spacing, and
-// lastCallAt resetting every rollover keeps that spacing honest) so this
-// isolates exactly the rate dimension the false positive fired on.
+// ordinary 50% swing. deny-ratio and inter-arrival are held constant (no
+// denies, fixed 1s spacing, and lastCallAt resetting every rollover keeps
+// that spacing honest) so they score 0; tool_diversity is a raw
+// distinct-tool count that manyToolNames(n) pins to the call count, so it
+// moves in lockstep with rate and scores identically to it, never
+// overtaking it (maxAbsZ compares call_rate first, strict >). Either way
+// the assertion isolates exactly the rate dimension the false positive
+// fired on.
 func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -762,9 +766,16 @@ func TestDetector_MLScore_OrdinaryGrowth_NeverFlags(t *testing.T) {
 	}
 	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
 
-	// One distinct tool per call and a fixed 1s spacing hold diversity at a
-	// constant 1.0 and mean inter-arrival at a constant 1s, so those two
-	// features have zero variance (ZScore 0) and this test isolates rate.
+	// A fixed 1s spacing holds mean inter-arrival at a constant 1s, so that
+	// feature has zero variance and, its relative floor being the only
+	// divisor left, scores 0. tool_diversity does NOT sit still here:
+	// manyToolNames(n) hands n calls n distinct names, so the raw
+	// distinct-tool count round 5 switched this feature to tracks the call
+	// count exactly (10/11 in the baseline, 13 in the target window). It has
+	// the same mean, the same variance and therefore the same z as call_rate
+	// at every step, so it can never overtake it -- maxAbsZ/maxHarmfulZ
+	// compare call_rate first and only replace it on a strict >. That, not a
+	// constant-1.0 diversity, is why this test's assertions isolate rate.
 	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
 		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -816,9 +827,12 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
 
 	// 8 baseline windows alternating rate 10/12 (mean 11, m2 = 8, so
-	// sample stddev sqrt(8/7) = 1.069); diversity/deny-ratio/inter-arrival
-	// held constant (unique tool per call, no denies, fixed 1s spacing) so
-	// only rate varies.
+	// sample stddev sqrt(8/7) = 1.069); deny-ratio and inter-arrival held
+	// constant (no denies, fixed 1s spacing) so they score 0, and
+	// tool_diversity -- a raw distinct-tool count that manyToolNames(n)
+	// pins to the call count -- moves in lockstep with rate and scores
+	// identically to it, so rate is what the score reports (maxAbsZ
+	// compares call_rate first, strict >).
 	baseRates := []int{10, 12, 10, 12, 10, 12, 10, 12}
 	for _, n := range baseRates {
 		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
@@ -898,11 +912,15 @@ func TestDetector_MLScore_TrafficDecline_NeverBlocks(t *testing.T) {
 
 	// 11 published windows leave 10 folded; the decline window's own first
 	// call folds the 11th, so the decline is scored against exactly the
-	// 11-sample baseline traced above (sum 1105 / 11 = 100.4545). One
-	// distinct tool per call and a fixed 200ms spacing hold diversity at
-	// 1.0, deny ratio at 0 and mean inter-arrival at 200ms across every
-	// window including the decline -- zero variance, so their ZScore is 0
-	// and this isolates the rate dimension. 200ms, not 1s: at these call
+	// 11-sample baseline traced above (sum 1105 / 11 = 100.4545). A fixed
+	// 200ms spacing holds mean inter-arrival at 200ms and there are no
+	// denies, so both those features have zero variance and score 0.
+	// tool_diversity is a raw distinct-tool count and manyToolNames(n) pins
+	// it to the call count, so it has the same mean, variance and z as
+	// call_rate in every window including the decline (-4.68 here too) --
+	// identical, never larger, so call_rate is what maxAbsZ reports (strict
+	// >) and the assertion still isolates the rate dimension. Both features
+	// point the same benign direction, so neither can block. 200ms, not 1s: at these call
 	// counts a 1s spacing would carry a window past its own 60s boundary
 	// mid-publish, splitting it into two and destroying the baseline this
 	// test is built on.
@@ -1745,12 +1763,17 @@ func TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks(t *testing.T) {
 // it. Call volume is held at a constant 100 across every window (zero
 // variance, so z_rate is 0 and cannot contribute), while the distinct-tool
 // count cycles 4/5/6 -- mean 4.9091, raw stddev 0.8312, above the
-// 0.15*4.9091 = 0.7364 relative floor so it applies unfloored. A window
-// that keeps the same 100 calls but spreads them over 40 distinct tools
-// scores z_diversity = (40 - 4.9091)/0.8312 = +42.22: genuine enumeration,
-// the only thing a raw count still moves on, and it must both log and
-// block. Note the volume is identical to the baseline's, so nothing but
-// diversity could have produced this score.
+// 0.15*4.9091 = 0.7364 relative floor. Round 10's absolute floor of one
+// whole tool is what binds here instead: max(0.7364, 0.8312, 1.0) = 1.0,
+// since a baseline this tight is exactly the small-integer zone where a
+// sub-one-tool divisor turns single-quantum noise into a multi-sigma
+// event. A window that keeps the same 100 calls but spreads them over 40
+// distinct tools therefore scores z_diversity = (40 - 4.9091)/1.0 =
+// +35.09: genuine enumeration, the only thing a raw count still moves on,
+// and it must both log and block. The floor cost this case 7.13 of a
+// 35.09 score and nothing at all of the outcome -- it is still ~9x the
+// 4.0 block threshold. Note the volume is identical to the baseline's, so
+// nothing but diversity could have produced this score.
 func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1770,7 +1793,7 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 	if len(logged) != 1 {
 		t.Fatalf("expected tool enumeration to be logged exactly once as ml_score, got %d: %+v", len(logged), writer.anomalies)
 	}
-	if want := "combined z-score 42.22 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+	if want := "combined z-score 35.09 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
 		t.Errorf("expected tool_diversity to drive the logged score as %q, got %q", want, logged[0].Detail)
 	}
 	if len(blocker.calls) != 1 {
@@ -1792,12 +1815,17 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 // above builds its baseline from a 4/5/6 cycle, which has real variance and
 // so never reached the short-circuit at all.
 //
-// Hand-traced: diversity mean 5 with zero variance, floored to
-// 0.15*5 = 0.75; a window spreading 100 calls (the baseline's own volume
-// range, so call_rate contributes essentially nothing: z_rate =
-// (100-99.0909)/14.8636 = 0.06) over 60 distinct tools scores
-// z_diversity = (60-5)/0.75 = 73.33. Pre-fix that was 0 and this blatant
-// enumeration sweep did not even clear the 3.0 log threshold.
+// Hand-traced: diversity mean 5 with zero variance. The relative floor
+// gives 0.15*5 = 0.75, but round 10's absolute floor of one whole tool is
+// larger and therefore binds: max(0.75, 1.0) = 1.0 -- a mean of 5 distinct
+// tools is squarely in the small-integer zone where three quarters of a
+// tool is not a meaningful unit of deviation. A window spreading 100 calls
+// (the baseline's own volume range, so call_rate contributes essentially
+// nothing: z_rate = (100-99.0909)/14.8636 = 0.06) over 60 distinct tools
+// scores z_diversity = (60-5)/1.0 = 55.00. Pre-fix that was 0 and this
+// blatant enumeration sweep did not even clear the 3.0 log threshold; the
+// 1.0 floor moves it from 73.33 to 55.00, i.e. still ~14x the 4.0 block
+// threshold, so it costs the magnitude and not the outcome.
 func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1814,7 +1842,7 @@ func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *te
 	if len(logged) != 1 {
 		t.Fatalf("expected enumeration against a zero-variance diversity baseline to be logged exactly once, got %d: %+v", len(logged), writer.anomalies)
 	}
-	if want := "combined z-score 73.33 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+	if want := "combined z-score 55.00 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
 		t.Errorf("expected the logged score to be %q, got %q", want, logged[0].Detail)
 	}
 	if len(blocker.calls) != 1 {
@@ -1823,4 +1851,126 @@ func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *te
 	if !strings.Contains(blocker.calls[0].reason, "tool_diversity") {
 		t.Errorf("expected the block reason to name tool_diversity, got %q", blocker.calls[0].reason)
 	}
+}
+
+// TestDetector_MLScore_DiversitySmallIntegerChange_NeverBlocks is the
+// regression gate for round 10, the seventh instance of "legitimate traffic
+// gets auto-blocked forever" and the second of "a floor that doesn't
+// actually floor anything meaningful" (round 6 closed the first, for zero
+// variance). tool_diversity is an integer count of distinct tools, and
+// minStddevRelFraction alone floors its divisor at 0.15*mean -- which for a
+// small baseline mean is *smaller than one whole tool*, the smallest unit
+// the feature can move by at all. An identity that habitually touches
+// exactly one tool per window therefore scored the smallest possible real
+// change -- one additional distinct tool, same volume, same spacing, same
+// everything else -- at z_diversity = (2-1)/(0.15*1) = 6.67, past both the
+// shipped example config's 3.0 log threshold and its 4.0 block threshold.
+// And because a flagged window is never folded, the baseline stayed pinned
+// at mean 1 and the block re-fired at every rollover: an indefinite lockout
+// for an identity whose behavior never changed beyond touching one more
+// tool than usual.
+//
+// Hand-traced with the absolute 1.0 floor (one whole tool) against this
+// test's own baseline: diversity is a constant 1 across 11 folded windows
+// (mean 1, zero variance), so the divisor is max(0.15*1, 0, 1.0) = 1.0 and
+// the +1-tool window scores z_diversity = (2-1)/1.0 = 1.00 -- below even
+// the 3.0 log threshold, a 4x margin under the block threshold. Every other
+// feature is pinned flat by construction: volume is exactly 20 calls in
+// every window including this one, so z_rate = (20-20)/max(0.15*20, 1.0)
+// = 0; spacing is a flat 1s, so z_interArrival = 0; there are no denials,
+// so z_deny = 0 and zDenyBlock = (0-0)/se = 0. Diversity is the only
+// feature that moved at all, which is what makes this a clean isolation of
+// the reported failure.
+//
+// The mean-1 case is asserted rather than the mean-5 -> 9 case from the
+// same family because that one lands on exactly
+// (9-5)/max(0.15*5, 1.0) = (9-5)/1.0 = 4.00. That does not block -- the
+// auto-block gate is a strict `>` -- but an assertion sitting exactly on
+// the threshold is a coin flip dressed up as a test, the same thin-margin
+// problem rounds 6 and 8 corrected in their own cases. It is resolved, not
+// ignored: mean 5 -> 9 logs (4.00 > 3.0) and does not block (4.00 is not
+// > 4.0).
+//
+// The paired subtest is what stops the floor from being a free pass, and
+// what keeps the first subtest from passing vacuously: a baseline that
+// silently failed to establish would score every feature 0 and report zero
+// Block calls too, so the same helper is reused to prove the baseline is
+// real and that low-end enumeration still blocks through it.
+func TestDetector_MLScore_DiversitySmallIntegerChange_NeverBlocks(t *testing.T) {
+	// 11 windows of 20 calls all to the same single tool: diversity a
+	// constant 1, call rate a constant 20, spacing a constant 1s, no denies.
+	// 11 published windows leave 10 folded; the caller's own next window
+	// folds the 11th, so whatever the caller publishes next is scored
+	// against an 11-sample baseline -- comfortably past minSamplesForZScore
+	// (8), matching the shape every other baseline helper in this file uses.
+	establishSingleToolBaseline := func(d *usecase.Detector, clock *fakeClock) {
+		for i := 0; i < 11; i++ {
+			publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 20, time.Second)
+			clock.t = clock.t.Add(61 * time.Second)
+		}
+	}
+	rollWindow := func(d *usecase.Detector, clock *fakeClock) {
+		clock.t = clock.t.Add(61 * time.Second)
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+	}
+
+	// The reported false positive itself: the smallest change the feature
+	// can express. 19 of the same habitual calls plus exactly one call to a
+	// second tool -- volume, spacing and deny count all identical to every
+	// baseline window, so diversity 1 -> 2 is the only difference there is.
+	t.Run("exactly one additional distinct tool", func(t *testing.T) {
+		clock := &fakeClock{t: time.Unix(0, 0)}
+		writer := &recordingWriter{}
+		blocker := &recordingBlocker{}
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+		establishSingleToolBaseline(d, clock)
+
+		publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 19, time.Second)
+		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "list_dir", Decision: "allow"})
+		clock.t = clock.t.Add(time.Second)
+		rollWindow(d, clock)
+
+		if len(blocker.calls) != 0 {
+			t.Errorf("one additional distinct tool over an identity's habitual single-tool baseline must never auto-block, got %+v", blocker.calls)
+		}
+		if logged := mlScoreAnomalies(writer); len(logged) != 0 {
+			t.Errorf("expected a 1.00-scoring window to fall below the 3.0 log threshold entirely, got %+v", logged)
+		}
+	})
+
+	// The other half: the 1.0 floor must suppress the single-quantum noise
+	// case only, not detection at the low end generally. Same baseline, same
+	// 20 calls, same 1s spacing -- but spread over 12 distinct tools, so
+	// z_diversity = (12-1)/1.0 = 11.00, still ~3x the block threshold. This
+	// is the case that would be lost if the floor were set by call volume
+	// rather than by one whole tool.
+	t.Run("small-scale enumeration still blocks", func(t *testing.T) {
+		clock := &fakeClock{t: time.Unix(0, 0)}
+		writer := &recordingWriter{}
+		blocker := &recordingBlocker{}
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+		establishSingleToolBaseline(d, clock)
+
+		publishWindow(d, clock, "alice", manyToolNames(12), "allow", 20, time.Second)
+		rollWindow(d, clock)
+
+		logged := mlScoreAnomalies(writer)
+		if len(logged) != 1 {
+			t.Fatalf("expected low-end enumeration to be logged exactly once as ml_score, got %d: %+v", len(logged), writer.anomalies)
+		}
+		if want := "combined z-score 11.00 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+			t.Errorf("expected tool_diversity to drive the logged score as %q, got %q", want, logged[0].Detail)
+		}
+		if len(blocker.calls) != 1 {
+			t.Fatalf("expected low-end enumeration to auto-block exactly once, got %d: %+v", len(blocker.calls), blocker.calls)
+		}
+		// Pins the block-gating score, not just the feature name: the claim
+		// here is that the margin above 4.0 is real, which "names
+		// tool_diversity" would satisfy just as happily at 4.01.
+		if want := "ml_score 11.00 (feature: tool_diversity)"; !strings.Contains(blocker.calls[0].reason, want) {
+			t.Errorf("expected the block reason to be %q, got %q", want, blocker.calls[0].reason)
+		}
+	})
 }

@@ -108,11 +108,14 @@ func TestDetector_MLScore_MinCallsFloor_SkipsSingleCallWindow(t *testing.T) {
 	d := NewDetector(mlFloorCfg(), writer, nil, blocker, nil, clock.now)
 
 	// 10 baseline windows alternating 10 and 11 calls, one distinct tool
-	// per call at a fixed 1s spacing, so rate is the only feature with
-	// non-zero variance (diversity is a constant 1.0, deny ratio a
-	// constant 0, mean inter-arrival a constant 1s -- all zero-variance,
-	// so their ZScore is 0 regardless). A window is scored and folded by
-	// the first call of the *following* window, so 10 published windows
+	// per call at a fixed 1s spacing. Deny ratio is a constant 0 and mean
+	// inter-arrival a constant 1s, so those two have zero variance and
+	// score 0. Diversity is not constant: distinctTools(n) gives n calls n
+	// distinct names, so the raw distinct-tool count tracks the call count
+	// exactly (10/11) and has the same mean, variance and z as rate at
+	// every step -- it simply never overtakes rate, which maxAbsZ compares
+	// first and only replaces on a strict >. A window is scored and folded
+	// by the first call of the *following* window, so 10 published windows
 	// leaves 9 folded here.
 	for i := 0; i < 10; i++ {
 		n := 10 + i%2
