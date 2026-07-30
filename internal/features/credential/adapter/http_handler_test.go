@@ -20,11 +20,11 @@ var errRevokeBackendUnavailable = errors.New("revocation backend unavailable")
 
 type fakeHandlerBootstrapper struct{}
 
-func (fakeHandlerBootstrapper) Authenticate(secret string) (string, error) {
+func (fakeHandlerBootstrapper) Authenticate(secret string) (string, string, error) {
 	if secret == "good-secret" {
-		return "agent-abc123", nil
+		return "agent-abc123", "", nil
 	}
-	return "", domain.ErrInvalidCredentials
+	return "", "", domain.ErrInvalidCredentials
 }
 
 type fakeHandlerIssuer struct{}

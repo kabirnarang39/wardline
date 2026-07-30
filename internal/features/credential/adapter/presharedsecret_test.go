@@ -8,6 +8,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 func writeCredentialsFile(t *testing.T, body string) string {
@@ -31,7 +32,7 @@ identities:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	identity, err := b.Authenticate("sekret-two")
+	identity, _, err := b.Authenticate("sekret-two")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +51,7 @@ identities:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, err = b.Authenticate("wrong-secret")
+	_, _, err = b.Authenticate("wrong-secret")
 	if !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Errorf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -62,7 +63,7 @@ func TestLoadBootstrapper_UnknownSecretIsInvalidCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, err = b.Authenticate("anything")
+	_, _, err = b.Authenticate("anything")
 	if !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Errorf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -106,5 +107,31 @@ identities:
 	_, err := adapter.LoadBootstrapper(path)
 	if err == nil {
 		t.Fatal("expected an error for two identities sharing a secret")
+	}
+}
+
+func TestAuthenticate_ReturnsTenant(t *testing.T) {
+	path := writeCredentialsFile(t, `
+identities:
+  - name: alice
+    secret: alice-secret
+    tenant: acme
+  - name: bob
+    secret: bob-secret
+`)
+	b, err := adapter.LoadBootstrapper(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identity, gotTenant, err := b.Authenticate("alice-secret")
+	if err != nil || identity != "alice" || gotTenant != "acme" {
+		t.Fatalf("got (%q, %q, %v), want (\"alice\", \"acme\", nil)", identity, gotTenant, err)
+	}
+
+	// bob's entry omits tenant -- must default, not come back empty.
+	identity, gotTenant, err = b.Authenticate("bob-secret")
+	if err != nil || identity != "bob" || gotTenant != tenant.Default {
+		t.Fatalf("got (%q, %q, %v), want (\"bob\", %q, nil)", identity, gotTenant, err, tenant.Default)
 	}
 }
