@@ -32,6 +32,18 @@ type InMemoryLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
 	calls   uint64
+
+	// tenantLimits and tenantBuckets back the optional per-tenant override:
+	// a tenant with no entry in tenantLimits is simply not checked, so a
+	// deployment that never calls SetTenantLimit behaves exactly as before.
+	tenantLimits  map[string]tenantLimit
+	tenantBuckets map[string]*bucket
+}
+
+// tenantLimit is a tenant's override rate, set via SetTenantLimit.
+type tenantLimit struct {
+	requestsPerWindow int
+	window            time.Duration
 }
 
 // evictionSweepInterval is how many Allow calls pass between opportunistic
@@ -50,10 +62,26 @@ func NewInMemoryLimiter(requestsPerWindow int, window time.Duration) *InMemoryLi
 		requestsPerWindow: requestsPerWindow,
 		window:            window,
 		buckets:           make(map[string]*bucket),
+		tenantLimits:      make(map[string]tenantLimit),
+		tenantBuckets:     make(map[string]*bucket),
 	}
 }
 
-func (l *InMemoryLimiter) Allow(identity string, now time.Time) domain.Verdict {
+// SetTenantLimit configures an override rate for tenantName, consulted
+// alongside (in addition to, not instead of) the identity bucket. A tenant
+// with no override configured here is never checked against a tenant
+// bucket at all — Allow falls straight through to the identity check.
+func (l *InMemoryLimiter) SetTenantLimit(tenantName string, requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tenantLimits[tenantName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// Allow requires BOTH the identity bucket and the tenant bucket (if tenant
+// has a configured override) to admit the request -- an AND, not an OR. The
+// tenant check runs first so a request denied by an over-limit tenant never
+// also consumes identity budget.
+func (l *InMemoryLimiter) Allow(identity, tenant string, now time.Time) domain.Verdict {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -62,17 +90,39 @@ func (l *InMemoryLimiter) Allow(identity string, now time.Time) domain.Verdict {
 		l.evictExpired(now)
 	}
 
-	b, ok := l.buckets[identity]
-	if !ok || now.Sub(b.windowStart) >= l.window {
-		b = &bucket{windowStart: now, count: 0}
-		l.buckets[identity] = b
+	if limit, ok := l.tenantLimits[tenant]; ok {
+		tb, exists := l.tenantBuckets[tenant]
+		if !exists {
+			tb = &bucket{}
+			l.tenantBuckets[tenant] = tb
+		}
+		if v := checkAndAdvance(tb, limit.requestsPerWindow, limit.window, now); !v.Allowed {
+			return v
+		}
 	}
 
-	if b.count >= l.requestsPerWindow {
+	ib, exists := l.buckets[identity]
+	if !exists {
+		ib = &bucket{}
+		l.buckets[identity] = ib
+	}
+	return checkAndAdvance(ib, l.requestsPerWindow, l.window, now)
+}
+
+// checkAndAdvance is the fixed-window check-and-increment shared by both the
+// identity and tenant buckets: reset the window if it's expired, deny if
+// already at capacity, otherwise increment and admit.
+func checkAndAdvance(b *bucket, requestsPerWindow int, window time.Duration, now time.Time) domain.Verdict {
+	if b.windowStart.IsZero() || now.Sub(b.windowStart) >= window {
+		b.windowStart = now
+		b.count = 0
+	}
+
+	if b.count >= requestsPerWindow {
 		return domain.Verdict{
 			Allowed:    false,
-			Reason:     fmt.Sprintf("rate limit exceeded: %d requests per %s window", l.requestsPerWindow, l.window),
-			RetryAfter: b.windowStart.Add(l.window).Sub(now),
+			Reason:     fmt.Sprintf("rate limit exceeded: %d requests per %s window", requestsPerWindow, window),
+			RetryAfter: b.windowStart.Add(window).Sub(now),
 		}
 	}
 	b.count++
@@ -85,6 +135,11 @@ func (l *InMemoryLimiter) evictExpired(now time.Time) {
 	for id, b := range l.buckets {
 		if now.Sub(b.windowStart) >= l.window {
 			delete(l.buckets, id)
+		}
+	}
+	for name, b := range l.tenantBuckets {
+		if now.Sub(b.windowStart) >= l.tenantLimits[name].window {
+			delete(l.tenantBuckets, name)
 		}
 	}
 }

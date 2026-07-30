@@ -84,7 +84,7 @@ func (f *fakeWriter) Write(e auditdomain.Entry) error {
 // exercising budget behavior — every call is allowed.
 type alwaysAllowBudgetChecker struct{}
 
-func (alwaysAllowBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+func (alwaysAllowBudgetChecker) Check(identity, tenant string, now time.Time) budgetdomain.Verdict {
 	return budgetdomain.Verdict{Allowed: true, Reason: "budget checks not under test"}
 }
 
@@ -350,7 +350,7 @@ type fakeBudgetChecker struct {
 	verdict budgetdomain.Verdict
 }
 
-func (f fakeBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+func (f fakeBudgetChecker) Check(identity, tenant string, now time.Time) budgetdomain.Verdict {
 	return f.verdict
 }
 
@@ -593,7 +593,7 @@ type countingBudgetChecker struct {
 	calls int
 }
 
-func (c *countingBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+func (c *countingBudgetChecker) Check(identity, tenant string, now time.Time) budgetdomain.Verdict {
 	c.calls++
 	return budgetdomain.Verdict{Allowed: true, Reason: "not under test"}
 }

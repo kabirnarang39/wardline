@@ -14,6 +14,8 @@ type Verdict struct {
 }
 
 // Limiter decides whether an identity may make another call right now.
+// tenant is the identity's resolved tenant; an empty tenant (or one with no
+// configured override) is simply not checked against any tenant-level bucket.
 type Limiter interface {
-	Allow(identity string, now time.Time) Verdict
+	Allow(identity, tenant string, now time.Time) Verdict
 }

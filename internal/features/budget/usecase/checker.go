@@ -24,11 +24,11 @@ func NewChecker(f flags.Provider, limiter domain.Limiter) *Checker {
 	return &Checker{flags: f, limiter: limiter}
 }
 
-func (c *Checker) Check(identity string, now time.Time) domain.Verdict {
+func (c *Checker) Check(identity, tenant string, now time.Time) domain.Verdict {
 	if !c.flags.Enabled(budgetFeatureFlag) {
 		// RetryAfter is unused when Allowed is true; zero explicitly for
 		// consistency with the deny path's struct construction.
 		return domain.Verdict{Allowed: true, Reason: "budget enforcement disabled", RetryAfter: 0}
 	}
-	return c.limiter.Allow(identity, now)
+	return c.limiter.Allow(identity, tenant, now)
 }

@@ -341,6 +341,9 @@ func runServe(logger *slog.Logger, args []string) {
 	decider := proxyusecase.NewDecider(engine)
 
 	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
+	for tenantName, tenantCfg := range cfg.Budget.Tenants {
+		limiter.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
+	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
 	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)

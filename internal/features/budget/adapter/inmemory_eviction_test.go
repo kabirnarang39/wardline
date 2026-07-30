@@ -19,7 +19,7 @@ func TestInMemoryLimiter_EvictsExpiredBucketsOnSweep(t *testing.T) {
 	// sweep boundary, but nothing has expired yet (all windows start at
 	// `now`), so all buckets should still be present.
 	for i := 0; i < evictionSweepInterval; i++ {
-		l.Allow(fmt.Sprintf("stale-%d", i), now)
+		l.Allow(fmt.Sprintf("stale-%d", i), "", now)
 	}
 	if got := len(l.buckets); got != evictionSweepInterval {
 		t.Fatalf("expected %d buckets after phase 1, got %d", evictionSweepInterval, got)
@@ -33,7 +33,7 @@ func TestInMemoryLimiter_EvictsExpiredBucketsOnSweep(t *testing.T) {
 	// covered by TestInMemoryLimiter_ResetsOnNewWindow).
 	later := now.Add(time.Minute + time.Second)
 	for i := 0; i < evictionSweepInterval; i++ {
-		l.Allow("same-id", later)
+		l.Allow("same-id", "", later)
 	}
 
 	if got := len(l.buckets); got != 1 {
