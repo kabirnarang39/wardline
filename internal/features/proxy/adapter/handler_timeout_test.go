@@ -75,7 +75,7 @@ func (f fakeTimeoutEngine) Evaluate(ctx policydomain.Context) policydomain.Decis
 
 type alwaysAllowTimeoutBudgetChecker struct{}
 
-func (alwaysAllowTimeoutBudgetChecker) Check(identity string, now time.Time) budgetdomain.Verdict {
+func (alwaysAllowTimeoutBudgetChecker) Check(identity, tenant string, now time.Time) budgetdomain.Verdict {
 	return budgetdomain.Verdict{Allowed: true, Reason: "budget checks not under test"}
 }
 

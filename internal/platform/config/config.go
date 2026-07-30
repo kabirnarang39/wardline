@@ -20,9 +20,14 @@ type AuditConfig struct {
 
 // BudgetConfig configures the per-identity rate limiter. Only validated
 // (and only meaningful) when the budget_enforcement feature flag is on.
+// Tenants holds optional per-tenant overrides of the global default above,
+// keyed by tenant name. A tenant absent from this map uses the global
+// default unchanged — so a deployment that never sets budget.tenants
+// behaves byte-for-byte identically to before per-tenant overrides existed.
 type BudgetConfig struct {
-	RequestsPerWindow int `yaml:"requests_per_window"`
-	WindowSeconds     int `yaml:"window_seconds"`
+	RequestsPerWindow int                     `yaml:"requests_per_window"`
+	WindowSeconds     int                     `yaml:"window_seconds"`
+	Tenants           map[string]BudgetConfig `yaml:"tenants"`
 }
 
 // maxBudgetWindowSeconds bounds budget.window_seconds to 24h, a reasonable

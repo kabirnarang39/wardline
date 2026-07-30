@@ -28,7 +28,7 @@ import (
 // depends on — a narrow interface so tests can supply a fake without
 // importing the real usecase package's flags/limiter wiring.
 type BudgetChecker interface {
-	Check(identity string, now time.Time) budgetdomain.Verdict
+	Check(identity, tenant string, now time.Time) budgetdomain.Verdict
 }
 
 // AutoBlockChecker is the subset of anomaly/usecase.BlockChecker's
@@ -203,7 +203,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	budgetVerdict := h.budgetChecker.Check(identity, start)
+	budgetVerdict := h.budgetChecker.Check(identity, tenant, start)
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
