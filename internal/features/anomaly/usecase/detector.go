@@ -374,6 +374,17 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
 	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival)
+	// blockScore can exceed score only in the one case where zDeny's own
+	// divisor degenerates (a p=0, zero-variance deny_ratio baseline, whose
+	// continuity-corrected block-gating variant is deliberately more
+	// sensitive -- see zDenyBlock's doc comment above). Without this, a
+	// block in that case would fire with no corresponding ml_score log
+	// record at all, breaking the invariant auto_block.score_threshold's
+	// own validation message promises: every Block() is accompanied by a
+	// logged anomaly explaining it.
+	if blockScore > score {
+		score, feature = blockScore, blockFeature
+	}
 	anomalous := score > d.cfg.MLScore.ScoreThreshold
 
 	// ponytail: only fold a window's raw values into the baseline when the

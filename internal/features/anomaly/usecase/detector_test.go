@@ -1243,11 +1243,19 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 // (volume never changed), Fix 2 alone leaves Fix 1's cases blocking (their
 // baseline mean is nonzero and well established).
 //
-// No ml_score anomaly is logged here, and that is expected rather than an
-// oversight: zDeny (the two-sided log/fold score) is deliberately left
-// unsmoothed by round 7's scope, so it still degenerates to 0 against a
-// zero-variance, zero-mean baseline. Only the block fires. The block
-// assertion below is non-vacuous on its own, so no separate guard is needed.
+// This is also the regression gate for round 9's Fix 2, the one case where a
+// Block() could fire with no ml_score log record at all -- breaking the
+// invariant config validation's own auto_block.score_threshold >=
+// ml_score.score_threshold check (and README.md) promise: an operator must
+// never see an unexplained auto-block. zDeny, the two-sided score the log
+// record uses, is computed against this zero-mean, zero-variance baseline, so
+// its divisor degenerates to exactly 0 and ZScoreFloored returns 0 -- while
+// zDenyBlock correctly scores 29.33 and blocks. checkMLScore now promotes the
+// block-gating score/feature into the log record whenever it is the larger of
+// the two (structurally only possible in this degenerate case, since
+// zDenyBlock's floors only ever widen zDeny's divisor), so this scenario logs
+// exactly one ml_score anomaly reporting the same 29.33/deny_ratio the block
+// reason does.
 func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
@@ -1270,6 +1278,15 @@ func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 	// the whole claim here, since pre-fix this exact scenario scored 0.
 	if want := "ml_score 29.33 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
 		t.Errorf("expected the block reason to be %q, got %q", want, blocker.calls[0].reason)
+	}
+	// Round 9's Fix 2: the block must be accompanied by a log record carrying
+	// the same score and feature, not left unexplained.
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected the block to be accompanied by exactly 1 ml_score log record, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 29.33 (driving feature: deny_ratio)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the log record to report the block-gating score as %q, got %q", want, logged[0].Detail)
 	}
 }
 
@@ -1307,10 +1324,14 @@ func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 // the independence claim directly: the *same* baselines with a 0%->100% deny
 // window must both block at exactly 29.33. Pre-round-8 those two scored
 // 29.33 and 89.78 -- the same attack judged 3x more severe purely for having
-// been preceded by more clean history. No ml_score log record is asserted
-// because there is none to assert: zDeny stays 0 against a zero-mean,
-// zero-variance baseline (see DenySpikeFromCleanHistory's note), which is
-// also why this false positive was invisible in telemetry.
+// been preceded by more clean history. No ml_score log record is asserted in
+// the ordinary-denial case because there is none to assert: zDeny stays 0
+// against a zero-mean, zero-variance baseline and round 9's promoted
+// block-gating score is only 1.4667, below the 3.0 log threshold -- which is
+// also why this false positive was invisible in telemetry. (The paired spike
+// does now log, via that same promotion -- see
+// DenySpikeFromCleanHistory's note; this test asserts only its block, which
+// is the claim it exists for.)
 func TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks(t *testing.T) {
 	establishCleanDenyBaseline := func(d *usecase.Detector, clock *fakeClock, windows int) {
 		for i := 0; i < windows; i++ {
