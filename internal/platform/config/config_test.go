@@ -251,6 +251,93 @@ audit:
 	}
 }
 
+// TestLoad_BudgetTenantMissingRequestsPerWindowRejected proves an operator
+// who adds a tenant override but forgets requests_per_window (YAML
+// zero-value 0) gets a config-load error instead of a silent full outage
+// for that tenant (0 >= 0 in checkAndAdvance would deny every request).
+func TestLoad_BudgetTenantMissingRequestsPerWindowRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tenants:
+    acme:
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when a tenant override's requests_per_window is unset (0)")
+	}
+	if !strings.Contains(err.Error(), "budget.tenants.acme.requests_per_window must be > 0") {
+		t.Errorf("expected a clear per-tenant error message, got %q", err.Error())
+	}
+}
+
+// TestLoad_BudgetTenantZeroWindowSecondsRejected proves a tenant override
+// with window_seconds <= 0 is rejected -- unvalidated, it would make the
+// tenant bucket reset on every call (now.Sub(windowStart) >= 0 is always
+// true), silently defeating the override entirely.
+func TestLoad_BudgetTenantZeroWindowSecondsRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tenants:
+    acme:
+      requests_per_window: 1
+      window_seconds: 0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when a tenant override's window_seconds is 0")
+	}
+	if !strings.Contains(err.Error(), "budget.tenants.acme.window_seconds must be > 0") {
+		t.Errorf("expected a clear per-tenant error message, got %q", err.Error())
+	}
+}
+
+// TestLoad_BudgetTenantValidOverrideAccepted proves a well-formed tenant
+// override still loads cleanly -- the new validation isn't over-strict.
+func TestLoad_BudgetTenantValidOverrideAccepted(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tenants:
+    acme:
+      requests_per_window: 1
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Budget.Tenants["acme"]; got.RequestsPerWindow != 1 || got.WindowSeconds != 60 {
+		t.Errorf("unexpected tenant override: %+v", got)
+	}
+}
+
 func TestLoad_TracingDisabledByDefaultNoValidation(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
