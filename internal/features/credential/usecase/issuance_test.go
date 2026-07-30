@@ -13,8 +13,8 @@ type fakeBootstrapper struct {
 	err      error
 }
 
-func (f fakeBootstrapper) Authenticate(secret string) (string, error) {
-	return f.identity, f.err
+func (f fakeBootstrapper) Authenticate(secret string) (string, string, error) {
+	return f.identity, "", f.err
 }
 
 type fakeIssuer struct {
