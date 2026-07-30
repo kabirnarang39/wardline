@@ -1043,7 +1043,7 @@ func establishHighVolumeDenyBaseline(d *usecase.Detector, clock *fakeClock, iden
 // off baseline". But 1-in-10 cannot distinguish 10% from 2%: the window's
 // own binomial standard error, computed from the continuity-corrected
 // pSmoothed = (0.0195455*8+0.5)/(8+1) = 0.0729293 (round 11 weights the
-// correction by the fixed minSamplesForZScore, not this window's own
+// correction by the fixed denyRatioContinuityWeight, not this window's own
 // toolCalls -- see checkMLScore's pSmoothed comment), is
 // se = sqrt(0.0729293*0.9270707/10) = 0.0822257, well above the 0.0041560
 // historical stddev, so the block-gating score is
@@ -1162,7 +1162,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 	// floored per minStddevRelFraction to 0.15*0.3227273 = 0.0484091. The
 	// window's own binomial standard error uses the continuity-corrected
 	// pSmoothed = (0.3227273*8+0.5)/(8+1) = 0.3424242 (round 11 weights the
-	// correction by the fixed minSamplesForZScore, not this window's own
+	// correction by the fixed denyRatioContinuityWeight, not this window's own
 	// toolCalls -- see checkMLScore's pSmoothed comment), giving
 	// se = sqrt(0.3424242*0.6575758/20) = 0.1061061, which exceeds that floor
 	// and so becomes the divisor. A window of 20 calls with 17 denials (0.85)
@@ -1286,7 +1286,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 // pseudo-observation weight was re-rooted, and the outcome has not: round 8
 // took it from 22.38 (weight = the baseline's folded-window count, 11) to
 // 29.33 (weight = this window's own toolCalls, 20), and round 11 to 19.52
-// (weight = the fixed minSamplesForZScore, 8). Round 11's move is the one
+// (weight = the fixed denyRatioContinuityWeight, 8). Round 11's move is the one
 // that matters for correctness rather than calibration: a weight tied to
 // toolCalls made the SE carry a 1/n factor that canceled the deny ratio's
 // own, so a fixed small denial count blocked at any window size (see
@@ -1369,7 +1369,7 @@ func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 // because there fold count happened to equal the window's toolCalls -- and
 // the 200-window subtest is the one that reproduced the bug (4.49 > the 4.0
 // block threshold). Round 8 keyed the correction to this window's own
-// toolCalls; round 11 keys it to the fixed minSamplesForZScore (8) instead,
+// toolCalls; round 11 keys it to the fixed denyRatioContinuityWeight (8) instead,
 // since a toolCalls-keyed weight degenerated into a raw denial count
 // independent of window size (see checkMLScore's pSmoothed comment). Under
 // round 11 both subtests score

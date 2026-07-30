@@ -295,6 +295,24 @@ func zCount(s *onlineStat, x float64) float64 {
 	return s.ZScoreFloored(x, math.Max(1.0, math.Sqrt(math.Abs(s.mean))))
 }
 
+// denyRatioContinuityWeight is deny_ratio's block-gating continuity
+// correction's fixed pseudo-observation weight (see the comment above
+// pSmoothed in checkMLScore) -- floors the assumed baseline deny
+// probability at roughly 1/(2*(denyRatioContinuityWeight+1)) when the
+// true historical baseline is p=0. Deliberately its own constant, not a
+// reuse of minSamplesForZScore: the two answer unrelated questions
+// (this one calibrates a continuity-correction prior; minSamplesForZScore
+// gates how many completed windows a baseline needs before its own
+// sample stddev is trustworthy), and a future change to
+// minSamplesForZScore for ITS documented purpose must not silently move
+// this one too. Verified (round 12): raising minSamplesForZScore from 8
+// to 20 for its own purpose would, if this constant were still tied to
+// it, re-open round 11's exact bug (a 20-call window with 3 habitual
+// denials would cross the 4.0 block threshold again). The numeric value
+// (8) is unchanged from round 11's choice -- only its identity as an
+// independent constant is new.
+const denyRatioContinuityWeight = 8
+
 // checkMLScore must be called with d.mu held, and only once per completed
 // window -- the caller (recordAndCheck) enforces this by gating the call
 // on windowJustCompleted rather than invoking it on every entry the way
@@ -407,10 +425,11 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		// combined with the relative floor (also 0 at mean 0) the effective
 		// stddev collapses to 0, leaving this feature permanently blind to a
 		// first deny spike no matter how severe. The correction adds half an
-		// imaginary deny to a small, FIXED number of pseudo-observations (the
-		// standard continuity correction for a proportion near a boundary) --
-		// deliberately NOT this window's own toolCalls (round 9's choice) and
-		// NOT the baseline's accumulated fold count (round 7's original).
+		// imaginary deny to a small, FIXED number of pseudo-observations,
+		// denyRatioContinuityWeight (the standard continuity correction for a
+		// proportion near a boundary) -- deliberately NOT this window's own
+		// toolCalls (round 9's choice) and NOT the baseline's accumulated fold
+		// count (round 7's original).
 		//
 		// The fold count was wrong because it grows unboundedly over an
 		// identity's lifetime, making the invented SE shrink without bound as
@@ -439,8 +458,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		// counter at all, window-based or baseline-based.
 		p := st.mlStats.denyRatio.mean
 		n := float64(st.prev.toolCalls)
-		const pseudoObservations = float64(minSamplesForZScore)
-		pSmoothed := (p*pseudoObservations + 0.5) / (pseudoObservations + 1)
+		pSmoothed := (p*denyRatioContinuityWeight + 0.5) / (denyRatioContinuityWeight + 1)
 		se := math.Sqrt(pSmoothed * (1 - pSmoothed) / n)
 		zDenyBlock = st.mlStats.denyRatio.ZScoreFloored(denyRatio, se)
 		// zToolCalls exists solely to gate deny_ratio's block candidacy on
