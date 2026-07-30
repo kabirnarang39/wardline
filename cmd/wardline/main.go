@@ -412,13 +412,39 @@ func runServe(logger *slog.Logger, args []string) {
 
 	var credentialHandler *credentialadapter.Handler
 	var revokerCloser io.Closer
+	var oidcCloser io.Closer
 	if credentialIssuanceEnabled {
-		bootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
-		if err != nil {
-			logger.Error("failed to load credentials file", "error", err)
-			os.Exit(1)
+		var bootstrapper credentialdomain.Bootstrapper
+		if cfg.Credential.BootstrapSource == "oidc" {
+			oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+			if err != nil {
+				logger.Error("failed to initialize oidc bootstrapper", "error", err)
+				os.Exit(1)
+			}
+			bootstrapper = oidcBootstrapper
+			// Registered as a closer so its JWKS cache's background refresh
+			// goroutines are shut down on exit -- see OIDCBootstrapper.Close's
+			// doc comment.
+			oidcCloser = oidcBootstrapper
+			// OIDC has no static identity registry to look up an arbitrary
+			// identity's tenant from after the fact -- it only ever learns an
+			// identity's tenant at the moment that identity itself
+			// authenticates. Fail closed: every revoke of any identity now
+			// requires a global ClusterRoleBinding grant. Known limitation,
+			// documented in Task 25's docs update rather than solved
+			// differently here.
+			identityTenantLookup = func(string) (string, bool) { return "", false }
+			logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
+		} else {
+			psBootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
+			if err != nil {
+				logger.Error("failed to load credentials file", "error", err)
+				os.Exit(1)
+			}
+			bootstrapper = psBootstrapper
+			identityTenantLookup = psBootstrapper.TenantOf
+			logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 		}
-		identityTenantLookup = bootstrapper.TenantOf
 		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
@@ -451,7 +477,6 @@ func runServe(logger *slog.Logger, args []string) {
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.
 		identityAuth = proxyadapter.NewBearerIdentity(verification)
-		logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 	}
 
 	// Declared as the interface type and left at its zero value (a true
@@ -561,6 +586,11 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("revoker shutdown failed", "error", err)
 				}
 			}
+			if oidcCloser != nil {
+				if err := oidcCloser.Close(); err != nil {
+					logger.Error("oidc bootstrapper shutdown failed", "error", err)
+				}
+			}
 			if healthDB != nil {
 				if err := healthDB.Close(); err != nil {
 					logger.Error("health-check database pool shutdown failed", "error", err)
@@ -634,6 +664,11 @@ func runServe(logger *slog.Logger, args []string) {
 	if revokerCloser != nil {
 		if err := revokerCloser.Close(); err != nil {
 			logger.Error("revoker shutdown failed", "error", err)
+		}
+	}
+	if oidcCloser != nil {
+		if err := oidcCloser.Close(); err != nil {
+			logger.Error("oidc bootstrapper shutdown failed", "error", err)
 		}
 	}
 	if healthDB != nil {
@@ -817,6 +852,18 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile); err != nil {
 			logger.Error("failed to load credential signing key file", "error", err)
 			os.Exit(1)
+		}
+	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.BootstrapSource == "oidc" {
+		// Soft warning, not os.Exit(1): the IdP's JWKS endpoint may be
+		// transiently unreachable from wherever validate-config runs (e.g. a
+		// CI pipeline outside the IdP's network) without the rest of the
+		// oidc config block being wrong -- see design doc "CLI".
+		oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+		if err != nil {
+			logger.Warn("failed to initialize oidc bootstrapper (jwks endpoint may be unreachable); not treated as a hard failure", "error", err)
+		} else if err := oidcBootstrapper.Close(); err != nil {
+			logger.Warn("failed to shut down oidc bootstrapper after validation", "error", err)
 		}
 	}
 	// Check that anomaly.output's parent directory exists rather than

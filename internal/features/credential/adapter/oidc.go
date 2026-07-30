@@ -12,6 +12,8 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 )
 
+var _ domain.Bootstrapper = (*OIDCBootstrapper)(nil)
+
 // jwksRefreshInterval bounds how often the OIDC bootstrapper re-fetches
 // the IdP's JWKS -- long enough to avoid hammering the IdP on every
 // login, short enough that a real key rotation (which every major IdP

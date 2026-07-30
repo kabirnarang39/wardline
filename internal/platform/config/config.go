@@ -51,9 +51,18 @@ type TracingConfig struct {
 	ServiceName  string `yaml:"service_name"`  // defaults to "wardline"
 }
 
-// CredentialConfig configures preshared-secret credential issuance. Only
-// validated (and only meaningful) when the credential_issuance feature
-// flag is on.
+// OIDCConfig configures the OIDC SSO bootstrap adapter. Only validated
+// (and only meaningful) when credential.bootstrap_source is "oidc".
+type OIDCConfig struct {
+	Issuer        string `yaml:"issuer"`
+	JWKSURI       string `yaml:"jwks_uri"`
+	Audience      string `yaml:"audience"`
+	IdentityClaim string `yaml:"identity_claim"` // defaults to "sub"
+	TenantClaim   string `yaml:"tenant_claim"`   // defaults to "tenant"
+}
+
+// CredentialConfig configures credential issuance. Only validated (and
+// only meaningful) when the credential_issuance feature flag is on.
 type CredentialConfig struct {
 	IdentitiesFile string `yaml:"identities_file"`
 
@@ -67,6 +76,12 @@ type CredentialConfig struct {
 	// load-and-parse happens at wardline serve/validate-config
 	// construction time via credentialadapter.NewJWTIssuerVerifier.
 	SigningKeyFile string `yaml:"signing_key_file"`
+
+	// BootstrapSource selects which Bootstrapper adapter authenticates a
+	// credential exchange: "presharedsecret" (default, credentials.yaml
+	// via IdentitiesFile) or "oidc" (OIDC ID token via OIDC below).
+	BootstrapSource string     `yaml:"bootstrap_source"`
+	OIDC            OIDCConfig `yaml:"oidc"`
 }
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
@@ -255,8 +270,26 @@ func (c *Config) validate() error {
 			c.Tracing.ServiceName = defaultTracingServiceName
 		}
 	}
-	if c.Features["credential_issuance"] && c.Credential.IdentitiesFile == "" {
-		problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+	if c.Features["credential_issuance"] {
+		if c.Credential.IdentitiesFile == "" {
+			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+		}
+		if c.Credential.BootstrapSource == "" {
+			c.Credential.BootstrapSource = "presharedsecret"
+		} else if c.Credential.BootstrapSource != "presharedsecret" && c.Credential.BootstrapSource != "oidc" {
+			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret" or "oidc", got %q`, c.Credential.BootstrapSource))
+		}
+		if c.Credential.BootstrapSource == "oidc" {
+			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.JWKSURI == "" || c.Credential.OIDC.Audience == "" {
+				problems = append(problems, "credential.oidc.issuer, jwks_uri, and audience must all be set when credential.bootstrap_source is \"oidc\"")
+			}
+			if c.Credential.OIDC.IdentityClaim == "" {
+				c.Credential.OIDC.IdentityClaim = "sub"
+			}
+			if c.Credential.OIDC.TenantClaim == "" {
+				c.Credential.OIDC.TenantClaim = "tenant"
+			}
+		}
 	}
 	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {
 		problems = append(problems, "rbac.config_file must not be empty when features.rbac is true")
