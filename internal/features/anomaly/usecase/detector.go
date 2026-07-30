@@ -358,76 +358,99 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	// artifact-inflated z: cmd/wardline's ml_score e2e baseline (2-3 calls
 	// over 1-2 distinct tools per window) has both features in that zone.
 	zRate := zCount(&st.mlStats.rate, rate)
-	zDiversity := zCount(&st.mlStats.diversity, diversity)
-	zDeny := st.mlStats.denyRatio.ZScore(denyRatio)
-	// deny_ratio's block-gating z-score additionally floors the effective
-	// stddev at this window's own binomial standard error,
-	// sqrt(pSmoothed*(1-pSmoothed)/toolCalls) -- a ratio's sampling noise
-	// depends on how many real tool calls it was computed from, and the
-	// existing floors (calibrated from the baseline's typical window size)
-	// have no way to know this window's toolCalls is far smaller. This is
-	// separate from zDeny (used for the ml_score log record and the
-	// anomalous/fold-conditionally decision) so a small, noisy window still
-	// gets logged as telemetry -- it just can't gate an auto-block. Below
-	// MinCalls real tool calls specifically (as distinct from the existing
-	// MinCalls gate on total, which passthrough traffic inflates without
-	// adding a single tool call), there's no reliable signal at all: treated
-	// as 0.
-	//
-	// pSmoothed is a continuity-corrected estimate of the baseline mean,
-	// used only for this SE computation (never for the z-score's numerator,
-	// which stays the true historical mean p): at p=0 (an identity that has
-	// never once been denied), the raw formula sqrt(0*(1-0)/n) is 0, and
-	// combined with the relative floor (also 0 at mean 0) the effective
-	// stddev collapses to 0, leaving this feature permanently blind to a
-	// first deny spike no matter how severe. The correction adds half an
-	// imaginary deny to a small, FIXED number of pseudo-observations (the
-	// standard continuity correction for a proportion near a boundary),
-	// reusing minSamplesForZScore as that weight -- deliberately NOT this
-	// window's own toolCalls (round 9's choice) and NOT the baseline's
-	// accumulated fold count (round 7's original).
-	//
-	// The fold count was wrong because it grows unboundedly over an
-	// identity's lifetime, making the invented SE shrink without bound as
-	// clean history piled up: a single ordinary denial after ~159 clean
-	// windows scored z=4.01 (blocked), and after 500 windows z=7.08, purely
-	// from having run cleanly longer (fixed in round 8).
-	//
-	// toolCalls was wrong for a subtler reason (round 11): at a spotless
-	// baseline (p=0) it made pSmoothed itself decay as ~0.5/n, so the
-	// resulting se carried a 1/n factor -- which canceled exactly against
-	// denyRatio's own 1/n, collapsing this "binomial standard error" into a
-	// bare linear function of the raw denial count, independent of window
-	// size. The same fixed 3 habitual denials scored z=4.40 in a 20-call
-	// window and z=4.25 in a 500-call one, both past the shipped example
-	// config's 4.0 block threshold: an operator newly denying one tool
-	// auto-blocked an agent at a 0.6% deny rate, and because round 9's
-	// blockScore promotion marks that window anomalous, the baseline never
-	// folded and the block re-fired forever. A proper proportion test's SE
-	// must shrink as 1/sqrt(n) as the sample grows -- the same fixed
-	// absolute count matters less in a larger sample -- and decoupling the
-	// correction's weight from n restores exactly that (2.93 at n=20, 0.59
-	// at n=500; a real 50%-deny window at n=20 still scores 9.76).
-	//
-	// A fixed weight also makes round 8's concern impossible by
-	// construction: the correction no longer depends on any accumulating
-	// counter at all, window-based or baseline-based.
-	var zDenyBlock float64
+
+	// diversity, deny_ratio (both zDeny and zDenyBlock), and toolCalls all
+	// require a baseline built from windows that actually contained real
+	// tool calls -- their signal is undefined, not just "quiet", when a
+	// window has none. The MinCalls gate above only checks prev.total,
+	// which protocol passthrough and tool-less error entries can clear on
+	// their own with zero real tool calls in the window (see isToolCall's
+	// doc comment: both are counted in total but excluded from toolCalls).
+	// Scoring or folding these three features from such a window pins
+	// their baselines at mean 0 -- and the very next legitimate window with
+	// real tool calls then reads as a wild outlier by construction (round
+	// 12: 12 windows of pure tools/list passthrough, then one real 5-tool
+	// window, scored z=5.00 and auto-blocked; because the window is then
+	// flagged anomalous it never folds, so the false block repeats forever,
+	// the same permanent-lockout failure class every prior round has fixed
+	// for a different feature). Gating these three on toolCalls clearing
+	// MinCalls too -- the same threshold zDenyBlock already used, now
+	// applied consistently -- means a tool-call-free window contributes
+	// nothing to any of the three baselines, and the first real window
+	// afterward is scored against whatever real history came before (or,
+	// if there is none yet, against an empty baseline, which ZScore's own
+	// minSamplesForZScore floor already treats as "not enough signal to
+	// judge" rather than a degenerate mean-0 stand-in).
+	var zDiversity, zDeny, zDenyBlock, zToolCalls float64
 	if st.prev.toolCalls >= d.cfg.MLScore.MinCalls {
+		zDiversity = zCount(&st.mlStats.diversity, diversity)
+		zDeny = st.mlStats.denyRatio.ZScore(denyRatio)
+		// deny_ratio's block-gating z-score additionally floors the effective
+		// stddev at this window's own binomial standard error,
+		// sqrt(pSmoothed*(1-pSmoothed)/toolCalls) -- a ratio's sampling noise
+		// depends on how many real tool calls it was computed from, and the
+		// existing floors (calibrated from the baseline's typical window size)
+		// have no way to know this window's toolCalls is far smaller. This is
+		// separate from zDeny (used for the ml_score log record and the
+		// anomalous/fold-conditionally decision) so a small, noisy window still
+		// gets logged as telemetry -- it just can't gate an auto-block. Below
+		// MinCalls real tool calls specifically (as distinct from the existing
+		// MinCalls gate on total, which passthrough traffic inflates without
+		// adding a single tool call), there's no reliable signal at all: treated
+		// as 0 -- which since round 12 is what the enclosing gate does for all
+		// three of these features, not just this one.
+		//
+		// pSmoothed is a continuity-corrected estimate of the baseline mean,
+		// used only for this SE computation (never for the z-score's numerator,
+		// which stays the true historical mean p): at p=0 (an identity that has
+		// never once been denied), the raw formula sqrt(0*(1-0)/n) is 0, and
+		// combined with the relative floor (also 0 at mean 0) the effective
+		// stddev collapses to 0, leaving this feature permanently blind to a
+		// first deny spike no matter how severe. The correction adds half an
+		// imaginary deny to a small, FIXED number of pseudo-observations (the
+		// standard continuity correction for a proportion near a boundary) --
+		// deliberately NOT this window's own toolCalls (round 9's choice) and
+		// NOT the baseline's accumulated fold count (round 7's original).
+		//
+		// The fold count was wrong because it grows unboundedly over an
+		// identity's lifetime, making the invented SE shrink without bound as
+		// clean history piled up: a single ordinary denial after ~159 clean
+		// windows scored z=4.01 (blocked), and after 500 windows z=7.08, purely
+		// from having run cleanly longer (fixed in round 8).
+		//
+		// toolCalls was wrong for a subtler reason (round 11): at a spotless
+		// baseline (p=0) it made pSmoothed itself decay as ~0.5/n, so the
+		// resulting se carried a 1/n factor -- which canceled exactly against
+		// denyRatio's own 1/n, collapsing this "binomial standard error" into a
+		// bare linear function of the raw denial count, independent of window
+		// size. The same fixed 3 habitual denials scored z=4.40 in a 20-call
+		// window and z=4.25 in a 500-call one, both past the shipped example
+		// config's 4.0 block threshold: an operator newly denying one tool
+		// auto-blocked an agent at a 0.6% deny rate, and because round 9's
+		// blockScore promotion marks that window anomalous, the baseline never
+		// folded and the block re-fired forever. A proper proportion test's SE
+		// must shrink as 1/sqrt(n) as the sample grows -- the same fixed
+		// absolute count matters less in a larger sample -- and decoupling the
+		// correction's weight from n restores exactly that (2.93 at n=20, 0.59
+		// at n=500; a real 50%-deny window at n=20 still scores 9.76).
+		//
+		// A fixed weight also makes round 8's concern impossible by
+		// construction: the correction no longer depends on any accumulating
+		// counter at all, window-based or baseline-based.
 		p := st.mlStats.denyRatio.mean
 		n := float64(st.prev.toolCalls)
 		const pseudoObservations = float64(minSamplesForZScore)
 		pSmoothed := (p*pseudoObservations + 0.5) / (pseudoObservations + 1)
 		se := math.Sqrt(pSmoothed * (1 - pSmoothed) / n)
 		zDenyBlock = st.mlStats.denyRatio.ZScoreFloored(denyRatio, se)
+		// zToolCalls exists solely to gate deny_ratio's block candidacy on
+		// whether deny_ratio's own denominator declined -- see mlFeatureState's
+		// doc comment in identity_state.go for why zRate (scored from total,
+		// deliberately inclusive of protocol passthrough) cannot stand in for
+		// this. Never scored as its own ml_score feature or logged.
+		zToolCalls = st.mlStats.toolCalls.ZScore(n)
 	}
 	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
-	// zToolCalls exists solely to gate deny_ratio's block candidacy on
-	// whether deny_ratio's own denominator declined -- see mlFeatureState's
-	// doc comment in identity_state.go for why zRate (scored from total,
-	// deliberately inclusive of protocol passthrough) cannot stand in for
-	// this. Never scored as its own ml_score feature or logged.
-	zToolCalls := st.mlStats.toolCalls.ZScore(float64(st.prev.toolCalls))
 
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
 	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival)
@@ -454,12 +477,20 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	// blocked) until the operator raises score_threshold -- the safer
 	// failure direction, since the alternative is silently desensitizing on
 	// what might be real attack traffic.
+	//
+	// The inner gate mirrors the scoring one above exactly: a window with no
+	// real tool calls is not evidence about tool diversity, deny ratio or
+	// tool-call volume, so it must not join those three baselines either --
+	// scoring a tool-call-free window as 0 while still folding it would leave
+	// the mean-0 poisoning fully intact.
 	if !anomalous {
 		st.mlStats.rate.Update(rate)
-		st.mlStats.diversity.Update(diversity)
-		st.mlStats.denyRatio.Update(denyRatio)
 		st.mlStats.interArrival.Update(interArrival)
-		st.mlStats.toolCalls.Update(float64(st.prev.toolCalls))
+		if st.prev.toolCalls >= d.cfg.MLScore.MinCalls {
+			st.mlStats.diversity.Update(diversity)
+			st.mlStats.denyRatio.Update(denyRatio)
+			st.mlStats.toolCalls.Update(float64(st.prev.toolCalls))
+		}
 	}
 
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
