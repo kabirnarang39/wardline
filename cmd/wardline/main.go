@@ -50,6 +50,8 @@ import (
 	rbacadapter "github.com/kabirnarang39/wardline/internal/features/rbac/adapter"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
+	scimadapter "github.com/kabirnarang39/wardline/internal/features/scim/adapter"
+	scimusecase "github.com/kabirnarang39/wardline/internal/features/scim/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
@@ -378,15 +380,71 @@ func runServe(logger *slog.Logger, args []string) {
 	healthHandler := healthadapter.NewHandler(healthPinger)
 
 	rbacEnabled := featureFlags.Enabled("rbac")
+	scimEnabled := featureFlags.Enabled("scim")
 	var rbacChecker *rbacusecase.Checker
+	// rbacAuthorizer is kept as a named reference to the file-loaded
+	// *StaticAuthorizer (rather than only assigning straight into
+	// rbacChecker) so the scim block below can rewrap it in a
+	// CompositeAuthorizer without reloading rbac.config_file.
+	var rbacAuthorizer *rbacadapter.StaticAuthorizer
 	if rbacEnabled {
 		authorizer, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile)
 		if err != nil {
 			logger.Error("failed to load rbac file", "error", err)
 			os.Exit(1)
 		}
+		rbacAuthorizer = authorizer
 		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
 		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
+	}
+
+	// scimBindingStore holds either an in-memory *scimusecase.BindingStore
+	// or a *scimadapter.PostgresBindingStore, spelled out here as the
+	// narrow method set both scimusecase.ProvisioningService.SetBindingStore
+	// and rbacusecase.NewCompositeAuthorizer's dynamic source expect --
+	// their own bindingSink/dynamicBindingSource types are unexported, so
+	// this package can't reference them by name.
+	var scimBindingStore interface {
+		SetGroupMembers(groupName string, memberUserNames []string)
+		RemoveGroup(groupName string)
+		Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
+	}
+	var scimHandler http.Handler
+	if scimEnabled {
+		if cfg.Scim.PersistPostgres {
+			pbs, err := scimadapter.NewPostgresBindingStore(cfg.Audit.PostgresDSN, logger)
+			if err != nil {
+				logger.Error("failed to initialize scim postgres binding store", "error", err)
+				os.Exit(1)
+			}
+			scimBindingStore = pbs
+			logger.Info("scim-provisioned bindings backed by postgres (shared across replicas)")
+		} else {
+			scimBindingStore = scimusecase.NewBindingStore()
+			logger.Warn("scim-provisioned bindings are in-process only; safe for exactly one replica -- enable scim.persist_postgres to share across replicas")
+		}
+		if rbacEnabled {
+			rbacChecker = rbacusecase.NewChecker(featureFlags, rbacusecase.NewCompositeAuthorizer(
+				rbacAuthorizer,
+				scimBindingStore,
+				rbacAuthorizer.RoleHasPermission,
+			))
+		}
+
+		// config.Config.validate() only requires scim.bearer_token_env to
+		// name a non-empty env var, not that the env var actually resolves
+		// to a value at runtime -- scimadapter.NewHandler panics on an
+		// empty bearerToken, so that mistake is caught here with a clean
+		// log+exit instead of a raw panic.
+		scimToken := os.Getenv(cfg.Scim.BearerTokenEnv)
+		if scimToken == "" {
+			logger.Error("scim bearer token env var is not set or empty", "env", cfg.Scim.BearerTokenEnv)
+			os.Exit(1)
+		}
+		provisioning := scimusecase.NewProvisioningService()
+		provisioning.SetBindingStore(scimBindingStore)
+		scimHandler = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
+		logger.Info("scim enabled", "path", "/scim/v2/")
 	}
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
@@ -533,6 +591,13 @@ func runServe(logger *slog.Logger, args []string) {
 		// is off, matching /credentials/token's unconditional-when-flag-on
 		// pattern.
 		extraRoutes["/federation/summaries"] = federationSummariesHandler
+	}
+	if scimEnabled {
+		// No rbacadapter.RequirePermission wrapping here, unlike
+		// /dashboard/ -- SCIM authenticates its own bearer token inside
+		// Handler.ServeHTTP, an independent trust boundary matching
+		// /federation/summaries' own message-level auth rather than RBAC.
+		extraRoutes["/scim/v2/"] = scimHandler
 	}
 	// Unconditional, unlike every other extraRoutes entry -- every
 	// deployment needs health/readiness checking, it isn't a feature an
@@ -847,6 +912,21 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			logger.Error("failed to load rbac file", "error", err)
 			os.Exit(1)
 		}
+	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("scim") {
+		// Attempts the same handler construction runServe does, minus
+		// scim.persist_postgres -- validate-config must have no network
+		// side effects, matching postgres_storage not being probed here
+		// either. This still catches the real, common misconfiguration:
+		// scim.bearer_token_env naming an env var that isn't actually set.
+		scimToken := os.Getenv(cfg.Scim.BearerTokenEnv)
+		if scimToken == "" {
+			logger.Error("scim bearer token env var is not set or empty", "env", cfg.Scim.BearerTokenEnv)
+			os.Exit(1)
+		}
+		provisioning := scimusecase.NewProvisioningService()
+		provisioning.SetBindingStore(scimusecase.NewBindingStore())
+		_ = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
 	}
 	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.SigningKeyFile != "" {
 		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile); err != nil {
