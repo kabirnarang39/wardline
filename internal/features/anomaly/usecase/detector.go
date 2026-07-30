@@ -291,6 +291,15 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	if st.prev.total < d.cfg.MLScore.MinCalls {
 		return domain.Anomaly{}, false
 	}
+	// rate is deliberately volumetric over *all* of this window's traffic,
+	// including MCP protocol-lifecycle passthrough (see windowCounts's doc
+	// comment in identity_state.go) -- a client reconnecting/handshaking far
+	// more often than usual is itself an unusual pattern (a misbehaving or
+	// flapping client, or resource exhaustion) worth catching, independent of
+	// whether the underlying requests are real tool calls. Investigated in
+	// round 7 and confirmed intentional, not a volume-decline-style false
+	// positive in the sense the rest of this function's floors exist to
+	// close.
 	rate := float64(st.prev.total)
 	// diversity is the raw count of distinct tools in this window, not
 	// distinct/total. A ratio *rises* when call volume drops over an
