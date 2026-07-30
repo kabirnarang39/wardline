@@ -11,6 +11,7 @@ import (
 type entryJSON struct {
 	Timestamp string `json:"timestamp"`
 	Identity  string `json:"identity"`
+	Tenant    string `json:"tenant,omitempty"`
 	Tool      string `json:"tool"`
 	Decision  string `json:"decision"`
 	LatencyMS int64  `json:"latency_ms"`
@@ -33,6 +34,7 @@ func (w *JSONLWriter) Write(e domain.Entry) error {
 	line, err := json.Marshal(entryJSON{
 		Timestamp: e.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Tool:      e.Tool,
 		Decision:  e.Decision,
 		LatencyMS: e.LatencyMS,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // testSchema isolates this package's Postgres tests from every other
@@ -192,6 +193,60 @@ func TestPostgresWriter_QueryReturnsEntriesInRangeOrderedByTimestamp(t *testing.
 	}
 	if got[1].Reason != "denied by policy" || got[1].TraceID != "trace-1" {
 		t.Errorf("expected nullable columns (reason, trace_id) to round-trip, got %+v", got[1])
+	}
+}
+
+// TestPostgresWriter_MissingTenantDefaultsOnRead proves the migration is
+// safe against a table that predates this task: it hand-creates the
+// pre-Task-20 schema (no tenant column) and inserts a row directly, the
+// same shape a deployment upgrading in place would have on disk, then
+// constructs a PostgresWriter (which must run the additive migration
+// against that already-populated table) and confirms the legacy row
+// reads back with Tenant defaulted, never empty.
+func TestPostgresWriter_MissingTenantDefaultsOnRead(t *testing.T) {
+	dsn := testDSN(t)
+	dropTable(t, dsn)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open to seed legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE audit_entries (
+	id BIGSERIAL PRIMARY KEY,
+	timestamp TIMESTAMPTZ NOT NULL,
+	identity TEXT NOT NULL,
+	tool TEXT NOT NULL,
+	decision TEXT NOT NULL,
+	latency_ms BIGINT NOT NULL,
+	reason TEXT,
+	trace_id TEXT
+)`); err != nil {
+		t.Fatalf("create pre-Task-20 schema: %v", err)
+	}
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(
+		`INSERT INTO audit_entries (timestamp, identity, tool, decision, latency_ms) VALUES ($1, $2, $3, $4, $5)`,
+		ts, "legacy-agent", "read_file", "allow", 5,
+	); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeding connection: %v", err)
+	}
+
+	w, err := adapter.NewPostgresWriter(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresWriter (must migrate the pre-existing table): %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	got, err := w.Query(context.Background(), ts.Add(-time.Hour), ts.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 || got[0].Tenant != tenant.Default {
+		t.Fatalf("got %+v, want one entry with Tenant=%q", got, tenant.Default)
 	}
 }
 
