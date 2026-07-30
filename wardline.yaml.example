@@ -14,6 +14,7 @@ features: {}
 #   rbac: true                 # off by default — see README.md "RBAC"
 #   anomaly_detection: true    # off by default — see README.md "Anomaly detection"
 #   federation: true           # off by default, requires anomaly_detection — see README.md "Federation"
+#   scim: true                 # off by default, provisions RBAC bindings from an IdP — see README.md "SCIM"
 # audit:
 #   postgres_dsn: "postgres://user:pass@localhost:5432/wardline?sslmode=disable"
 #   # only used when features.postgres_storage is true; audit.output is
@@ -21,15 +22,33 @@ features: {}
 # budget:
 #   requests_per_window: 100
 #   window_seconds: 60
+#   tenants:                    # optional per-tenant override, checked in ADDITION to the
+#                                # identity bucket above (both must allow) -- see README.md "Budget enforcement"
+#     acme:
+#       requests_per_window: 500
+#       window_seconds: 60
 # tracing:
 #   otlp_endpoint: "localhost:4318"   # required — host:port, no scheme, plaintext OTLP/HTTP
 #   service_name: "wardline"          # optional — defaults to "wardline"
 # credential:
 #   identities_file: "./credentials.yaml.example"
-#   # required when features.credential_issuance is true
+#   # required when features.credential_issuance is true, regardless of
+#   # bootstrap_source (still required, though unused, under oidc below)
+#   bootstrap_source: "presharedsecret"   # "presharedsecret" (default) | "oidc" -- see README.md "SSO"
+#   oidc:
+#     # only read when bootstrap_source is "oidc" -- an OIDC ID token,
+#     # verified against the IdP's JWKS, replaces the preshared secret
+#     issuer: "https://idp.example.com/"
+#     jwks_uri: "https://idp.example.com/.well-known/jwks.json"
+#     audience: "wardline"
+#     identity_claim: "sub"        # optional, default "sub"
+#     tenant_claim: "tenant"       # optional, default "tenant" -- required present on every token, no default
 # rbac:
 #   config_file: "./rbac.yaml.example"
 #   # required when features.rbac is true
+# scim:
+#   bearer_token_env: "WARDLINE_SCIM_TOKEN"   # env var, never inline -- required when features.scim is true
+#   persist_postgres: false                     # requires features.postgres_storage when true -- see README.md "SCIM"
 # anomaly:
 #   output: "./anomaly.jsonl"
 #   # required when features.anomaly_detection is true, and must not be the

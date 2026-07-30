@@ -24,7 +24,9 @@ bindings:
   - subject: alice
     role: admin
   # "tenant" set -> RoleBinding: bob holds "viewer" only within the
-  # "default" tenant (today's only tenant — see README.md "RBAC").
+  # "default" tenant. Tenant scoping is real and enforced — bob's grant
+  # does not extend to any other tenant's data (policy, audit, budget,
+  # anomaly, dashboard) — see README.md "RBAC".
   - subject: bob
     role: viewer
     tenant: default
