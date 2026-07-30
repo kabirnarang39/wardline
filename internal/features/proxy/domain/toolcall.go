@@ -11,6 +11,11 @@ import (
 type ToolCall struct {
 	Identity string
 
+	// Tenant is the calling identity's tenant, resolved by
+	// IdentityAuthenticator alongside Identity. "" means no tenant
+	// scoping applies (see policydomain.Context.Tenant).
+	Tenant string
+
 	// Tool is the authoritative tool name, extracted by Wardline's own
 	// JSON parser. Downstream consumers (policy, audit) should always
 	// key off Tool, never re-parse Params looking for a "name" key.

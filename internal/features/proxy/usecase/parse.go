@@ -26,8 +26,9 @@ type toolCallParams struct {
 	Name string `json:"name"`
 }
 
-// ParseRequest parses an incoming MCP JSON-RPC request body. identity
-// comes from the caller (e.g. a request header), not from the body.
+// ParseRequest parses an incoming MCP JSON-RPC request body. identity and
+// tenantName come from the caller (already resolved by an
+// IdentityAuthenticator, e.g. from a request header), not from the body.
 //
 // A "tools/call" method returns IsToolCall=true with Call populated —
 // the existing policy/budget-evaluated path. Any other well-formed
@@ -41,7 +42,7 @@ type toolCallParams struct {
 // An error is returned only for a genuinely malformed request: unparsable
 // JSON, a JSON-RPC envelope missing the mandatory "method" field, or (for
 // "tools/call" specifically) missing/malformed tool-call params.
-func ParseRequest(identity string, body []byte) (domain.ParsedRequest, error) {
+func ParseRequest(identity, tenantName string, body []byte) (domain.ParsedRequest, error) {
 	var env jsonRPCEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return domain.ParsedRequest{ID: nullID}, fmt.Errorf("parse json-rpc body: %w", err)
@@ -68,7 +69,7 @@ func ParseRequest(identity string, body []byte) (domain.ParsedRequest, error) {
 		return domain.ParsedRequest{ID: id}, fmt.Errorf("missing tool name")
 	}
 	return domain.ParsedRequest{
-		Call:       domain.ToolCall{Identity: identity, Tool: params.Name, Params: env.Params},
+		Call:       domain.ToolCall{Identity: identity, Tenant: tenantName, Tool: params.Name, Params: env.Params},
 		Method:     env.Method,
 		ID:         id,
 		IsToolCall: true,

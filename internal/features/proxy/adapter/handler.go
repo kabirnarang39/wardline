@@ -132,9 +132,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// docs/superpowers/specs/2026-07-27-credential-issuance-design.md
 	// "Error handling"). HeaderIdentity (the default) never errors, so
 	// this is a no-op when credential_issuance is off. The resolved
-	// tenant isn't threaded into policy/budget evaluation yet -- a later
-	// task in this plan does that; this handler only needs identity.
-	identity, _, err := h.identityAuth.Authenticate(r)
+	// tenant flows into ParseRequest below, and from there into the
+	// ToolCall/policy Context the Decider evaluates.
+	identity, tenant, err := h.identityAuth.Authenticate(r)
 	if err != nil {
 		h.logger.Warn("identity authentication failed", "remote_addr", r.RemoteAddr)
 		writeJSONRPCError(w, http.StatusUnauthorized, rpcCodeUnauthorized, nil, "unauthorized")
@@ -155,7 +155,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	parsed, err := proxyusecase.ParseRequest(identity, body)
+	parsed, err := proxyusecase.ParseRequest(identity, tenant, body)
 	if err != nil {
 		h.finish(span, identity, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())

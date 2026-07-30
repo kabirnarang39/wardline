@@ -31,3 +31,24 @@ func TestDecider_Deny(t *testing.T) {
 		t.Errorf("expected Allow=false, got %+v", v)
 	}
 }
+
+// recordingEngine captures the Context it was last called with, so a test
+// can assert on fields (like Tenant) that fakeEngine's fixed-effect shape
+// has no way to observe.
+type recordingEngine struct {
+	captured policydomain.Context
+}
+
+func (r *recordingEngine) Evaluate(ctx policydomain.Context) policydomain.Decision {
+	r.captured = ctx
+	return policydomain.Decision{Effect: policydomain.EffectAllow}
+}
+
+func TestDecide_PassesTenantToPolicyContext(t *testing.T) {
+	engine := &recordingEngine{}
+	d := usecase.NewDecider(engine)
+	d.Decide(domain.ToolCall{Identity: "alice", Tool: "search", Tenant: "acme"})
+	if engine.captured.Tenant != "acme" {
+		t.Fatalf("got tenant %q passed to policy engine, want \"acme\"", engine.captured.Tenant)
+	}
+}

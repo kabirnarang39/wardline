@@ -27,6 +27,7 @@ import (
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
+	policyusecase "github.com/kabirnarang39/wardline/internal/features/policy/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
@@ -826,6 +827,73 @@ func TestHandler_BlockedIdentity_RejectedBeforePolicyEvaluation(t *testing.T) {
 	if strings.Contains(env.Error.Message, blockReason) {
 		t.Error("response body must never contain the detailed anomaly-detection reason")
 	}
+}
+
+// newTenantScopedRequest is like newRequest but also sets the
+// X-Wardline-Tenant header, so HeaderIdentity resolves a real (non-default)
+// tenant for the request.
+func newTenantScopedRequest(identity, tenant, tool string) *http.Request {
+	req := newRequest(identity, tool)
+	req.Header.Set("X-Wardline-Tenant", tenant)
+	return req
+}
+
+// TestHandler_TenantScopedPolicyRuleGatesRealProxiedCall proves tenant
+// actually gates a real proxied tool call end-to-end through Handler.ServeHTTP
+// — not just at the Matcher/Decider unit level. It wires the real
+// policyusecase.Matcher (the production YAML-rule engine, not a test fake)
+// with a rule scoped to tenant "acme", and sends the exact same
+// identity+tool through two requests that differ only in their resolved
+// tenant (via the real HeaderIdentity authenticator reading
+// X-Wardline-Tenant): "acme" must be allowed through to upstream, any other
+// tenant must be denied before upstream is ever reached. This is the moment
+// tenant becomes real for the hot proxy path, not just plumbing.
+func TestHandler_TenantScopedPolicyRuleGatesRealProxiedCall(t *testing.T) {
+	rules := []policydomain.Rule{
+		{Identity: "agent-abc123", Tool: "read_file", Effect: policydomain.EffectAllow, Tenant: "acme"},
+	}
+	matcher := policyusecase.NewMatcher(rules, policydomain.EffectDeny)
+	decider := proxyusecase.NewDecider(matcher)
+
+	newHandler := func(t *testing.T, upstreamHit *bool) *adapter.Handler {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*upstreamHit = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(upstream.Close)
+		upstreamURL, _ := url.Parse(upstream.URL)
+		writer := &fakeWriter{}
+		recorder := auditusecase.NewRecorder(writer, nil, nil)
+		return adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil)
+	}
+
+	t.Run("matching tenant reaches upstream", func(t *testing.T) {
+		var upstreamHit bool
+		handler := newHandler(t, &upstreamHit)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, newTenantScopedRequest("agent-abc123", "acme", "read_file"))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for tenant acme, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		if !upstreamHit {
+			t.Error("expected upstream to be reached for the allowed tenant")
+		}
+	})
+
+	t.Run("mismatched tenant denied before upstream", func(t *testing.T) {
+		var upstreamHit bool
+		handler := newHandler(t, &upstreamHit)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, newTenantScopedRequest("agent-abc123", "other-tenant", "read_file"))
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a mismatched tenant, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		if upstreamHit {
+			t.Error("upstream should never be reached for a tenant that doesn't match the policy rule")
+		}
+	})
 }
 
 func TestHandler_AutoBlockCheckerNil_BehavesIdenticallyToBefore(t *testing.T) {
