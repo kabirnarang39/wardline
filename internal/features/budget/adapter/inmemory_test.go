@@ -63,7 +63,7 @@ func TestInMemoryLimiter_IndependentPerIdentity(t *testing.T) {
 // identity-level limit, and a tenant with no override is unaffected.
 func TestInMemoryLimiter_TenantOverrideThrottlesIndependentlyOfIdentity(t *testing.T) {
 	l := adapter.NewInMemoryLimiter(1000, time.Minute) // generous global identity default
-	l.SetTenantLimit("acme", 1, time.Minute)            // acme tenant capped at 1 request/window
+	l.SetTenantLimit("acme", 1, time.Minute)           // acme tenant capped at 1 request/window
 
 	now := time.Now()
 	if v := l.Allow("alice", "acme", now); !v.Allowed {
@@ -74,6 +74,30 @@ func TestInMemoryLimiter_TenantOverrideThrottlesIndependentlyOfIdentity(t *testi
 	}
 	if v := l.Allow("carol", "widgets-inc", now); !v.Allowed {
 		t.Fatal("a different tenant with no override should be unaffected by acme's limit")
+	}
+}
+
+// TestInMemoryLimiter_IdentityBucketIsPerTenant is an I1 regression test:
+// the identity bucket used to be keyed by bare identity, so two tenants'
+// same-named identities (e.g. two different IdPs both provisioning
+// "alice") shared one rate-limit bucket, and either tenant could deny
+// service to the other's identically-named identity by exhausting its
+// own budget.
+func TestInMemoryLimiter_IdentityBucketIsPerTenant(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(1, time.Minute)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if v := l.Allow("alice", "acme", now); !v.Allowed {
+		t.Fatal("acme's alice first call should be allowed")
+	}
+	if v := l.Allow("alice", "acme", now); v.Allowed {
+		t.Fatal("acme's alice second call in the same window should be denied")
+	}
+
+	// widgets-inc's alice must be independently allowed -- before the
+	// fix, this call was denied by acme's alice's identity bucket.
+	if v := l.Allow("alice", "widgets-inc", now); !v.Allowed {
+		t.Fatal("widgets-inc's alice should not be throttled by acme's alice's identity bucket")
 	}
 }
 

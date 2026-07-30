@@ -13,7 +13,7 @@ type Entry struct {
 	// proxydomain.ToolCall.Tenant). "" means no tenant scoping applied.
 	Tenant string
 
-	Tool string
+	Tool      string
 	Decision  string // "allow", "deny", "throttled", "passthrough", "error", or "blocked"
 	LatencyMS int64
 

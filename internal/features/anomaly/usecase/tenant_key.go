@@ -1,11 +1,11 @@
 package usecase
 
-// tenantIdentityKey composes a tenant and identity into one map key. \x00
-// can't appear in either a tenant or identity string in practice (both
-// come from JWT claims / header values / SCIM UserNames), so this is a
-// safe, unambiguous join -- avoids a struct key's extra allocation
-// overhead on this codebase's hot path (Detector.Publish runs on every
-// proxied request).
+import "github.com/kabirnarang39/wardline/internal/platform/tenant"
+
+// tenantIdentityKey composes a tenant and identity into one map key --
+// a thin local alias for the shared tenant.Key join (promoted there so
+// budget's identity bucket can share the exact same implementation
+// instead of a second hand-copied one).
 //
 // Both Detector.state and BlockChecker.blocked must key exclusively
 // through this one function -- never build the composite key inline at a
@@ -15,5 +15,5 @@ package usecase
 // tenant's rate-spike or auto-block poison or lock out the other
 // tenant's identically-named identity.
 func tenantIdentityKey(tenantName, identity string) string {
-	return tenantName + "\x00" + identity
+	return tenant.Key(tenantName, identity)
 }

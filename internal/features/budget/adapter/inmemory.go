@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // bucket tracks one identity's fixed-window request count.
@@ -29,7 +30,11 @@ type InMemoryLimiter struct {
 	requestsPerWindow int
 	window            time.Duration
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// buckets is keyed by tenant.Key(tenant, identity), not by bare
+	// identity -- two tenants' same-named identities (e.g. two IdPs both
+	// provisioning "alice") must not share a rate-limit bucket. See
+	// tenant.Key's doc comment.
 	buckets map[string]*bucket
 	calls   uint64
 
@@ -81,7 +86,7 @@ func (l *InMemoryLimiter) SetTenantLimit(tenantName string, requestsPerWindow in
 // has a configured override) to admit the request -- an AND, not an OR. The
 // tenant check runs first so a request denied by an over-limit tenant never
 // also consumes identity budget.
-func (l *InMemoryLimiter) Allow(identity, tenant string, now time.Time) domain.Verdict {
+func (l *InMemoryLimiter) Allow(identity, tenantName string, now time.Time) domain.Verdict {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -90,21 +95,22 @@ func (l *InMemoryLimiter) Allow(identity, tenant string, now time.Time) domain.V
 		l.evictExpired(now)
 	}
 
-	if limit, ok := l.tenantLimits[tenant]; ok {
-		tb, exists := l.tenantBuckets[tenant]
+	if limit, ok := l.tenantLimits[tenantName]; ok {
+		tb, exists := l.tenantBuckets[tenantName]
 		if !exists {
 			tb = &bucket{}
-			l.tenantBuckets[tenant] = tb
+			l.tenantBuckets[tenantName] = tb
 		}
 		if v := checkAndAdvance(tb, limit.requestsPerWindow, limit.window, now); !v.Allowed {
 			return v
 		}
 	}
 
-	ib, exists := l.buckets[identity]
+	key := tenant.Key(tenantName, identity)
+	ib, exists := l.buckets[key]
 	if !exists {
 		ib = &bucket{}
-		l.buckets[identity] = ib
+		l.buckets[key] = ib
 	}
 	return checkAndAdvance(ib, l.requestsPerWindow, l.window, now)
 }
