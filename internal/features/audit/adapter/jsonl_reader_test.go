@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 func writeJSONLFile(t *testing.T, lines ...string) string {
@@ -95,6 +96,24 @@ func TestJSONLReader_EmptyFileReturnsNoEntriesNoError(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("expected no entries from an empty file, got %+v", entries)
+	}
+}
+
+func TestJSONLReader_MissingTenantDefaultsOnRead(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/audit.jsonl"
+	// A line predating this cycle -- no "tenant" key at all.
+	line := `{"timestamp":"2026-01-01T00:00:00Z","identity":"alice","tool":"search","decision":"allow","latency_ms":5,"reason":"","trace_id":""}`
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := adapter.NewJSONLReader(path)
+	entries, err := r.Query(context.Background(), time.Time{}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Tenant != tenant.Default {
+		t.Fatalf("got %+v, want one entry with Tenant=%q", entries, tenant.Default)
 	}
 }
 

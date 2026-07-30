@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // JSONLReader implements audit/domain.Reader by scanning a JSONL file
@@ -61,9 +62,19 @@ func (r *JSONLReader) Query(ctx context.Context, from, to time.Time) ([]domain.E
 		if ts.Before(from) || !ts.Before(to) {
 			continue
 		}
+		entryTenant := raw.Tenant
+		if entryTenant == "" {
+			// A pre-Task-19 line has no "tenant" key at all -- default it
+			// rather than let a scoping check see an empty string, which
+			// would silently match nothing (or everything, depending on
+			// the check) instead of the pre-existing single-tenant
+			// deployment's real tenant.
+			entryTenant = tenant.Default
+		}
 		entries = append(entries, domain.Entry{
 			Timestamp: ts,
 			Identity:  raw.Identity,
+			Tenant:    entryTenant,
 			Tool:      raw.Tool,
 			Decision:  raw.Decision,
 			LatencyMS: raw.LatencyMS,

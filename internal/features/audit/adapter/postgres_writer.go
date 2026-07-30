@@ -9,6 +9,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // writeTimeout bounds every Postgres operation (the startup Ping and every
@@ -42,9 +43,24 @@ CREATE TABLE IF NOT EXISTS audit_entries (
 const createTimestampIndexSQL = `
 CREATE INDEX IF NOT EXISTS audit_entries_timestamp_idx ON audit_entries (timestamp DESC)`
 
+// addTenantColumnSQL and createTenantIndexSQL are additive migrations
+// against a table that may already exist and be populated (from a
+// deployment predating this task) -- ADD COLUMN ... NOT NULL DEFAULT
+// backfills every pre-existing row with 'default' rather than leaving it
+// NULL or empty, so a row written before this migration ran still reads
+// back with a real tenant, never an empty string. Same
+// idempotent-at-construction posture as createTableSQL /
+// createTimestampIndexSQL, run every time NewPostgresWriter is called so
+// a replica that starts against an already-migrated database is a no-op.
+const addTenantColumnSQL = `
+ALTER TABLE audit_entries ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'`
+
+const createTenantIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_audit_entries_tenant ON audit_entries (tenant)`
+
 const insertSQL = `
-INSERT INTO audit_entries (timestamp, identity, tool, decision, latency_ms, reason, trace_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)`
+INSERT INTO audit_entries (timestamp, identity, tenant, tool, decision, latency_ms, reason, trace_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 
 // PostgresWriter is a domain.Writer backed by a real Postgres database —
 // a durable, SQL-queryable alternative to JSONLWriter, wired in when the
@@ -98,6 +114,20 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 		return nil, fmt.Errorf("create audit_entries timestamp index: %w", err)
 	}
 
+	tenantColCtx, tenantColCancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer tenantColCancel()
+	if _, err := db.ExecContext(tenantColCtx, addTenantColumnSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("add audit_entries tenant column: %w", err)
+	}
+
+	tenantIdxCtx, tenantIdxCancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer tenantIdxCancel()
+	if _, err := db.ExecContext(tenantIdxCtx, createTenantIndexSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create audit_entries tenant index: %w", err)
+	}
+
 	return &PostgresWriter{db: db}, nil
 }
 
@@ -105,7 +135,7 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 func (w *PostgresWriter) Write(e domain.Entry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
-	_, err := w.db.ExecContext(ctx, insertSQL, e.Timestamp, e.Identity, e.Tool, e.Decision, e.LatencyMS, e.Reason, e.TraceID)
+	_, err := w.db.ExecContext(ctx, insertSQL, e.Timestamp, e.Identity, e.Tenant, e.Tool, e.Decision, e.LatencyMS, e.Reason, e.TraceID)
 	if err != nil {
 		return fmt.Errorf("insert audit entry: %w", err)
 	}
@@ -128,7 +158,7 @@ func (w *PostgresWriter) Close() error {
 const queryTimeout = 5 * time.Minute
 
 const querySQL = `
-SELECT timestamp, identity, tool, decision, latency_ms, reason, trace_id
+SELECT timestamp, identity, tenant, tool, decision, latency_ms, reason, trace_id
 FROM audit_entries
 WHERE timestamp >= $1 AND timestamp < $2
 ORDER BY timestamp`
@@ -147,8 +177,16 @@ func (w *PostgresWriter) Query(ctx context.Context, from, to time.Time) ([]domai
 	for rows.Next() {
 		var e domain.Entry
 		var reason, traceID sql.NullString
-		if err := rows.Scan(&e.Timestamp, &e.Identity, &e.Tool, &e.Decision, &e.LatencyMS, &reason, &traceID); err != nil {
+		if err := rows.Scan(&e.Timestamp, &e.Identity, &e.Tenant, &e.Tool, &e.Decision, &e.LatencyMS, &reason, &traceID); err != nil {
 			return nil, fmt.Errorf("scan audit entry: %w", err)
+		}
+		if e.Tenant == "" {
+			// Defensive: the column is NOT NULL DEFAULT 'default' and the
+			// migration backfills existing rows, so this shouldn't be
+			// reachable in practice -- kept anyway so a row that somehow
+			// has an empty tenant never surfaces as unscoped rather than
+			// defaulted.
+			e.Tenant = tenant.Default
 		}
 		e.Reason = reason.String
 		e.TraceID = traceID.String
