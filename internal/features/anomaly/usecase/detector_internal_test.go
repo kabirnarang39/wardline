@@ -59,9 +59,15 @@ func distinctTools(n int) []string {
 }
 
 // baselineSampleCounts is the one thing "did this window get folded into
-// the baseline?" is observable through.
+// the baseline?" is observable through. toolCalls belongs here for the same
+// reason the other four do, and is not optional just because it is never
+// scored as an ml_score feature in its own right: all five are folded by
+// the same conditional block, so a change that moved or duplicated any one
+// of the five Update calls would desync its count from the rest -- and
+// until it was captured here nothing ever read it back, so no test could
+// have noticed.
 type baselineSampleCounts struct {
-	rate, diversity, denyRatio, interArrival int64
+	rate, diversity, denyRatio, interArrival, toolCalls int64
 }
 
 func sampleCounts(st *identityState) baselineSampleCounts {
@@ -70,6 +76,7 @@ func sampleCounts(st *identityState) baselineSampleCounts {
 		diversity:    st.mlStats.diversity.count,
 		denyRatio:    st.mlStats.denyRatio.count,
 		interArrival: st.mlStats.interArrival.count,
+		toolCalls:    st.mlStats.toolCalls.count,
 	}
 }
 
@@ -152,7 +159,7 @@ type stateSnapshot struct {
 	curInterArrivalSum                                                     time.Duration
 	windowStart, lastCallAt, lastSeen                                      time.Time
 	allTimeTools                                                           int
-	rate, diversity, denyRatio, interArrival                               onlineStat
+	rate, diversity, denyRatio, interArrival, toolCalls                    onlineStat
 }
 
 func snapshot(st *identityState) stateSnapshot {
@@ -177,6 +184,7 @@ func snapshot(st *identityState) stateSnapshot {
 		diversity:           st.mlStats.diversity,
 		denyRatio:           st.mlStats.denyRatio,
 		interArrival:        st.mlStats.interArrival,
+		toolCalls:           st.mlStats.toolCalls,
 	}
 }
 
