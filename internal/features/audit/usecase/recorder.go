@@ -22,10 +22,11 @@ func NewRecorder(w domain.Writer, sink domain.LiveSink, onError func(error)) *Re
 	return &Recorder{writer: w, sink: sink, onError: onError}
 }
 
-func (r *Recorder) Record(identity, tool, decision, reason, traceID string, latency time.Duration, now time.Time) {
+func (r *Recorder) Record(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time) {
 	entry := domain.Entry{
 		Timestamp: now,
 		Identity:  identity,
+		Tenant:    tenantName,
 		Tool:      tool,
 		Decision:  decision,
 		LatencyMS: latency.Milliseconds(),

@@ -142,14 +142,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-	ctx, span := h.tracer.Start(ctx, "wardline.proxy_request", trace.WithAttributes(attribute.String("wardline.identity", identity)))
+	ctx, span := h.tracer.Start(ctx, "wardline.proxy_request", trace.WithAttributes(attribute.String("wardline.identity", identity), attribute.String("wardline.tenant", tenant)))
 	defer span.End()
 	r = r.WithContext(ctx)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.finish(span, identity, "", "error", "", start)
+		h.finish(span, identity, tenant, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -157,7 +157,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := proxyusecase.ParseRequest(identity, tenant, body)
 	if err != nil {
-		h.finish(span, identity, "", "error", "", start)
+		h.finish(span, identity, tenant, "", "error", "", start)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
 	}
@@ -169,7 +169,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.autoBlockChecker != nil {
 		blockVerdict := h.autoBlockChecker.Check(identity, start)
 		if !blockVerdict.Allowed {
-			h.finish(span, identity, "", "blocked", blockVerdict.Reason, start)
+			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, start)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "blocked due to anomalous behavior")
 			return
@@ -183,7 +183,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// model is scoped to tool calls, and every real MCP client performs
 		// this handshake before its first tool call. See
 		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
-		h.forward(w, r, span, identity, parsed.Method, parsed.ID, start, "passthrough")
+		h.forward(w, r, span, identity, tenant, parsed.Method, parsed.ID, start, "passthrough")
 		return
 	}
 
@@ -198,7 +198,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.finish(span, identity, call.Tool, "deny", verdict.Reason, start)
+		h.finish(span, identity, tenant, call.Tool, "deny", verdict.Reason, start)
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 		return
 	}
@@ -207,13 +207,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.finish(span, identity, call.Tool, "throttled", budgetVerdict.Reason, start)
+		h.finish(span, identity, tenant, call.Tool, "throttled", budgetVerdict.Reason, start)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
 	}
 
-	h.forward(w, r, span, identity, call.Tool, parsed.ID, start, "allow")
+	h.forward(w, r, span, identity, tenant, call.Tool, parsed.ID, start, "allow")
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
@@ -221,18 +221,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // is the decision recorded on a successful upstream response — "allow" for a
 // policy-evaluated tool call, "passthrough" for a protocol-lifecycle method
 // that skipped policy/budget evaluation entirely.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tool string, id json.RawMessage, start time.Time, successDecision string) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision string) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		recorded = true
-		h.finish(span, identity, tool, "error", "", start)
+		h.finish(span, identity, tenant, tool, "error", "", start)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.finish(span, identity, tool, successDecision, "", start)
+			h.finish(span, identity, tenant, tool, successDecision, "", start)
 		}
 		return nil
 	}
@@ -272,7 +272,7 @@ func retryAfterSeconds(d time.Duration) int {
 // entry for a completed request — every return point in
 // ServeHTTP/forward needs both, so they're combined here rather than
 // repeated at each call site.
-func (h *Handler) finish(span trace.Span, identity, tool, decision, reason string, start time.Time) {
+func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason string, start time.Time) {
 	span.SetAttributes(
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
@@ -303,9 +303,9 @@ func (h *Handler) finish(span trace.Span, identity, tool, decision, reason strin
 	if sc := span.SpanContext(); sc.IsValid() {
 		traceID = sc.TraceID().String()
 	}
-	h.record(identity, tool, decision, reason, traceID, start)
+	h.record(identity, tenant, tool, decision, reason, traceID, start)
 }
 
-func (h *Handler) record(identity, tool, decision, reason, traceID string, start time.Time) {
-	h.recorder.Record(identity, tool, decision, reason, traceID, h.now().Sub(start), start)
+func (h *Handler) record(identity, tenant, tool, decision, reason, traceID string, start time.Time) {
+	h.recorder.Record(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start)
 }

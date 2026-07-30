@@ -7,7 +7,13 @@ import "time"
 type Entry struct {
 	Timestamp time.Time
 	Identity  string
-	Tool      string
+
+	// Tenant is the calling identity's tenant, resolved by
+	// IdentityAuthenticator alongside Identity (see
+	// proxydomain.ToolCall.Tenant). "" means no tenant scoping applied.
+	Tenant string
+
+	Tool string
 	Decision  string // "allow", "deny", "throttled", "passthrough", "error", or "blocked"
 	LatencyMS int64
 
