@@ -199,7 +199,7 @@ func feedMixedWindow(d *Detector, clock *internalClock, identity string, n, deny
 // window must score conspicuously lower than the smaller one (a fixed
 // absolute count is less significant in a bigger sample -- the 1/sqrt(n) law
 // the toolCalls-weighted form broke). Weighting by the fixed
-// minSamplesForZScore (8) gives pSmoothed = 0.5/9 = 0.0555556 in both cases
+// denyRatioContinuityWeight (8) gives pSmoothed = 0.5/9 = 0.0555556 in both cases
 // and se = sqrt(0.0555556*0.9444444/n):
 //
 //	toolCalls | ratio | se        | zDenyBlock
