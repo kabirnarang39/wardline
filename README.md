@@ -159,6 +159,26 @@ validates that header upstream of Wardline (or a future identity
 verification feature); a caller that can set arbitrary identity values can
 evade rate limiting by rotating identities.
 
+The per-identity bucket above is itself scoped by tenant — two different
+tenants' identically-named identities (two IdPs both provisioning
+"alice", say) maintain fully independent budgets, never sharing one
+bucket. On top of it, an optional `budget.tenants` block adds a *second*,
+tenant-wide bucket a request must also clear:
+
+```yaml
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tenants:
+    acme:
+      requests_per_window: 500
+      window_seconds: 60
+```
+
+Both buckets must allow — an AND, not an OR — so a tenant with no
+override configured here is simply never checked against a tenant
+bucket at all.
+
 ## Credential issuance
 
 Off by default. Opt in with `features.credential_issuance: true` plus a
@@ -188,9 +208,47 @@ process (or running more than one replica) invalidates every outstanding
 token, the same "no shared state across restarts" posture already true of
 the budget limiter and dashboard ring buffer.
 
-mTLS/SPIFFE-style bootstrap and IdP federation (Okta, Entra, generic
-OIDC) are explicitly out of scope for this version: identities are
-bootstrapped from the static `credential.identities_file` only.
+mTLS/SPIFFE-style bootstrap is explicitly out of scope for this version.
+IdP federation (Okta, Entra, generic OIDC) is not — see SSO below.
+
+**Known limitation:** revocation is keyed by identity name only, not
+`(tenant, identity)` — this branch made identity names per-tenant-unique
+(two different IdPs, or two `credentials.yaml` entries, can legitimately
+both provision "alice", one per tenant), but the revocation store was
+not re-keyed to match. Revoking your own tenant's `alice` currently
+revokes every tenant's `alice` too. See the [Credential
+issuance](https://kabirnarang39.github.io/wardline/docs/features/credential-issuance/)
+docs page for the full explanation.
+
+## SSO
+
+Off by default. A second `credential_issuance` bootstrap adapter:
+instead of a preshared secret matched against `credentials.yaml`, the
+presented secret is treated as a raw OIDC ID token, verified against an
+IdP's JWKS. Enable by pointing `credential_issuance`'s existing
+bootstrap source at `oidc` — there's no separate `sso` feature flag,
+since a flag whose only job is to gate the selectability of a config
+enum value is a flag that can't be wrong:
+
+```yaml
+features:
+  credential_issuance: true
+credential:
+  identities_file: "credentials.yaml"   # still required even for oidc
+  bootstrap_source: "oidc"              # "presharedsecret" (default) | "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    jwks_uri: "https://idp.example.com/.well-known/jwks.json"
+    audience: "wardline"
+    tenant_claim: "tenant"               # required present on every token -- no default, unlike credentials.yaml
+```
+
+Unlike a `credentials.yaml` entry (which defaults to tenant `"default"`
+when it omits one), an SSO-sourced identity's tenant has no default — a
+token missing the configured tenant claim is rejected outright. See the
+[SSO docs page](https://kabirnarang39.github.io/wardline/docs/features/sso/)
+for the full config shape and known limitations (one IdP at a time, no
+OIDC discovery-document fetching).
 
 ## RBAC
 
@@ -213,17 +271,56 @@ identity must hold `dashboard:view`, else `403`. `POST
 unchanged; RBAC only *adds* a second path — a non-loopback caller may
 also succeed if authorized for `credential:revoke`.
 
-This cycle's tenant model is real but only one tenant exists:
-`RoleBinding`s are matched against the literal tenant `"default"`
-everywhere in Wardline today — true multi-tenant data isolation (a
-separate policy/audit/budget per tenant) is a larger, separate future
-change, not part of this version — treat the tenant field as reserved
-for it rather than as a working isolation boundary.
+Tenant isolation is real, not reserved: every request resolves a tenant
+(from an OIDC ID token's or Wardline-issued JWT's `tenant` claim when
+`credential_issuance` is on, or the `X-Wardline-Identity`/`X-Wardline-Tenant`
+headers when it's off), and that tenant is threaded end to end —
+`RoleBinding`s only grant within the tenant they name, policy rules can
+carry an optional `tenant:` key (or `input.tenant`/`context.tenant` on
+the OPA/Cedar backends), audit entries and anomaly baselines carry it,
+and the dashboard filters a non-globally-granted caller to their own
+tenant's data. A `ClusterRoleBinding` (no tenant segment) still grants
+globally, across every tenant — see [SCIM](#scim) below for how SCIM
+group naming mirrors this same convention. One known gap: credential
+revocation itself is still keyed by identity name only, not
+`(tenant, identity)` — see [Credential issuance](#credential-issuance).
 
 RBAC is only as strong as whatever resolves the caller's identity — the
 same disclaimer as budget enforcement's: pair it with `credential_issuance`
 for real security value, or it's only as trustworthy as the
 unauthenticated `X-Wardline-Identity` header.
+
+## SCIM
+
+Off by default. An IdP-driven provisioning API for RBAC: SCIM Groups map
+to `RoleBinding`s (or `ClusterRoleBinding`s) automatically, so a group
+added or edited in Okta/Azure AD/Google Workspace takes effect in
+Wardline with no `rbac.yaml` edit.
+
+```yaml
+features:
+  scim: true
+  rbac: true                # SCIM provisions bindings for RBAC to consult
+scim:
+  bearer_token_env: "WARDLINE_SCIM_TOKEN"   # env var, never inline
+  persist_postgres: false                     # requires features.postgres_storage when true
+```
+
+Serves `POST`/`GET /scim/v2/Users` and `GET`/`DELETE`/`PATCH
+/scim/v2/Users/{id}`, plus the same verb set for `/scim/v2/Groups`. A
+Group's `displayName` encodes the RBAC grant it provisions:
+`wardline:tenant-<tenant>:role-<role>` makes every **`active`** member a
+`RoleBinding{Tenant: tenant}`; `wardline:role-<role>` (no tenant
+segment) makes every active member a `ClusterRoleBinding` (a global
+grant). Deactivating a user (`PATCH {"op":"replace","path":"active","value":false}`)
+or deleting one revokes any binding derived from their membership
+immediately — the primary offboarding signal from every IdP this
+feature targets. In-memory by default; set `scim.persist_postgres: true`
+(requires `features.postgres_storage` also on) to persist across
+restarts and share across replicas. See the [SCIM docs
+page](https://kabirnarang39.github.io/wardline/docs/features/scim/) for
+the full known-limitations list (no bulk operations, no `?filter=`
+query support, single shared bearer token).
 
 ## Anomaly detection
 
