@@ -21,9 +21,10 @@ type alertSink interface {
 // blocker is the subset of usecase.BlockChecker's behavior Detector
 // depends on -- one method, matching alertSink's narrow-interface
 // pattern. nil-able: ml_score-without-auto_block needs zero special-casing
-// here beyond a nil check.
+// here beyond a nil check. tenantName is threaded through so Block keys
+// on (tenant, identity), not identity alone -- see tenantIdentityKey.
 type blocker interface {
-	Block(identity, reason string)
+	Block(tenantName, identity, reason string)
 }
 
 // Detector implements audit/domain.LiveSink: every published audit entry
@@ -39,7 +40,12 @@ type Detector struct {
 	onError func(error)
 	now     func() time.Time
 
-	mu    sync.Mutex
+	mu sync.Mutex
+	// state is keyed by tenantIdentityKey(tenant, identity), not by raw
+	// identity -- two different tenants' identically-named identities
+	// (two SCIM-provisioned "alice"s from different IdPs) must never
+	// share a baseline. Every read, write, and iteration of this map
+	// must go through tenantIdentityKey.
 	state map[string]*identityState
 }
 
@@ -116,10 +122,11 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	defer d.mu.Unlock()
 
 	now := d.now()
-	st, ok := d.state[e.Identity]
+	key := tenantIdentityKey(e.Tenant, e.Identity)
+	st, ok := d.state[key]
 	if !ok {
 		st = &identityState{tools: make(map[string]struct{}), windowStart: now}
-		d.state[e.Identity] = st
+		d.state[key] = st
 	}
 	st.lastSeen = now
 
@@ -208,6 +215,7 @@ func (d *Detector) checkRateSpike(e auditdomain.Entry, st *identityState) (domai
 	return domain.Anomaly{
 		Timestamp: d.now(),
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Kind:      domain.KindRateSpike,
 		Detail:    "call rate exceeded the identity's own trailing baseline",
 		Entry:     e,
@@ -229,6 +237,7 @@ func (d *Detector) checkNovelTool(e auditdomain.Entry, st *identityState) (domai
 	return domain.Anomaly{
 		Timestamp: d.now(),
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Kind:      domain.KindNovelTool,
 		Detail:    "first call from this identity to tool " + e.Tool,
 		Entry:     e,
@@ -261,6 +270,7 @@ func (d *Detector) checkDenyRateSpike(e auditdomain.Entry, st *identityState) (d
 	return domain.Anomaly{
 		Timestamp: d.now(),
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Kind:      domain.KindDenyRateSpike,
 		Detail:    "deny ratio exceeded threshold within the trailing window",
 		Entry:     e,
@@ -512,7 +522,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	}
 
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
-		d.blocker.Block(e.Identity, fmt.Sprintf(
+		d.blocker.Block(e.Tenant, e.Identity, fmt.Sprintf(
 			"ml_score %.2f (feature: %s) exceeded auto-block threshold %.2f",
 			blockScore, blockFeature, d.cfg.AutoBlock.ScoreThreshold))
 	}
@@ -530,6 +540,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 	return domain.Anomaly{
 		Timestamp: d.now(),
 		Identity:  e.Identity,
+		Tenant:    e.Tenant,
 		Kind:      domain.KindMLScore,
 		Detail: fmt.Sprintf(
 			"combined z-score %.2f (driving feature: %s) exceeded threshold %.2f",

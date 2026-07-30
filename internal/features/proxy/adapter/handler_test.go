@@ -766,7 +766,7 @@ type fakeAutoBlockChecker struct {
 	verdict anomalydomain.BlockVerdict
 }
 
-func (f fakeAutoBlockChecker) Check(identity string, now time.Time) anomalydomain.BlockVerdict {
+func (f fakeAutoBlockChecker) Check(tenantName, identity string, now time.Time) anomalydomain.BlockVerdict {
 	return f.verdict
 }
 

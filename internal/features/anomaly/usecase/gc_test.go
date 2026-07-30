@@ -29,10 +29,10 @@ func TestDetector_GC_DropsStaleStateKeepsFreshState(t *testing.T) {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.state["stale-identity"]; ok {
+	if _, ok := d.state[tenantIdentityKey("", "stale-identity")]; ok {
 		t.Error("expected stale-identity's state to be evicted")
 	}
-	if _, ok := d.state["fresh-identity"]; !ok {
+	if _, ok := d.state[tenantIdentityKey("", "fresh-identity")]; !ok {
 		t.Error("expected fresh-identity's state to survive the GC pass")
 	}
 }

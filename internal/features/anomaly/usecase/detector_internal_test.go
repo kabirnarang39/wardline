@@ -30,7 +30,7 @@ type blockRecorder struct {
 	calls []string
 }
 
-func (b *blockRecorder) Block(identity, reason string) {
+func (b *blockRecorder) Block(tenantName, identity, reason string) {
 	b.calls = append(b.calls, identity+": "+reason)
 }
 
@@ -144,7 +144,7 @@ func TestDetector_MLScore_MinCallsFloor_SkipsSingleCallWindow(t *testing.T) {
 	// floor doesn't touch it), bringing every baseline to 10 samples.
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
-	st := d.state["alice"]
+	st := d.state[tenantIdentityKey("", "alice")]
 	before := sampleCounts(st)
 	if before.rate != 10 {
 		t.Fatalf("test setup: expected 10 folded baseline samples before the 1-call window, got %+v", before)
@@ -154,7 +154,7 @@ func TestDetector_MLScore_MinCallsFloor_SkipsSingleCallWindow(t *testing.T) {
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
-	if after := sampleCounts(d.state["alice"]); after != before {
+	if after := sampleCounts(d.state[tenantIdentityKey("", "alice")]); after != before {
 		t.Errorf("a sub-MinCalls window must not be folded into any baseline\nbefore: %+v\nafter:  %+v", before, after)
 	}
 	for _, a := range writer.anomalies {
@@ -245,11 +245,11 @@ func TestDetector_MLScore_DenyRatioFixedSmallCount_NeverBlocksRegardlessOfVolume
 			// 11, so `before` is the 11-sample baseline the window is scored
 			// against.
 			feedMixedWindow(d, clock, "alice", tc.toolCalls, 3, tc.spacing)
-			before := sampleCounts(d.state["alice"])
+			before := sampleCounts(d.state[tenantIdentityKey("", "alice")])
 			if before.denyRatio != 11 {
 				t.Fatalf("test setup: expected 11 folded deny-ratio samples, got %+v", before)
 			}
-			if mean := d.state["alice"].mlStats.denyRatio.mean; mean != 0 {
+			if mean := d.state[tenantIdentityKey("", "alice")].mlStats.denyRatio.mean; mean != 0 {
 				t.Fatalf("test setup: expected a spotless deny-ratio baseline (mean 0), got %v", mean)
 			}
 
@@ -264,11 +264,11 @@ func TestDetector_MLScore_DenyRatioFixedSmallCount_NeverBlocksRegardlessOfVolume
 			// this, a future regression that merely lowered the score below the
 			// block threshold while still flagging the window would leave the
 			// baseline pinned at mean 0 forever.
-			after := sampleCounts(d.state["alice"])
+			after := sampleCounts(d.state[tenantIdentityKey("", "alice")])
 			if after.denyRatio != before.denyRatio+1 {
 				t.Errorf("a non-anomalous deny window must fold into the baseline (else p stays pinned at 0 forever)\nbefore: %+v\nafter:  %+v", before, after)
 			}
-			if mean := d.state["alice"].mlStats.denyRatio.mean; mean <= 0 {
+			if mean := d.state[tenantIdentityKey("", "alice")].mlStats.denyRatio.mean; mean <= 0 {
 				t.Errorf("expected the folded window to move the deny-ratio baseline mean off 0, got %v", mean)
 			}
 		})
@@ -295,7 +295,7 @@ func TestDetector_MLScore_DenyRatioFixedSmallCount_NeverBlocksRegardlessOfVolume
 		if len(blocker.calls) != 0 {
 			t.Errorf("an unchanged habitual denial count must never auto-block, however many windows it repeats for, got %d: %+v", len(blocker.calls), blocker.calls)
 		}
-		if mean := d.state["alice"].mlStats.denyRatio.mean; mean <= 0 {
+		if mean := d.state[tenantIdentityKey("", "alice")].mlStats.denyRatio.mean; mean <= 0 {
 			t.Errorf("expected the deny-ratio baseline to have learned the habitual denials rather than staying pinned at 0, got %v", mean)
 		}
 	})
@@ -357,7 +357,7 @@ func TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines(t *testing.T)
 		clock.t = clock.t.Add(61 * time.Second)
 	}
 
-	afterPassthrough := sampleCounts(d.state["alice"])
+	afterPassthrough := sampleCounts(d.state[tenantIdentityKey("", "alice")])
 	want := baselineSampleCounts{rate: 11, interArrival: 11}
 	if afterPassthrough != want {
 		t.Fatalf("tool-call-free windows must fold into rate/interArrival only, leaving diversity/denyRatio/toolCalls empty\nwant: %+v\ngot:  %+v", want, afterPassthrough)
@@ -369,7 +369,7 @@ func TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines(t *testing.T)
 	// passthrough window 12, taking rate/interArrival to 12 samples while the
 	// other three stay at 0.
 	feedWindow(d, clock, "alice", distinctTools(5), 6, time.Second)
-	if got := sampleCounts(d.state["alice"]); got != (baselineSampleCounts{rate: 12, interArrival: 12}) {
+	if got := sampleCounts(d.state[tenantIdentityKey("", "alice")]); got != (baselineSampleCounts{rate: 12, interArrival: 12}) {
 		t.Fatalf("the last passthrough window must still fold into rate/interArrival only, got %+v", got)
 	}
 
@@ -393,7 +393,7 @@ func TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines(t *testing.T)
 	// baselines advance, because toolCalls (6) clears MinCalls (5). This is
 	// the other half of the fix: a real tool-call window is exactly what
 	// these three baselines are supposed to learn from.
-	if got := sampleCounts(d.state["alice"]); got != (baselineSampleCounts{rate: 13, diversity: 1, denyRatio: 1, interArrival: 13, toolCalls: 1}) {
+	if got := sampleCounts(d.state[tenantIdentityKey("", "alice")]); got != (baselineSampleCounts{rate: 13, diversity: 1, denyRatio: 1, interArrival: 13, toolCalls: 1}) {
 		t.Fatalf("a window with real tool calls must fold into all five baselines, got %+v", got)
 	}
 
@@ -408,7 +408,7 @@ func TestDetector_MLScore_ToolCallFreeWindows_DoNotPoisonBaselines(t *testing.T)
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tool_0", Decision: "allow"})
 
-	if got := d.state["alice"].mlStats.diversity.count; got < minSamplesForZScore {
+	if got := d.state[tenantIdentityKey("", "alice")].mlStats.diversity.count; got < minSamplesForZScore {
 		t.Errorf("expected the diversity baseline to have accumulated at least %d real samples, got %d", minSamplesForZScore, got)
 	}
 	if len(blocker.calls) != 0 {
@@ -494,7 +494,7 @@ func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
 	if len(blocker.calls) != 1 {
 		t.Fatalf("test setup: expected exactly 1 Block call for the wild window, got %d: %+v", len(blocker.calls), blocker.calls)
 	}
-	before := snapshot(d.state["alice"])
+	before := snapshot(d.state[tenantIdentityKey("", "alice")])
 
 	// The block is now in force, so every subsequent call from alice is
 	// rejected by the proxy's gate and recorded as decision "blocked" with
@@ -513,7 +513,7 @@ func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
 		clock.t = clock.t.Add(61 * time.Second)
 	}
 
-	if after := snapshot(d.state["alice"]); !reflect.DeepEqual(before, after) {
+	if after := snapshot(d.state[tenantIdentityKey("", "alice")]); !reflect.DeepEqual(before, after) {
 		t.Errorf("blocked entries mutated Detector state -- the first real call after the block expires must be scored as if the block never happened\nbefore: %+v\nafter:  %+v", before, after)
 	}
 	if len(blocker.calls) != 1 {
