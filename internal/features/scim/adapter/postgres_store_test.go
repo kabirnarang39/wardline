@@ -1,7 +1,9 @@
 package adapter_test
 
 import (
+	"bytes"
 	"database/sql"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -67,14 +69,14 @@ func TestPostgresBindingStore_PersistsAcrossInstances(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store1, err := adapter.NewPostgresBindingStore(dsn)
+	store1, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore (store1): %v", err)
 	}
 	defer func() { _ = store1.Close() }()
 	store1.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"alice"})
 
-	store2, err := adapter.NewPostgresBindingStore(dsn) // simulates a second replica reading the same table
+	store2, err := adapter.NewPostgresBindingStore(dsn, nil) // simulates a second replica reading the same table
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore (store2): %v", err)
 	}
@@ -90,7 +92,7 @@ func TestPostgresBindingStore_GlobalGroupYieldsClusterBinding(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn)
+	store, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestPostgresBindingStore_SetGroupMembersIgnoresUnrecognizedGroupName(t *tes
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn)
+	store, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
@@ -129,7 +131,7 @@ func TestPostgresBindingStore_RemoveGroupRevokesMembership(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn)
+	store, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestPostgresBindingStore_SetGroupMembersReplacesWholesale(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn)
+	store, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
@@ -171,13 +173,13 @@ func TestPostgresBindingStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store1, err := adapter.NewPostgresBindingStore(dsn)
+	store1, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresBindingStore: %v", err)
 	}
 	defer func() { _ = store1.Close() }()
 
-	store2, err := adapter.NewPostgresBindingStore(dsn)
+	store2, err := adapter.NewPostgresBindingStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresBindingStore (should be idempotent): %v", err)
 	}
@@ -185,8 +187,35 @@ func TestPostgresBindingStore_TableCreationIsIdempotent(t *testing.T) {
 }
 
 func TestNewPostgresBindingStore_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresBindingStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable")
+	_, err := adapter.NewPostgresBindingStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", nil)
 	if err == nil {
 		t.Fatal("expected an error constructing a binding store against an unreachable database")
+	}
+}
+
+// TestPostgresBindingStore_SetGroupMembersAgainstClosedPoolIsLogged proves
+// SetGroupMembers' write failure isn't silently swallowed when a logger
+// is wired in -- it has no error return (matching the in-memory
+// BindingStore's error-free signature), so a logged warning is the only
+// way an operator can tell a provisioning write never took effect.
+func TestPostgresBindingStore_SetGroupMembersAgainstClosedPoolIsLogged(t *testing.T) {
+	dsn := testDSN(t)
+	dropSCIMBindingsTable(t, dsn)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	store, err := adapter.NewPostgresBindingStore(dsn, logger)
+	if err != nil {
+		t.Fatalf("NewPostgresBindingStore: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	store.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"alice"}) // write against a closed pool
+
+	if !strings.Contains(logBuf.String(), "scim binding store write failed") {
+		t.Errorf("expected a write failure against a closed pool to be logged, got: %q", logBuf.String())
 	}
 }

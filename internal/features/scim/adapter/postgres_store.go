@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"database/sql"
 	"time"
@@ -28,6 +29,15 @@ CREATE TABLE IF NOT EXISTS scim_group_bindings (
 	PRIMARY KEY (group_name, member_username)
 )`
 
+// createSCIMBindingsMemberIndexSQL backs Bindings' "WHERE member_username
+// = $1" lookup -- the table's only other index is the (group_name,
+// member_username) primary key, which doesn't help a query keyed on
+// member_username alone. Additive and idempotent, safe to run against an
+// existing table every time this adapter starts up.
+const createSCIMBindingsMemberIndexSQL = `
+CREATE INDEX IF NOT EXISTS scim_group_bindings_member_username_idx
+ON scim_group_bindings (member_username)`
+
 // PostgresBindingStore is a Postgres-backed alternative to
 // scimusecase.BindingStore's in-memory map -- same public shape
 // (SetGroupMembers/RemoveGroup/Bindings), swapped in only at the main.go
@@ -38,15 +48,20 @@ CREATE TABLE IF NOT EXISTS scim_group_bindings (
 // through one replica is seen by every other replica on its next
 // Bindings call, and survives a restart.
 type PostgresBindingStore struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
 }
 
 // NewPostgresBindingStore opens a connection pool to dsn, creates the
-// scim_group_bindings table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first provisioning call. Mirrors
-// PostgresRevoker's connection-pool and idempotent-table pattern exactly.
-func NewPostgresBindingStore(dsn string) (*PostgresBindingStore, error) {
+// scim_group_bindings table and its member_username index if they don't
+// already exist, and pings the connection -- a bad DSN or unreachable
+// database fails here, at construction time, not on the first
+// provisioning call. Mirrors PostgresRevoker's connection-pool and
+// idempotent-table pattern exactly. logger is optional (nil is valid,
+// same "logger may be nil" convention PostgresRevoker uses) and is used
+// to surface SetGroupMembers/RemoveGroup write failures that would
+// otherwise vanish silently -- see warn.
+func NewPostgresBindingStore(dsn string, logger *slog.Logger) (*PostgresBindingStore, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres connection: %w", err)
@@ -69,8 +84,26 @@ func NewPostgresBindingStore(dsn string) (*PostgresBindingStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create scim_group_bindings table: %w", err)
 	}
+	if _, err := db.ExecContext(createCtx, createSCIMBindingsMemberIndexSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create scim_group_bindings member_username index: %w", err)
+	}
 
-	return &PostgresBindingStore{db: db}, nil
+	return &PostgresBindingStore{db: db, logger: logger}, nil
+}
+
+// warn logs a write failure at Warn level if a logger was wired in --
+// nil-safe, same convention as PostgresRevoker.logger. SetGroupMembers
+// and RemoveGroup have no caller-visible error return (matching the
+// in-memory BindingStore's error-free signature), so without this a
+// failed write vanishes completely -- an operator investigating "why
+// didn't this SCIM group's RBAC binding take effect" needs to be able to
+// find it in the logs.
+func (p *PostgresBindingStore) warn(op, groupName string, err error) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Warn("scim binding store write failed", "op", op, "group_name", groupName, "error", err)
 }
 
 // SetGroupMembers implements the same replace-membership semantics as
@@ -86,26 +119,33 @@ func (p *PostgresBindingStore) SetGroupMembers(groupName string, memberUserNames
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
+		p.warn("begin transaction", groupName, err)
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM scim_group_bindings WHERE group_name = $1`, groupName); err != nil {
+		p.warn("delete existing bindings", groupName, err)
 		return
 	}
 	for _, member := range memberUserNames {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO scim_group_bindings (group_name, member_username) VALUES ($1, $2)`, groupName, member); err != nil {
+			p.warn("insert binding", groupName, err)
 			return
 		}
 	}
-	_ = tx.Commit()
+	if err := tx.Commit(); err != nil {
+		p.warn("commit", groupName, err)
+	}
 }
 
 // RemoveGroup revokes every binding groupName granted.
 func (p *PostgresBindingStore) RemoveGroup(groupName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), bindingStoreTimeout)
 	defer cancel()
-	_, _ = p.db.ExecContext(ctx, `DELETE FROM scim_group_bindings WHERE group_name = $1`, groupName)
+	if _, err := p.db.ExecContext(ctx, `DELETE FROM scim_group_bindings WHERE group_name = $1`, groupName); err != nil {
+		p.warn("remove group", groupName, err)
+	}
 }
 
 // Bindings returns every ClusterRoleBinding/RoleBinding identity

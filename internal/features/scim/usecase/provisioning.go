@@ -5,8 +5,23 @@ import (
 	"encoding/hex"
 	"sync"
 
+	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	"github.com/kabirnarang39/wardline/internal/features/scim/domain"
 )
+
+// bindingSink is the subset of BindingStore's (and its Postgres-backed
+// sibling scimadapter.PostgresBindingStore's) behavior ProvisioningService
+// depends on -- a narrow local interface, the same indirection pattern
+// rbac/usecase.CompositeAuthorizer's dynamicBindingSource already uses,
+// so either sink type can be wired in here with zero further changes to
+// either. This is the "second sink type" BindingStore's own doc comment
+// anticipated -- scimadapter.PostgresBindingStore (Task 14) is it, so the
+// indirection is now due.
+type bindingSink interface {
+	SetGroupMembers(groupName string, memberUserNames []string)
+	RemoveGroup(groupName string)
+	Bindings(identity string) (cluster []rbacdomain.ClusterRoleBinding, scoped []rbacdomain.RoleBinding)
+}
 
 // ProvisioningService holds SCIM-provisioned Users and Groups in memory,
 // keyed by ID. UserName/DisplayName are each treated as unique (SCIM's
@@ -16,7 +31,7 @@ type ProvisioningService struct {
 	mu       sync.Mutex
 	users    map[string]domain.User  // by ID
 	groups   map[string]domain.Group // by ID
-	bindings *BindingStore
+	bindings bindingSink
 }
 
 func NewProvisioningService() *ProvisioningService {
@@ -26,17 +41,12 @@ func NewProvisioningService() *ProvisioningService {
 	}
 }
 
-// SetBindingStore wires the BindingStore every group mutation feeds into
+// SetBindingStore wires the binding sink every group mutation feeds into
 // so RBAC bindings stay derived from current SCIM group membership. nil
 // (the zero value) is valid -- group CRUD still works, it just never
 // derives any RBAC binding, matching this codebase's "nil means not
 // wired" convention (RevokeAuthorizer, AnomalySource, etc).
-//
-// ponytail: BindingStore lives in this same package (scim/usecase), so a
-// narrow interface indirection -- the pattern rbac/usecase's
-// dynamicBindingSource uses to avoid a cross-package import -- isn't
-// needed here until a second sink type shows up.
-func (s *ProvisioningService) SetBindingStore(store *BindingStore) {
+func (s *ProvisioningService) SetBindingStore(store bindingSink) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bindings = store
