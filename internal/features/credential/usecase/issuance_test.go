@@ -22,7 +22,7 @@ type fakeIssuer struct {
 	err   error
 }
 
-func (f fakeIssuer) Issue(identity string) (string, error) {
+func (f fakeIssuer) Issue(identity, tenant string) (string, error) {
 	return f.token, f.err
 }
 

@@ -102,7 +102,7 @@ func checkRSAKeySize(key *rsa.PrivateKey) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-func (j *JWTIssuerVerifier) Issue(identity string) (string, error) {
+func (j *JWTIssuerVerifier) Issue(identity, tenantName string) (string, error) {
 	jti, err := randomJTI()
 	if err != nil {
 		return "", fmt.Errorf("generate jti: %w", err)
@@ -110,6 +110,7 @@ func (j *JWTIssuerVerifier) Issue(identity string) (string, error) {
 	now := j.now()
 	token, err := jwt.NewBuilder().
 		Subject(identity).
+		Claim("tenant", tenantName).
 		IssuedAt(now).
 		Expiration(now.Add(tokenTTL)).
 		JwtID(jti).
@@ -136,7 +137,9 @@ func (j *JWTIssuerVerifier) Verify(token string) (domain.Claims, error) {
 	iat, _ := parsed.IssuedAt()
 	exp, _ := parsed.Expiration()
 	jti, _ := parsed.JwtID()
-	return domain.Claims{Subject: sub, IssuedAt: iat, ExpiresAt: exp, ID: jti}, nil
+	var tenantName string
+	_ = parsed.Get("tenant", &tenantName)
+	return domain.Claims{Subject: sub, Tenant: tenantName, IssuedAt: iat, ExpiresAt: exp, ID: jti}, nil
 }
 
 func randomJTI() (string, error) {

@@ -23,13 +23,13 @@ func NewVerificationService(verifier domain.Verifier, revoker domain.Revoker) *V
 	return &VerificationService{verifier: verifier, revoker: revoker}
 }
 
-func (s *VerificationService) Authenticate(bearerToken string) (identity string, err error) {
+func (s *VerificationService) Authenticate(bearerToken string) (identity, tenant string, err error) {
 	claims, err := s.verifier.Verify(bearerToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if s.revoker.IsRevoked(claims.Subject) {
-		return "", ErrRevoked
+		return "", "", ErrRevoked
 	}
-	return claims.Subject, nil
+	return claims.Subject, claims.Tenant, nil
 }

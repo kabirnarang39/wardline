@@ -15,12 +15,30 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 )
 
+func TestIssueAndVerify_RoundTripsTenant(t *testing.T) {
+	iv, err := NewJWTIssuerVerifier("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := iv.Issue("alice", "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := iv.Verify(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Subject != "alice" || claims.Tenant != "acme" {
+		t.Fatalf("got Subject=%q Tenant=%q, want alice/acme", claims.Subject, claims.Tenant)
+	}
+}
+
 func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
 	iv, err := NewJWTIssuerVerifier("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	token, err := iv.Issue("agent-abc123")
+	token, err := iv.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,8 +62,8 @@ func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t1, _ := iv.Issue("agent-abc123")
-	t2, _ := iv.Issue("agent-abc123")
+	t1, _ := iv.Issue("agent-abc123", "")
+	t2, _ := iv.Issue("agent-abc123", "")
 	c1, err := iv.Verify(t1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -64,7 +82,7 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	token, _ := iv.Issue("agent-abc123")
+	token, _ := iv.Issue("agent-abc123", "")
 	// Flip the first character of the signature segment rather than the
 	// token's last character. Base64url's trailing (partial) group has
 	// decode don't-care bits — mutating the last char only changes the
@@ -92,7 +110,7 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
 	iv1, _ := NewJWTIssuerVerifier("")
 	iv2, _ := NewJWTIssuerVerifier("")
-	token, _ := iv1.Issue("agent-abc123")
+	token, _ := iv1.Issue("agent-abc123", "")
 	_, err := iv2.Verify(token)
 	if !errors.Is(err, domain.ErrTokenInvalid) {
 		t.Errorf("expected ErrTokenInvalid for a token signed by a different keypair, got %v", err)
@@ -107,7 +125,7 @@ func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
 	iv.now = func() time.Time {
 		return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	}
-	token, _ := iv.Issue("agent-abc123")
+	token, _ := iv.Issue("agent-abc123", "")
 	iv.now = func() time.Time {
 		return time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC) // 1h later, past the 15m TTL
 	}
@@ -171,7 +189,7 @@ func TestNewJWTIssuerVerifier_EmptyPathGeneratesFreshKeyAsToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier(\"\"): %v", err)
 	}
-	token, err := j.Issue("agent-abc123")
+	token, err := j.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -192,7 +210,7 @@ func TestNewJWTIssuerVerifier_SameKeyFile_TwoInstancesVerifyEachOthersTokens(t *
 		t.Fatalf("replicaB: %v", err)
 	}
 
-	token, err := replicaA.Issue("agent-abc123")
+	token, err := replicaA.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("Issue on replicaA: %v", err)
 	}
@@ -219,7 +237,7 @@ func TestNewJWTIssuerVerifier_DifferentKeyFiles_TokenFromOneFailsOnTheOther(t *t
 		t.Fatalf("replicaB: %v", err)
 	}
 
-	token, err := replicaA.Issue("agent-abc123")
+	token, err := replicaA.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -254,7 +272,7 @@ func TestNewJWTIssuerVerifier_PKCS1KeyFile_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier with a PKCS1-encoded key: %v", err)
 	}
-	token, err := iv.Issue("agent-abc123")
+	token, err := iv.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -275,7 +293,7 @@ func TestNewJWTIssuerVerifier_PKCS1SameKeyFile_TwoInstancesVerifyEachOthersToken
 		t.Fatalf("replicaB: %v", err)
 	}
 
-	token, err := replicaA.Issue("agent-abc123")
+	token, err := replicaA.Issue("agent-abc123", "")
 	if err != nil {
 		t.Fatalf("Issue on replicaA: %v", err)
 	}
