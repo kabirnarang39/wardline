@@ -13,11 +13,10 @@ policy-pack marketplace, HA deployment.
 
 - **Federation** — cross-instance signal sharing: instances publish
   anomaly summaries to configured peers and correlate them into
-  cross-instance alerts, the natural point that was going to revisit
-  the per-replica limitations documented on the [Budget
-  Enforcement](/features/budget-enforcement/), [Anomaly
-  Detection](/features/anomaly-detection/), and [HA
-  Deployment](/features/ha-deployment/) pages — federation's own
+  cross-instance alerts, revisiting the per-replica limitations
+  documented on the [Budget Enforcement](/features/budget-enforcement/),
+  [Anomaly Detection](/features/anomaly-detection/), and [HA
+  Deployment](/features/ha-deployment/) pages. Federation's own
   correlated-alerts view stays instance-scoped, not tenant-scoped (see
   [RBAC](/features/rbac/)'s known limitations).
 - **ML-based anomaly detection** — an `ml_score` combined-z-score

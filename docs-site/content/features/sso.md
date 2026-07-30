@@ -20,6 +20,7 @@ There is no separate `sso` feature flag — enable it by pointing
 features:
   credential_issuance: true
 credential:
+  identities_file: "credentials.yaml"   # still required even for oidc -- see note below
   bootstrap_source: "oidc"        # "presharedsecret" (default) | "oidc"
   oidc:
     issuer: "https://idp.example.com/"
@@ -28,6 +29,12 @@ credential:
     identity_claim: "sub"          # optional, default "sub"
     tenant_claim: "tenant"         # optional, default "tenant" -- required present on every token
 ```
+
+`credential.identities_file` is required whenever `features.credential_issuance`
+is on, regardless of `bootstrap_source` — a non-obvious quirk worth calling
+out: even when every identity comes from the IdP via `oidc`, config
+validation still requires this path to be set (it's simply unused by the
+OIDC bootstrapper itself).
 
 `Authenticate` verifies the token's signature against `jwks_uri` (keys
 cached and refreshed every 15 minutes), checks `iss`/`aud`/`exp`, then
@@ -38,9 +45,14 @@ generic `401`, the same non-enumerable-failure posture as a rejected
 preshared secret.
 
 `wardline validate-config` attempts to construct the OIDC bootstrapper
-when `bootstrap_source: oidc` (checks the config is well-formed); a
-JWKS endpoint that's unreachable at validate time is a warning, not a
-hard failure, since the JWKS cache retries at runtime.
+when `bootstrap_source: oidc` — the same construction `wardline serve`
+itself does at startup. **Verified against the current code, this
+differs from the intended design**: the underlying JWKS client
+(`lestrrat-go/jwx/v3/jwk.Cache`) waits for its first successful fetch
+with no context timeout, so an unreachable `jwks_uri` doesn't produce
+the intended soft warning at validate time (or `serve`'s intended
+fail-fast exit) — both commands block indefinitely instead. Confirm
+`jwks_uri` is actually reachable before running either.
 
 ## Known limitations
 
@@ -55,3 +67,9 @@ hard failure, since the JWKS cache retries at runtime.
   limitations.
 - No refresh tokens or configurable JWT TTL — same limitation as
   [Credential Issuance](/features/credential-issuance/) generally.
+- **An unreachable `jwks_uri` hangs `validate-config`/`serve` rather
+  than warning or failing fast** — despite the intent that a
+  transiently-unreachable IdP shouldn't block startup, both commands
+  currently block indefinitely (no timeout) waiting for the first JWKS
+  fetch to succeed. Verify the endpoint is reachable before starting
+  Wardline with `bootstrap_source: oidc`.
