@@ -102,6 +102,46 @@ func TestOnlineStat_ZScore_RelativeFloorInertOnWideVarianceBaseline(t *testing.T
 	}
 }
 
+// TestOnlineStat_ZScore_ZeroVarianceHistory_AppliesRelativeFloor is the
+// regression gate for the zero-variance short-circuit: `if variance <= 0
+// { return 0 }` returned before the relative floor was ever reached, so a
+// perfectly constant baseline -- the *tightest* possible, exactly the
+// case the floor exists for -- was permanently blind to any deviation.
+// Hand-computed: 10 identical samples of 5 give mean 5 and m2 0, so the
+// raw stddev is 0 and the floor 0.15*5 = 0.75 applies; a later window of
+// 60 distinct tools scores (60-5)/0.75 = 73.333.
+func TestOnlineStat_ZScore_ZeroVarianceHistory_AppliesRelativeFloor(t *testing.T) {
+	var s onlineStat
+	for i := 0; i < 10; i++ {
+		s.Update(5.0)
+	}
+	if s.m2 != 0 {
+		t.Fatalf("test setup: expected exactly zero variance, got m2 %v", s.m2)
+	}
+	z := s.ZScore(60.0)
+	if math.Abs(z-73.33333333333333) > 1e-9 {
+		t.Errorf("expected z=73.333 for 60 against a perfectly constant baseline of 5 (floor 0.75), got %v", z)
+	}
+}
+
+// TestOnlineStat_ZScoreFloored_ExtraFloorOnlyWidensDivisor pins the
+// contract deny_ratio's block-gating score depends on: the extra floor
+// raises the divisor when it exceeds every other floor, and is inert
+// when it doesn't.
+func TestOnlineStat_ZScoreFloored_ExtraFloorOnlyWidensDivisor(t *testing.T) {
+	var s onlineStat
+	for i := 0; i < 8; i++ {
+		s.Update(float64(10 + i%2)) // mean 10.5, raw stddev 0.5345, relative floor 1.575
+	}
+	if got, want := s.ZScoreFloored(13.0, 0.5), s.ZScore(13.0); math.Abs(got-want) > 1e-12 {
+		t.Errorf("an extra floor below the relative floor must be inert: got %v, want %v", got, want)
+	}
+	// Extra floor 5.0 exceeds the 1.575 relative floor, so it wins.
+	if got, want := s.ZScoreFloored(13.0, 5.0), 0.5; math.Abs(got-want) > 1e-12 {
+		t.Errorf("expected (13-10.5)/5.0 = 0.5, got %v", got)
+	}
+}
+
 func TestOnlineStat_SingleSample_ZScoreDoesNotPanic(t *testing.T) {
 	var s onlineStat
 	s.Update(5.0)

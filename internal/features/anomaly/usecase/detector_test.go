@@ -1162,3 +1162,47 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 		t.Errorf("expected the block reason to name tool_diversity, got %q", blocker.calls[0].reason)
 	}
 }
+
+// TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks is
+// the Detector-level regression gate for onlineStat.ZScore's zero-variance
+// short-circuit, which returned 0 before the relative-stddev floor was
+// ever applied. establishFixedToolSetBaseline's 11 windows all touch
+// exactly the same 5 tools, so the distinct-tool count has raw variance
+// *exactly* 0 -- the tightest baseline possible, and previously the one
+// baseline shape from which no deviation could ever be detected. That made
+// the raw-count diversity fix incomplete: TestDetector_MLScore_ToolEnumeration_StillBlocks
+// above builds its baseline from a 4/5/6 cycle, which has real variance and
+// so never reached the short-circuit at all.
+//
+// Hand-traced: diversity mean 5 with zero variance, floored to
+// 0.15*5 = 0.75; a window spreading 100 calls (the baseline's own volume
+// range, so call_rate contributes essentially nothing: z_rate =
+// (100-99.0909)/14.8636 = 0.06) over 60 distinct tools scores
+// z_diversity = (60-5)/0.75 = 73.33. Pre-fix that was 0 and this blatant
+// enumeration sweep did not even clear the 3.0 log threshold.
+func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
+
+	establishFixedToolSetBaseline(d, clock, "alice")
+
+	publishWindow(d, clock, "alice", manyToolNames(60), "allow", 100, 200*time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
+
+	logged := mlScoreAnomalies(writer)
+	if len(logged) != 1 {
+		t.Fatalf("expected enumeration against a zero-variance diversity baseline to be logged exactly once, got %d: %+v", len(logged), writer.anomalies)
+	}
+	if want := "combined z-score 73.33 (driving feature: tool_diversity)"; !strings.Contains(logged[0].Detail, want) {
+		t.Errorf("expected the logged score to be %q, got %q", want, logged[0].Detail)
+	}
+	if len(blocker.calls) != 1 {
+		t.Fatalf("expected enumeration against a zero-variance diversity baseline to auto-block exactly once, got %d: %+v", len(blocker.calls), blocker.calls)
+	}
+	if !strings.Contains(blocker.calls[0].reason, "tool_diversity") {
+		t.Errorf("expected the block reason to name tool_diversity, got %q", blocker.calls[0].reason)
+	}
+}
