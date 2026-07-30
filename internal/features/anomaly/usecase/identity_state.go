@@ -31,16 +31,26 @@ type windowCounts struct {
 	interArrivalN   int                 // count of deltas summed -- exactly total-1 within-window calls, since lastCallAt resets to zero on rollover (no cross-window delta)
 }
 
-// mlFeatureState holds ml_score's four persistent per-identity running
-// baselines. Unlike windowCounts (reset every window), these accumulate
-// across every window for the identity's whole lifetime (until GC drops
-// the identity) -- they ARE the baseline windowCounts is compared
-// against.
+// mlFeatureState holds ml_score's four scored features' persistent
+// per-identity running baselines, plus a fifth, toolCalls, used only to
+// gate deny_ratio's auto-block candidacy on whether ITS OWN denominator
+// declined -- zRate (scored from windowCounts.total, deliberately
+// inclusive of protocol passthrough) is not a valid proxy for this,
+// since total can hold steady or rise while toolCalls -- deny_ratio's
+// actual denominator -- collapses (a reconnect storm or a burst of
+// tool-less error entries pads total without adding a single real tool
+// call). toolCalls itself is never scored as an anomaly or logged in
+// ml_score's Detail string; it exists solely to gate deny_ratio's block
+// candidacy correctly. Unlike windowCounts (reset every window), these
+// accumulate across every window for the identity's whole lifetime
+// (until GC drops the identity) -- they ARE the baseline windowCounts is
+// compared against.
 type mlFeatureState struct {
 	rate         onlineStat
 	diversity    onlineStat
 	denyRatio    onlineStat
 	interArrival onlineStat
+	toolCalls    onlineStat
 }
 
 // identityState is one identity's rolling behavioral history: known

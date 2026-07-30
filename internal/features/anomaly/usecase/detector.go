@@ -365,9 +365,15 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		zDenyBlock = st.mlStats.denyRatio.ZScoreFloored(denyRatio, se)
 	}
 	zInterArrival := st.mlStats.interArrival.ZScore(interArrival)
+	// zToolCalls exists solely to gate deny_ratio's block candidacy on
+	// whether deny_ratio's own denominator declined -- see mlFeatureState's
+	// doc comment in identity_state.go for why zRate (scored from total,
+	// deliberately inclusive of protocol passthrough) cannot stand in for
+	// this. Never scored as its own ml_score feature or logged.
+	zToolCalls := st.mlStats.toolCalls.ZScore(float64(st.prev.toolCalls))
 
 	score, feature := maxAbsZ(zRate, zDiversity, zDeny, zInterArrival)
-	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival)
+	blockScore, blockFeature := maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival)
 	anomalous := score > d.cfg.MLScore.ScoreThreshold
 
 	// ponytail: only fold a window's raw values into the baseline when the
@@ -385,6 +391,7 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		st.mlStats.diversity.Update(diversity)
 		st.mlStats.denyRatio.Update(denyRatio)
 		st.mlStats.interArrival.Update(interArrival)
+		st.mlStats.toolCalls.Update(float64(st.prev.toolCalls))
 	}
 
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
@@ -444,38 +451,54 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // it), not the raw zDeny used for logging.
 //
 // Both the deny_ratio and inter_arrival_time candidates are additionally
-// gated on zRate >= 0. deny_ratio, like tool_diversity before round 5's
-// raw-count fix, is a ratio -- and a ratio rises when call volume declines
-// over an unchanged absolute numerator (round 7: an identity with a handful
-// of habitual denied probes scores as increasingly anomalous purely because
-// a quiet window shrank the denominator, no denial behavior having actually
-// changed; unlike diversity, deny_ratio can't simply switch to a raw count
-// without losing the ability to detect a genuine small-absolute-count
-// proportional spike, so it's gated on volume instead. A binomial-SE floor
-// alone cannot close this: the SE shrinks as 1/sqrt(n) while the artifact
-// grows as 1/n). Calls arriving closer together is likewise only a threat
-// signal paired with volume at or above baseline (an actual burst); a
-// client that simply made fewer calls that happened to land closer
-// together, or had a naturally low but proportionally high deny count in a
-// quiet window, is not one. The trade-off in both cases: a genuine attack
-// at conspicuously low volume no longer auto-blocks either -- still logged
-// via the unaffected two-sided score, matching this feature's established
-// posture (see round 4's accepted "quiet slow-drip exfil unblockable"
-// trade-off) of preferring a missed block over a false one.
+// gated on volume not having declined, because both are quantities a
+// shrinking window inflates on its own. deny_ratio, like tool_diversity
+// before round 5's raw-count fix, is a ratio -- and a ratio rises when call
+// volume declines over an unchanged absolute numerator (round 7: an identity
+// with a handful of habitual denied probes scores as increasingly anomalous
+// purely because a quiet window shrank the denominator, no denial behavior
+// having actually changed; unlike diversity, deny_ratio can't simply switch
+// to a raw count without losing the ability to detect a genuine
+// small-absolute-count proportional spike, so it's gated on volume instead.
+// A binomial-SE floor alone cannot close this: the SE shrinks as 1/sqrt(n)
+// while the artifact grows as 1/n). Calls arriving closer together is
+// likewise only a threat signal paired with volume at or above baseline (an
+// actual burst); a client that simply made fewer calls that happened to land
+// closer together, or had a naturally low but proportionally high deny count
+// in a quiet window, is not one.
+//
+// The two use *different* volume gates, because they have different
+// denominators. inter_arrival_time is gated on zRate >= 0: its delta count is
+// total-1 within a window, the same quantity zRate measures, so a decline in
+// zRate is a valid proxy for "this window's inter-arrival sample shrank."
+// deny_ratio is gated on zToolCalls >= 0 -- its own denominator is toolCalls,
+// not total (round 9: zRate can hold steady or rise via protocol passthrough
+// or tool-less error traffic while toolCalls itself collapses, which
+// re-opened the exact ratio-volume-decline artifact round 7's zRate-based
+// gate was built to close, since padding total satisfies that gate without
+// protecting the denominator it actually needs to protect).
+//
+// The trade-off in both cases: a genuine attack at conspicuously low volume
+// no longer auto-blocks either -- still logged via the unaffected two-sided
+// score, matching this feature's established posture (see round 4's accepted
+// "quiet slow-drip exfil unblockable" trade-off) of preferring a missed block
+// over a false one.
 //
 // The result is floored at 0: if every feature moved in the benign
 // direction, there is no case for blocking at all, not a large negative
 // "score."
-func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zInterArrival float64) (float64, string) {
+func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival float64) (float64, string) {
 	best := zRate
 	feature := "call_rate"
 	if v := zDiversity; v > best {
 		best, feature = v, "tool_diversity"
 	}
-	if zRate >= 0 {
+	if zToolCalls >= 0 {
 		if v := zDenyBlock; v > best {
 			best, feature = v, "deny_ratio"
 		}
+	}
+	if zRate >= 0 {
 		if v := -zInterArrival; v > best {
 			best, feature = v, "inter_arrival_time"
 		}
