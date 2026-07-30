@@ -32,9 +32,12 @@ type BudgetChecker interface {
 }
 
 // AutoBlockChecker is the subset of anomaly/usecase.BlockChecker's
-// behavior Handler depends on -- mirrors BudgetChecker's exact shape.
+// behavior Handler depends on -- mirrors BudgetChecker's exact shape,
+// with tenantName threaded through so a block is scoped to (tenant,
+// identity), not identity alone (two tenants can plausibly provision an
+// identically-named identity via SCIM).
 type AutoBlockChecker interface {
-	Check(identity string, now time.Time) anomalydomain.BlockVerdict
+	Check(tenantName, identity string, now time.Time) anomalydomain.BlockVerdict
 }
 
 // JSON-RPC error codes. This isn't a full JSON-RPC error code
@@ -167,7 +170,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// reaches the policy engine — call.Tool isn't parsed yet at this point,
 	// so "" is used for tool, matching the parse-error paths above.
 	if h.autoBlockChecker != nil {
-		blockVerdict := h.autoBlockChecker.Check(identity, start)
+		blockVerdict := h.autoBlockChecker.Check(tenant, identity, start)
 		if !blockVerdict.Allowed {
 			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, start)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))

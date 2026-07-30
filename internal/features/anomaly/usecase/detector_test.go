@@ -806,8 +806,52 @@ type recordingBlocker struct {
 	calls []struct{ identity, reason string }
 }
 
-func (b *recordingBlocker) Block(identity, reason string) {
+func (b *recordingBlocker) Block(tenantName, identity, reason string) {
 	b.calls = append(b.calls, struct{ identity, reason string }{identity, reason})
+}
+
+// TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline is the
+// design spec's named regression test for the cross-tenant bleed Task 22
+// closes: two different tenants' identically-named identity (two
+// SCIM-provisioned "alice"s from different IdPs) must maintain fully
+// independent baselines, and an auto-block triggered on one must never
+// block the other. Uses the real BlockChecker (not recordingBlocker) so
+// the assertion exercises the actual (tenant, identity) composite key end
+// to end, not just Detector's internal bookkeeping.
+func TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	blocker := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 60}, clock.now)
+	d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now)
+
+	feedAcmeAlice := func(tools []string, n int, spacing time.Duration) {
+		for i := 0; i < n; i++ {
+			d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: tools[i%len(tools)], Decision: "allow"})
+			clock.t = clock.t.Add(spacing)
+		}
+	}
+
+	// Establish a quiet, ordinary baseline for tenant acme's "alice" (the
+	// same {10, 11} alternating shape proven to establish a baseline in
+	// TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged).
+	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
+		feedAcmeAlice(manyToolNames(n), n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+	// A wild burst -- 200 calls across 20 tools, 1ms apart -- must trip
+	// auto-block for (acme, alice) only.
+	feedAcmeAlice(manyToolNames(20), 200, time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
+
+	if v := blocker.Check("acme", "alice", clock.now()); v.Allowed {
+		t.Fatal("acme's alice should be auto-blocked after the wild burst")
+	}
+	// A DIFFERENT tenant's identically-named "alice", who has sent zero
+	// traffic at all, must be completely unaffected -- proves the block
+	// map is keyed by (tenant, identity), not identity alone.
+	if v := blocker.Check("widgets-inc", "alice", clock.now()); !v.Allowed {
+		t.Fatal("widgets-inc's alice must not be blocked by acme's alice's anomaly -- cross-tenant bleed")
+	}
 }
 
 // TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks proves the

@@ -12,7 +12,7 @@ func TestBlockChecker_UnblockedIdentity_Allowed(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
 
-	v := b.Check("agent-abc123", now)
+	v := b.Check("acme", "agent-abc123", now)
 	if !v.Allowed {
 		t.Fatalf("expected an identity with no block to be allowed, got %+v", v)
 	}
@@ -22,9 +22,9 @@ func TestBlockChecker_BlockedIdentity_DeniedWithRetryAfter(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
 
-	b.Block("agent-abc123", "ml_score exceeded threshold")
+	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
-	v := b.Check("agent-abc123", now)
+	v := b.Check("acme", "agent-abc123", now)
 	if v.Allowed {
 		t.Fatal("expected the blocked identity to be denied")
 	}
@@ -40,10 +40,10 @@ func TestBlockChecker_BlockExpires_AllowedAgain(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
 
-	b.Block("agent-abc123", "ml_score exceeded threshold")
+	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
 	later := now.Add(301 * time.Second)
-	v := b.Check("agent-abc123", later)
+	v := b.Check("acme", "agent-abc123", later)
 	if !v.Allowed {
 		t.Fatalf("expected the block to have expired, got %+v", v)
 	}
@@ -53,11 +53,32 @@ func TestBlockChecker_DifferentIdentity_Unaffected(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
 
-	b.Block("agent-abc123", "ml_score exceeded threshold")
+	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
-	v := b.Check("agent-xyz789", now)
+	v := b.Check("acme", "agent-xyz789", now)
 	if !v.Allowed {
 		t.Fatal("expected a different identity to be unaffected by another identity's block")
+	}
+}
+
+// TestBlockChecker_SameIdentityDifferentTenant_Unaffected is the
+// primitive-level regression gate for Task 22's cross-tenant bleed fix:
+// two different tenants can plausibly provision an identically-named
+// identity (e.g. two IdPs both provisioning "alice" via SCIM), and a
+// block on one tenant's "alice" must never affect the other's.
+func TestBlockChecker_SameIdentityDifferentTenant_Unaffected(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
+
+	b.Block("acme", "alice", "ml_score exceeded threshold")
+
+	if v := b.Check("widgets-inc", "alice", now); !v.Allowed {
+		t.Fatal("expected a different tenant's identically-named identity to be unaffected by another tenant's block")
+	}
+	// Sanity: the tenant+identity combo the Block call actually targeted
+	// is still blocked.
+	if v := b.Check("acme", "alice", now); v.Allowed {
+		t.Fatal("expected acme's alice to remain blocked")
 	}
 }
 
@@ -65,7 +86,7 @@ func TestBlockChecker_List_ReturnsCurrentlyBlockedEntries(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })
 
-	b.Block("agent-abc123", "ml_score exceeded threshold")
+	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
 	entries := b.List()
 	if len(entries) != 1 {
@@ -73,6 +94,9 @@ func TestBlockChecker_List_ReturnsCurrentlyBlockedEntries(t *testing.T) {
 	}
 	if entries[0].Identity != "agent-abc123" {
 		t.Errorf("expected identity agent-abc123, got %q", entries[0].Identity)
+	}
+	if entries[0].Tenant != "acme" {
+		t.Errorf("expected tenant acme, got %q", entries[0].Tenant)
 	}
 	if entries[0].Reason == "" {
 		t.Error("expected a non-empty reason")
@@ -89,7 +113,7 @@ func TestBlockChecker_List_FiltersExpiredEntriesWithoutGC(t *testing.T) {
 	current := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return current })
 
-	b.Block("agent-abc123", "ml_score exceeded threshold")
+	b.Block("acme", "agent-abc123", "ml_score exceeded threshold")
 
 	current = current.Add(301 * time.Second) // past the 300s TTL, GC interval typically much longer (e.g. 600s) and never run here
 	entries := b.List()

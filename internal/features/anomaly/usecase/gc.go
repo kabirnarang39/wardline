@@ -20,9 +20,9 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 	defer d.mu.Unlock()
 
 	cutoff := now.Add(-2 * interval)
-	for identity, st := range d.state {
+	for key, st := range d.state {
 		if st.lastSeen.Before(cutoff) {
-			delete(d.state, identity)
+			delete(d.state, key)
 		}
 	}
 }

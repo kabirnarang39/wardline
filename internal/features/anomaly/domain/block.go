@@ -12,9 +12,13 @@ type BlockVerdict struct {
 }
 
 // BlockedEntry is one currently-blocked identity, as surfaced by the
-// dashboard's read-only blocked-list endpoint.
+// dashboard's read-only blocked-list endpoint. Tenant disambiguates
+// entries once BlockChecker partitions blocks by (Tenant, Identity) --
+// two different tenants' identically-named identities can each appear
+// here independently.
 type BlockedEntry struct {
 	Identity     string    `json:"identity"`
+	Tenant       string    `json:"tenant"`
 	BlockedUntil time.Time `json:"blocked_until"`
 	Reason       string    `json:"reason"`
 }
