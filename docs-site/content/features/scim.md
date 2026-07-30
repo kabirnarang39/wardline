@@ -13,52 +13,31 @@ Wardline with no `rbac.yaml` edit. Enable with:
 features:
   scim: true
   rbac: true                # SCIM provisions bindings for RBAC to consult
+rbac:
+  config_file: "rbac.yaml"
 scim:
   bearer_token_env: "WARDLINE_SCIM_TOKEN"   # env var, never inline
   persist_postgres: false                     # requires features.postgres_storage when true
 ```
 
-## Endpoints
-
-- `POST /scim/v2/Users`, `GET /scim/v2/Users` — create / list.
-- `GET`, `DELETE`, `PATCH /scim/v2/Users/{id}` — read, delete, and a
-  PATCH that supports exactly one operation: `{"op": "replace", "path":
-  "active", "value": true|false}` (any other op or path is ignored).
-- `POST /scim/v2/Groups`, `GET /scim/v2/Groups` — create / list.
-- `GET`, `DELETE`, `PATCH /scim/v2/Groups/{id}` — read, delete, and a
-  PATCH that supports exactly two operations, both on `"path":
-  "members"`: `{"op": "add", "value": [...]}` and `{"op": "remove",
-  "value": [...]}`.
-- Every request needs `Authorization: Bearer <token>` matching
-  `scim.bearer_token_env`'s value, compared in constant time. A wrong
-  or missing token gets a `401` in an RFC 7644-shaped error body;
-  an unknown user/group ID gets `404`; a malformed PATCH body gets
-  `400`.
-
-## Group name is the tenant/role carrier
-
-A Group's `displayName` encodes the RBAC grant it provisions:
-
-- `wardline:tenant-<tenant>:role-<role>` — every `active` member becomes
-  a `RoleBinding{Subject: member, RoleName: role, Tenant: tenant}`.
-- `wardline:role-<role>` (no tenant segment) — every `active` member
-  becomes a `ClusterRoleBinding` (a global grant, mirroring
-  `rbac.yaml`'s own no-tenant-means-global convention).
-- Any other group name is silently ignored — an IdP's non-Wardline
-  groups must not error or interfere with provisioning.
-
-Membership changes go through immediately: `PATCH .../Groups/{id}`
-re-derives that group's bindings on every add/remove. SCIM-provisioned
-bindings are additive on top of `rbac.yaml`'s static bindings (checked
-first), never a replacement for them.
-
-## Persistence
-
+Serves `POST`/`GET /scim/v2/Users` and `GET`/`DELETE`/`PATCH
+/scim/v2/Users/{id}` (PATCH supports exactly one operation: `{"op":
+"replace", "path": "active", "value": true|false}`), plus the same
+verb set for `/scim/v2/Groups` (PATCH supports `{"op": "add"|"remove",
+"path": "members", "value": [...]}`). Every request needs
+`Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
+value, compared in constant time. A Group's `displayName` encodes the
+RBAC grant it provisions: `wardline:tenant-<tenant>:role-<role>` makes
+every `active` member a `RoleBinding{Tenant: tenant}`;
+`wardline:role-<role>` (no tenant segment) makes every `active` member
+a `ClusterRoleBinding` (a global grant, mirroring `rbac.yaml`'s own
+no-tenant-means-global convention); any other group name is silently
+ignored, so an IdP's non-Wardline groups don't interfere. Bindings
+re-derive immediately on every Group PATCH, additive on top of
+`rbac.yaml`'s static bindings (checked first), never a replacement.
 In-memory by default — provisioned Users/Groups/bindings are lost on
-restart. Set `scim.persist_postgres: true` (requires
-`features.postgres_storage` also on) to persist group→member bindings
-in Postgres instead, so a replica restart or a second replica sees the
-same bindings.
+restart; set `scim.persist_postgres: true` (requires
+`features.postgres_storage` also on) to persist them instead.
 
 ## Known limitations
 
