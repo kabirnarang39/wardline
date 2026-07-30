@@ -46,13 +46,12 @@ preshared secret.
 
 `wardline validate-config` attempts to construct the OIDC bootstrapper
 when `bootstrap_source: oidc` — the same construction `wardline serve`
-itself does at startup. **Verified against the current code, this
-differs from the intended design**: the underlying JWKS client
-(`lestrrat-go/jwx/v3/jwk.Cache`) waits for its first successful fetch
-with no context timeout, so an unreachable `jwks_uri` doesn't produce
-the intended soft warning at validate time (or `serve`'s intended
-fail-fast exit) — both commands block indefinitely instead. Confirm
-`jwks_uri` is actually reachable before running either.
+itself does at startup. The underlying JWKS client
+(`lestrrat-go/jwx/v3/jwk.Cache`) waits for its first successful fetch,
+but that wait is bounded by a 10-second internal timeout: an
+unreachable, refused, 404, or otherwise-broken `jwks_uri` produces the
+intended soft warning at validate time (or `serve`'s intended fail-fast
+exit) within that bound rather than hanging.
 
 ## Known limitations
 
@@ -67,9 +66,3 @@ fail-fast exit) — both commands block indefinitely instead. Confirm
   limitations.
 - No refresh tokens or configurable JWT TTL — same limitation as
   [Credential Issuance](/features/credential-issuance/) generally.
-- **An unreachable `jwks_uri` hangs `validate-config`/`serve` rather
-  than warning or failing fast** — despite the intent that a
-  transiently-unreachable IdP shouldn't block startup, both commands
-  currently block indefinitely (no timeout) waiting for the first JWKS
-  fetch to succeed. Verify the endpoint is reachable before starting
-  Wardline with `bootstrap_source: oidc`.
