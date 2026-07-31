@@ -62,7 +62,9 @@ exit) within that bound rather than hanging.
   multiple-issuer or issuer-to-tenant mapping.
 - Cross-tenant credential-revoke scoping falls back to requiring a
   global `ClusterRoleBinding` grant for every revoke when this
-  bootstrap source is active — see [RBAC](/features/rbac/)'s known
-  limitations.
+  bootstrap source is active — and the same fallback also applies to the
+  preshared-secret bootstrap source whenever a target identity name is
+  registered in more than one tenant — see [RBAC](/features/rbac/)'s
+  known limitations.
 - No refresh tokens or configurable JWT TTL — same limitation as
   [Credential Issuance](/features/credential-issuance/) generally.
