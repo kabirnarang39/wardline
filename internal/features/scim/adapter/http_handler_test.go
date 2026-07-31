@@ -225,6 +225,10 @@ func TestHandler_ListUsers_UnsupportedFilterExpression_Returns400(t *testing.T) 
 		`userName co "ali"`,
 		`userName eq "alice" and active eq true`,
 		`displayName eq "alice"`,
+		// Regression: this also starts with `userName eq "` and ends with
+		// `"`, so a naive prefix/suffix check alone wrongly accepts it
+		// (extracting the garbage value `alice" and userName eq "bob`).
+		`userName eq "alice" and userName eq "bob"`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Users?filter=" + url.QueryEscape(filter)
@@ -529,6 +533,9 @@ func TestHandler_ListGroups_UnsupportedFilterExpression_Returns400(t *testing.T)
 		`displayName co "viewer"`,
 		`displayName eq "wardline:role-viewer" and active eq true`,
 		`userName eq "wardline:role-viewer"`,
+		// Regression: Groups equivalent of the Users
+		// eq-followed-by-another-eq-clause repro above.
+		`displayName eq "wardline:role-viewer" and displayName eq "wardline:role-admin"`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Groups?filter=" + url.QueryEscape(filter)

@@ -126,6 +126,15 @@ func parseEqFilter(rawFilter, wantAttr string) (value string, ok bool, err error
 		return "", false, fmt.Errorf("unsupported filter expression")
 	}
 	value = strings.TrimSuffix(strings.TrimPrefix(rawFilter, prefix), `"`)
+	// A prefix/suffix match alone doesn't rule out a second clause tacked
+	// on after the closing quote of an *earlier* clause, e.g.
+	// `userName eq "alice" and userName eq "bob"` also starts with the
+	// prefix and ends with `"`. Reject if the extracted value still
+	// contains filter syntax -- an embedded quote (another clause's
+	// quoted value) or " and "/" or " (combinators).
+	if strings.Contains(value, `"`) || strings.Contains(value, " and ") || strings.Contains(value, " or ") {
+		return "", false, fmt.Errorf("unsupported filter expression")
+	}
 	return value, true, nil
 }
 
