@@ -40,7 +40,10 @@ func LoadMTLSBootstrapper(path string) (*MTLSBootstrapper, error) {
 			return nil, fmt.Errorf("credentials file %s: every identity entry must have both name and spiffe_id when using the mtls bootstrap source", path)
 		}
 		if existing, ok := bySpiffeID[e.SpiffeID]; ok {
-			return nil, fmt.Errorf("credentials file %s: duplicate spiffe_id for identities %q and %q", path, existing.identity, e.Name)
+			// Unlike presharedsecret.go's deliberate secret-omission, the
+			// colliding value itself is safe (and useful) to include here:
+			// a SPIFFE ID is a public URI, not a secret.
+			return nil, fmt.Errorf("credentials file %s: duplicate spiffe_id %q for identities %q and %q", path, e.SpiffeID, existing.identity, e.Name)
 		}
 		t := e.Tenant
 		if t == "" {

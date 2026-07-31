@@ -46,15 +46,18 @@ Tokens can be revoked; revocation is checked on every request.
   time, the revoke falls back to the pre-scoping wildcard behavior —
   revoking every tenant's copy of that identity name at once, the same
   as before this cycle's fix. This is not an OIDC-only gap: it's
-  reachable under **either** bootstrap source. With `bootstrap_source:
-  oidc`, tenant lookup always fails (no static identity registry exists
-  to look a target up in). With the preshared-secret bootstrapper,
-  lookup normally succeeds from `credentials.yaml` — but fails the same
-  way whenever the target identity name is registered under two or more
-  distinct tenants (`Bootstrapper.TenantOf` deliberately fails closed to
-  "unresolved" on that ambiguity, rather than guessing which tenant's
-  copy to scope to) — precisely the "two `credentials.yaml` entries
-  legitimately provision the same name" scenario described above. A
-  caller holding a global `credential:revoke` grant (see
-  [RBAC](/features/rbac/)) can trigger this wildcard fallback under
-  preshared-secret bootstrap too, with no OIDC involved.
+  reachable under **any** of the three bootstrap sources. With
+  `bootstrap_source: oidc`, tenant lookup always fails (no static
+  identity registry exists to look a target up in). With the
+  preshared-secret and mtls bootstrappers, lookup normally succeeds
+  from `credentials.yaml` — but fails the same way whenever the target
+  identity name (preshared-secret) or its mapped SPIFFE ID's identity
+  (mtls) is registered under two or more distinct tenants
+  (`Bootstrapper.TenantOf` and `MTLSBootstrapper.TenantOf` both
+  deliberately fail closed to "unresolved" on that ambiguity, rather
+  than guessing which tenant's copy to scope to) — precisely the "two
+  `credentials.yaml` entries legitimately provision the same name"
+  scenario described above. A caller holding a global
+  `credential:revoke` grant (see [RBAC](/features/rbac/)) can trigger
+  this wildcard fallback under any bootstrap source, with no OIDC
+  involved.

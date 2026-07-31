@@ -21,7 +21,7 @@ features:
   credential_issuance: true
 credential:
   identities_file: "credentials.yaml"   # still required even for oidc -- see note below
-  bootstrap_source: "oidc"        # "presharedsecret" (default) | "oidc"
+  bootstrap_source: "oidc"        # "presharedsecret" (default) | "oidc" | "mtls"
   oidc:
     issuer: "https://idp.example.com/"
     jwks_uri: "https://idp.example.com/.well-known/jwks.json"

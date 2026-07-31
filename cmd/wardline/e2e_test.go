@@ -1912,6 +1912,55 @@ credential:
 	}
 }
 
+// TestValidateConfigEndToEnd_MTLSBadCredentialsFileFailsHard proves
+// validate-config hard-fails (non-zero exit) when bootstrap_source: mtls
+// is configured with a credentials.yaml that doesn't parse -- the same
+// "local file read, no network call to fail softly on" reasoning
+// runValidateConfig documents for its LoadMTLSBootstrapper call, unlike
+// the oidc block right above it in main.go, which only warns on a
+// possibly-transient JWKS failure.
+func TestValidateConfigEndToEnd_MTLSBadCredentialsFileFailsHard(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte("default: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A missing credentials.yaml -- LoadMTLSBootstrapper's os.ReadFile
+	// fails outright, the simplest way to hit the "doesn't parse" case
+	// without needing a malformed-YAML fixture too.
+	missingCredentialsPath := filepath.Join(dir, "does-not-exist.yaml")
+	config := fmt.Sprintf(`listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: %q
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: %q
+  bootstrap_source: "mtls"
+  mtls:
+    header: "X-Wardline-Verified-Spiffe-Id"
+`, policyPath, missingCredentialsPath)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "validate-config", "--config", configPath).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a non-zero exit for bootstrap_source: mtls with a missing credentials file, got: %s", out)
+	}
+}
+
 // TestExportEvidenceEndToEnd_RenameFailureCleansUpTmpFile forces the
 // os.Rename(tmpPath, output) failure branch in runExportEvidence by
 // pointing -output at a path that already exists as a directory --
