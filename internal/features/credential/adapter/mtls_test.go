@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
@@ -117,6 +118,12 @@ identities:
 	_, err := adapter.LoadMTLSBootstrapper(path)
 	if err == nil {
 		t.Fatal("expected an error for two identities sharing a spiffe_id")
+	}
+	// A spiffe_id is a public, structured URI, not a secret -- unlike
+	// presharedsecret's deliberate secret-omission, the colliding value
+	// itself belongs in the error to make a real config mistake debuggable.
+	if !strings.Contains(err.Error(), "spiffe://example.org/ns/prod/sa/same-id") {
+		t.Errorf("expected the error to name the colliding spiffe_id, got: %v", err)
 	}
 }
 
