@@ -21,9 +21,16 @@ func (f fakeVerifier) Verify(token string) (domain.Claims, error) {
 type fakeRevoker struct {
 	revoked map[string]bool
 	err     error // when set, Revoke returns this instead of recording
+
+	// lastTenant/lastIdentity record the args of the most recent
+	// Revoke/IsRevoked call, so tests can assert tenant scoping is
+	// actually threaded through rather than just compiling.
+	lastTenant   string
+	lastIdentity string
 }
 
-func (f *fakeRevoker) Revoke(identity string, expiresAt time.Time) error {
+func (f *fakeRevoker) Revoke(tenantName, identity string, expiresAt time.Time) error {
+	f.lastTenant, f.lastIdentity = tenantName, identity
 	if f.err != nil {
 		return f.err
 	}
@@ -34,7 +41,8 @@ func (f *fakeRevoker) Revoke(identity string, expiresAt time.Time) error {
 	return nil
 }
 
-func (f *fakeRevoker) IsRevoked(identity string) bool {
+func (f *fakeRevoker) IsRevoked(tenantName, identity string) bool {
+	f.lastTenant, f.lastIdentity = tenantName, identity
 	return f.revoked[identity]
 }
 
@@ -63,5 +71,18 @@ func TestVerificationService_RevokedIdentityIsRejected(t *testing.T) {
 	_, _, err := s.Authenticate("valid-but-revoked-token")
 	if !errors.Is(err, usecase.ErrRevoked) {
 		t.Errorf("expected ErrRevoked, got %v", err)
+	}
+}
+
+func TestVerificationService_AuthenticateChecksRevocationScopedToTenant(t *testing.T) {
+	revoker := &fakeRevoker{}
+	verifier := fakeVerifier{claims: domain.Claims{Subject: "alice", Tenant: "acme"}}
+	s := usecase.NewVerificationService(verifier, revoker)
+
+	if _, _, err := s.Authenticate("token"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if revoker.lastTenant != "acme" || revoker.lastIdentity != "alice" {
+		t.Errorf("IsRevoked called with (%q, %q), want (\"acme\", \"alice\")", revoker.lastTenant, revoker.lastIdentity)
 	}
 }
