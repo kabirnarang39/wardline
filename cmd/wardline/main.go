@@ -537,7 +537,7 @@ func runServe(logger *slog.Logger, args []string) {
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker)
-		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer)
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) })
 		// verification already satisfies proxyadapter.Authenticator directly
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.

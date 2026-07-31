@@ -49,11 +49,15 @@ func (r *recordingRevoker) Revoke(tenantName, identity string, expiresAt time.Ti
 }
 func (r *recordingRevoker) IsRevoked(tenantName, identity string) bool { return false }
 
+// noTargetTenant matches the pre-Task-4 wildcard-revoke behavior: no
+// static registry entry for any identity.
+func noTargetTenant(string) (string, bool) { return "", false }
+
 func newTestHandler(revoker domain.Revoker) *adapter.Handler {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return adapter.NewHandler(issuance, revocation, logger, nil)
+	return adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant)
 }
 
 func TestHandleToken_ValidSecretReturns200WithToken(t *testing.T) {
@@ -284,7 +288,7 @@ func TestHandleRevoke_NonLoopbackAllowedByAuthorizerRevokes(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: true})
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: true}, noTargetTenant)
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -306,7 +310,7 @@ func TestHandleRevoke_NonLoopbackDeniedByAuthorizerIsForbidden(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: false})
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: false}, noTargetTenant)
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -328,7 +332,7 @@ func TestHandleRevoke_NonLoopbackNoAuthorizerWiredIsForbidden(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, nil) // rbac not wired -- today's behavior
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant) // rbac not wired -- today's behavior
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -339,5 +343,49 @@ func TestHandleRevoke_NonLoopbackNoAuthorizerWiredIsForbidden(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleRevoke_ResolvesTargetTenantBeforeRevoking(t *testing.T) {
+	revoker := &recordingRevoker{}
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(revoker)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	targetTenant := func(identity string) (string, bool) {
+		if identity == "alice" {
+			return "acme", true
+		}
+		return "", false
+	}
+	h := adapter.NewHandler(issuance, revocation, logger, nil, targetTenant)
+
+	body := bytes.NewBufferString(`{"identity":"alice"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if revoker.tenant != "acme" || revoker.identity != "alice" {
+		t.Errorf("Revoke called with (%q,%q), want (\"acme\",\"alice\")", revoker.tenant, revoker.identity)
+	}
+}
+
+func TestHandleRevoke_UnresolvableTargetTenantRevokesAsWildcard(t *testing.T) {
+	revoker := &recordingRevoker{}
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(revoker)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant) // e.g. OIDC bootstrap source, no static registry
+
+	body := bytes.NewBufferString(`{"identity":"mallory"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if revoker.tenant != "" {
+		t.Errorf("expected wildcard revoke (empty tenant), got %q", revoker.tenant)
 	}
 }
