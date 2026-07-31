@@ -159,6 +159,16 @@ func splitIdentityKey(key string) (identity, tenantName string) {
 		// whole string as a bare identity, the safe fallback.
 		return key, ""
 	}
+	// strconv.Atoi accepts a leading '-', so a bare identity of the shape
+	// "-N:..." would otherwise reach rest[prefixLen] with prefixLen < 0 --
+	// a negative index, which panics rather than falling back safely.
+	// postgresSafeKey (the only real producer of a length-prefixed key)
+	// never emits a negative prefix, so this can only be reached by a
+	// bare identity string shaped like a malformed length-prefixed key --
+	// exactly the case this fallback exists to handle.
+	if prefixLen < 0 {
+		return key, ""
+	}
 	rest := key[firstColon+1:]
 	if len(rest) < prefixLen+1 || rest[prefixLen] != ':' {
 		return key, "" // malformed; fail safe to bare-identity interpretation
