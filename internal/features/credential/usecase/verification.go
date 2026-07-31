@@ -28,7 +28,7 @@ func (s *VerificationService) Authenticate(bearerToken string) (identity, tenant
 	if err != nil {
 		return "", "", err
 	}
-	if s.revoker.IsRevoked(claims.Subject) {
+	if s.revoker.IsRevoked(claims.Tenant, claims.Subject) {
 		return "", "", ErrRevoked
 	}
 	return claims.Subject, claims.Tenant, nil

@@ -18,6 +18,6 @@ func NewRevocationService(revoker domain.Revoker) *RevocationService {
 	return &RevocationService{revoker: revoker}
 }
 
-func (s *RevocationService) Revoke(identity string, expiresAt time.Time) error {
-	return s.revoker.Revoke(identity, expiresAt)
+func (s *RevocationService) Revoke(tenantName, identity string, expiresAt time.Time) error {
+	return s.revoker.Revoke(tenantName, identity, expiresAt)
 }
