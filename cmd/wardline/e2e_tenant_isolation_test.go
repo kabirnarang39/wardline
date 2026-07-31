@@ -2,12 +2,14 @@ package main_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -451,5 +453,217 @@ anomaly:
 	}
 	if sawWidgetsBlock {
 		t.Errorf("shared-name@widgets-inc must not appear in the blocked list -- auto-block leaked across tenants: %+v", blockedList)
+	}
+}
+
+// TestServeEndToEnd_TenantIsolation_CrossTenantRevoke is the closing e2e
+// test for the revocation re-keying cluster (Tasks 1-4): credential
+// revocation is now genuinely keyed by (tenant, identity)
+// (domain.Revoker, internal/features/credential/domain/revoker.go)
+// instead of identity-name-only, and this drives that real behavior
+// through the real compiled binary over real HTTP -- not just the unit
+// tests' fakes.
+//
+// Adaptation from the task brief, verified empirically before writing
+// this test (see internal/features/credential/adapter/presharedsecret.go's
+// Bootstrapper.TenantOf and its doc comment): registering the identical
+// identity name in two different tenants' credentials.yaml entries makes
+// TenantOf -- the only source http_handler.go's targetTenant closure has
+// for resolving a revoke's target tenant -- deliberately and unavoidably
+// ambiguous ("the same identity name can legitimately appear more than
+// once ... fail closed ... on ambiguity"), which falls back to a
+// wildcard revoke denying every tenant sharing that name. That's
+// intentional, already-documented, established behavior (see
+// domain.Revoker's doc comment's "fail-toward-over-revoking" paragraph,
+// and this plan's Task 13 notes: an identity name shared across tenants
+// remains a *different*, deliberately out-of-scope limitation that
+// Tasks 1-5 do not resolve) -- not a regression for this test to catch.
+// So the brief's illustrative "acme's admin revokes acme's alice;
+// widgets-inc's alice, sharing that same name, is unaffected" scenario
+// cannot hold as written: with "alice" registered in both tenants, both
+// get denied (the wildcard fallback, exercised below as its own
+// scenario). This test instead proves:
+//
+//  1. revoking a per-tenant-unique identity (trent, registered only in
+//     acme) is genuinely scoped -- it denies trent (acme) but does not
+//     become a tenant-wide or system-wide kill switch: an entirely
+//     unrelated identity in the other tenant (mallory, widgets-inc)
+//     keeps working:  the real regression this guards is "a revoke ever
+//     over-reaches beyond its own (tenant, identity) pair," which is
+//     exactly what pre-Task-1 identity-only keying could not promise
+//     (revoking by bare identity name had no tenant component at all);
+//  2. revoking an identity name shared by both tenants (alice, present
+//     in both acme's and widgets-inc's credentials.yaml) denies it
+//     EVERYWHERE via the documented wildcard fallback, since the target
+//     tenant genuinely cannot be resolved from the name alone -- proving
+//     the fail-safe direction (over-revoke, never silently no-op) still
+//     holds end to end;
+//  3. the revoked identity's own tenant is genuinely denied in both
+//     cases above -- the positive case, not just "other tenants
+//     unaffected."
+//
+// A pure HTTP black-box check of (1) and (2) alone turns out unable to
+// tell Tasks 1-4's fix apart from the pre-fix, identity-only-keyed
+// store: verified empirically (checked out the pre-Task-1 commit
+// 10503df and ran an equivalent HTTP-only version of this test against
+// it) that every one of the assertions above already passed before this
+// cycle's fix too -- unique names have no colliding row to leak into
+// either way, and shared names already fell back to a wildcard before
+// this cycle (the cross-tenant-revoke-*authorization* check has used
+// Bootstrapper.TenantOf since before this cluster; Tasks 1-4 only
+// changed what the revocation *store* itself persists). So this test
+// also runs with postgres_storage on and asserts the actual persisted
+// row in revoked_identities directly -- that's the one place the fix is
+// genuinely observable: a scoped revoke now persists the composite
+// tenant:identity key (postgresSafeKey's format, internal/features/credential/adapter/postgres_revoker.go)
+// instead of the bare identity every row was keyed on before.
+func TestServeEndToEnd_TenantIsolation_CrossTenantRevoke(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTableE2E(t, dsn)
+
+	dir := t.TempDir()
+
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: trent
+    secret: "acme-trent-registration-secret-0001"
+    tenant: acme
+  - name: mallory
+    secret: "widgets-mallory-registration-secret-0002"
+    tenant: widgets-inc
+  - name: alice
+    secret: "acme-alice-registration-secret-0003"
+    tenant: acme
+  - name: alice
+    secret: "widgets-alice-registration-secret-0004"
+    tenant: widgets-inc
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "trent"
+    tool: "read_file"
+    effect: allow
+    tenant: "acme"
+  - identity: "mallory"
+    tool: "read_file"
+    effect: allow
+    tenant: "widgets-inc"
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+    tenant: "acme"
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+    tenant: "widgets-inc"
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+  postgres_storage: true
+credential:
+  identities_file: "%s"
+audit:
+  postgres_dsn: "%s"
+`, credentialsPath, dsn))
+
+	trentToken := bootstrapToken(t, addr, "acme-trent-registration-secret-0001")
+	malloryToken := bootstrapToken(t, addr, "widgets-mallory-registration-secret-0002")
+	aliceAcmeToken := bootstrapToken(t, addr, "acme-alice-registration-secret-0003")
+	aliceWidgetsToken := bootstrapToken(t, addr, "widgets-alice-registration-secret-0004")
+
+	// --- Sanity: every identity can call its allowed tool before any
+	// revoke happens.
+	for name, token := range map[string]string{
+		"trent": trentToken, "mallory": malloryToken,
+		"alice@acme": aliceAcmeToken, "alice@widgets-inc": aliceWidgetsToken,
+	} {
+		if code := postToolCallWithBearer(t, addr, token, "read_file").StatusCode; code != http.StatusOK {
+			t.Fatalf("%s: expected 200 before any revoke, got %d (stderr: %s)", name, code, stderr.String())
+		}
+	}
+
+	// === Scenario 1: a scoped revoke of a per-tenant-unique identity is
+	// genuinely scoped -- it is not a tenant-wide or system-wide kill
+	// switch. ===
+	revokeReq, err := http.NewRequest(http.MethodPost, "http://"+addr+"/credentials/revoke", strings.NewReader(`{"identity":"trent"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeResp, err := http.DefaultClient.Do(revokeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke trent: want 204, got %d (stderr: %s)", revokeResp.StatusCode, stderr.String())
+	}
+
+	// The persisted-row proof this fix is actually about: trent's tenant
+	// (acme) resolves unambiguously, so the row is keyed on the composite
+	// "len(tenant):tenant:identity" string (postgresSafeKey's format),
+	// not the bare "trent" every row was keyed on before this cycle.
+	assertRevokedIdentityKey(t, dsn, "4:acme:trent")
+
+	// The positive case: trent's own tenant is genuinely denied now.
+	if code := postToolCallWithBearer(t, addr, trentToken, "read_file").StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("trent (acme): want 401 after his own revoke, got %d (stderr: %s)", code, stderr.String())
+	}
+	// mallory (widgets-inc), an entirely unrelated identity, must be
+	// completely unaffected by trent's revoke.
+	if code := postToolCallWithBearer(t, addr, malloryToken, "read_file").StatusCode; code != http.StatusOK {
+		t.Errorf("mallory (widgets-inc): want 200, unaffected by trent's (acme) revoke, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	// === Scenario 2: revoking an identity name shared by both tenants
+	// falls back to the documented wildcard -- it denies every tenant
+	// sharing that name, since the target tenant genuinely cannot be
+	// resolved from the bare name alone (Bootstrapper.TenantOf fails
+	// closed on ambiguity). ===
+	revokeAliceReq, err := http.NewRequest(http.MethodPost, "http://"+addr+"/credentials/revoke", strings.NewReader(`{"identity":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeAliceResp, err := http.DefaultClient.Do(revokeAliceReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revokeAliceResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke alice: want 204, got %d (stderr: %s)", revokeAliceResp.StatusCode, stderr.String())
+	}
+
+	// "alice" is ambiguous (registered in both tenants) -- the row is the
+	// bare identity, the documented wildcard shape, same as every
+	// pre-this-cycle row.
+	assertRevokedIdentityKey(t, dsn, "alice")
+
+	if code := postToolCallWithBearer(t, addr, aliceAcmeToken, "read_file").StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("alice@acme: want 401 after the wildcard revoke, got %d (stderr: %s)", code, stderr.String())
+	}
+	if code := postToolCallWithBearer(t, addr, aliceWidgetsToken, "read_file").StatusCode; code != http.StatusUnauthorized {
+		t.Errorf("alice@widgets-inc: want 401 -- the wildcard fallback must deny every tenant sharing the revoked name, got %d (stderr: %s)", code, stderr.String())
+	}
+}
+
+// assertRevokedIdentityKey confirms the most recently written
+// revoked_identities row (by expires_at) is keyed exactly on wantKey --
+// the direct proof that Revoke persisted a scoped composite key
+// (postgresSafeKey's "len(tenant):tenant:identity" format) rather than
+// the bare identity string every row was keyed on before Tasks 1-4.
+func assertRevokedIdentityKey(t *testing.T, dsn, wantKey string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db to verify revoked_identities: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var gotKey string
+	if err := db.QueryRow(`SELECT identity FROM revoked_identities ORDER BY expires_at DESC LIMIT 1`).Scan(&gotKey); err != nil {
+		t.Fatalf("query revoked_identities: %v", err)
+	}
+	if gotKey != wantKey {
+		t.Errorf("revoked_identities row: want identity=%q, got %q", wantKey, gotKey)
 	}
 }
