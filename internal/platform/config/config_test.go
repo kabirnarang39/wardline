@@ -1549,3 +1549,89 @@ scim:
 		t.Fatal("expected validation error for scim.persist_postgres without features.postgres_storage")
 	}
 }
+
+func TestLoad_AccessTokenTTLDefaultsToFifteenMinutesWhenZero(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.AccessTokenTTLSeconds != 900 {
+		t.Errorf("expected access_token_ttl_seconds to default to 900, got %d", cfg.Credential.AccessTokenTTLSeconds)
+	}
+	if cfg.Credential.RefreshTokenTTLSeconds != 86400 {
+		t.Errorf("expected refresh_token_ttl_seconds to default to 86400, got %d", cfg.Credential.RefreshTokenTTLSeconds)
+	}
+}
+
+func TestLoad_AccessAndRefreshTokenTTLRoundTripWhenSet(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  access_token_ttl_seconds: 60
+  refresh_token_ttl_seconds: 3600
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.AccessTokenTTLSeconds != 60 {
+		t.Errorf("expected access_token_ttl_seconds to round-trip to 60, got %d", cfg.Credential.AccessTokenTTLSeconds)
+	}
+	if cfg.Credential.RefreshTokenTTLSeconds != 3600 {
+		t.Errorf("expected refresh_token_ttl_seconds to round-trip to 3600, got %d", cfg.Credential.RefreshTokenTTLSeconds)
+	}
+}
+
+func TestLoad_NegativeAccessTokenTTLIsRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  access_token_ttl_seconds: -1
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for a negative access_token_ttl_seconds")
+	}
+}
+
+func TestLoad_NegativeRefreshTokenTTLIsRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  refresh_token_ttl_seconds: -1
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for a negative refresh_token_ttl_seconds")
+	}
+}

@@ -58,6 +58,17 @@ const defaultTracingServiceName = "wardline"
 // as 0 and skip that check entirely.
 const defaultAnomalyGCIntervalSeconds = 600
 
+// defaultAccessTokenTTLSeconds preserves this project's original fixed
+// 15-minute access-token lifetime as the default once the field became
+// operator-configurable.
+const defaultAccessTokenTTLSeconds = 900
+
+// defaultRefreshTokenTTLSeconds is a reasonable default lifetime for a
+// refresh token: long enough to meaningfully reduce re-bootstrap
+// frequency, short enough that a leaked-but-unused refresh token has a
+// bounded blast radius.
+const defaultRefreshTokenTTLSeconds = 86400
+
 // TracingConfig configures OTLP/HTTP span export. Only validated (and
 // only meaningful) when the otel_tracing feature flag is on.
 type TracingConfig struct {
@@ -113,6 +124,24 @@ type CredentialConfig struct {
 	BootstrapSource string     `yaml:"bootstrap_source"`
 	OIDC            OIDCConfig `yaml:"oidc"`
 	MTLS            MTLSConfig `yaml:"mtls"`
+
+	// AccessTokenTTLSeconds is how long an issued access-token JWT is
+	// valid for. 0 (the default) uses defaultAccessTokenTTLSeconds
+	// (900s / 15m), preserving every existing deployment's behavior
+	// exactly with no config change required. Negative is a hard
+	// validation error, distinguishing "operator left it unset" from
+	// "operator typo'd a negative number" -- unlike anomaly.gc_interval_seconds'
+	// <=0-silently-defaults convention elsewhere in this file.
+	AccessTokenTTLSeconds int `yaml:"access_token_ttl_seconds"`
+
+	// RefreshTokenTTLSeconds is how long an issued refresh token remains
+	// redeemable. 0 (the default) uses defaultRefreshTokenTTLSeconds
+	// (86400s / 24h). Same negative-is-an-error rule as
+	// AccessTokenTTLSeconds above. No requirement that this exceed
+	// AccessTokenTTLSeconds is enforced -- an operator setting it
+	// shorter is unusual but harmless (refresh just becomes useless
+	// before the access token even expires), not worth a hard failure.
+	RefreshTokenTTLSeconds int `yaml:"refresh_token_ttl_seconds"`
 }
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
@@ -376,6 +405,16 @@ func (c *Config) validate() error {
 		}
 		if c.Credential.BootstrapSource == "mtls" && c.Credential.MTLS.Header == "" {
 			problems = append(problems, `credential.mtls.header must not be empty when credential.bootstrap_source is "mtls"`)
+		}
+		if c.Credential.AccessTokenTTLSeconds < 0 {
+			problems = append(problems, "credential.access_token_ttl_seconds must be >= 0 (0 uses the default of 900s / 15m)")
+		} else if c.Credential.AccessTokenTTLSeconds == 0 {
+			c.Credential.AccessTokenTTLSeconds = defaultAccessTokenTTLSeconds
+		}
+		if c.Credential.RefreshTokenTTLSeconds < 0 {
+			problems = append(problems, "credential.refresh_token_ttl_seconds must be >= 0 (0 uses the default of 86400s / 24h)")
+		} else if c.Credential.RefreshTokenTTLSeconds == 0 {
+			c.Credential.RefreshTokenTTLSeconds = defaultRefreshTokenTTLSeconds
 		}
 	}
 	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {

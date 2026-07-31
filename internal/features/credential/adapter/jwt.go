@@ -18,12 +18,6 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
-// tokenTTL is a fixed 15-minute lifetime for every issued token this
-// cycle — not yet operator-configurable, see the design doc's "Out of
-// scope". Also read directly by http_handler.go (same package) to size a
-// revocation entry's expiry.
-const tokenTTL = 15 * time.Minute
-
 // rsaKeyBits is the RSA modulus size for the in-process signing keypair.
 // 2048 is the current minimum considered secure for RS256.
 const rsaKeyBits = 2048
@@ -40,16 +34,17 @@ const rsaKeyBits = 2048
 // warning logged when keyPath is empty (cmd/wardline/main.go).
 type JWTIssuerVerifier struct {
 	privateKey *rsa.PrivateKey
+	tokenTTL   time.Duration
 	now        func() time.Time
 }
 
-func NewJWTIssuerVerifier(keyPath string) (*JWTIssuerVerifier, error) {
+func NewJWTIssuerVerifier(keyPath string, tokenTTL time.Duration) (*JWTIssuerVerifier, error) {
 	if keyPath == "" {
 		key, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
 		if err != nil {
 			return nil, fmt.Errorf("generate signing keypair: %w", err)
 		}
-		return &JWTIssuerVerifier{privateKey: key, now: time.Now}, nil
+		return &JWTIssuerVerifier{privateKey: key, tokenTTL: tokenTTL, now: time.Now}, nil
 	}
 
 	data, err := os.ReadFile(keyPath)
@@ -64,7 +59,7 @@ func NewJWTIssuerVerifier(keyPath string) (*JWTIssuerVerifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("signing key file %s: %w", keyPath, err)
 	}
-	return &JWTIssuerVerifier{privateKey: key, now: time.Now}, nil
+	return &JWTIssuerVerifier{privateKey: key, tokenTTL: tokenTTL, now: time.Now}, nil
 }
 
 // parseRSAPrivateKey accepts both PKCS1 ("RSA PRIVATE KEY") and PKCS8
@@ -113,7 +108,7 @@ func (j *JWTIssuerVerifier) Issue(identity, tenantName string) (string, error) {
 		Subject(identity).
 		Claim("tenant", tenantName).
 		IssuedAt(now).
-		Expiration(now.Add(tokenTTL)).
+		Expiration(now.Add(j.tokenTTL)).
 		JwtID(jti).
 		Build()
 	if err != nil {
