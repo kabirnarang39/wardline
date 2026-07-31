@@ -76,12 +76,21 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var secret string
 	if h.mtlsHeader != "" {
-		secret = r.Header.Get(h.mtlsHeader)
-		if secret == "" {
+		// Values, not Get: Get returns only the FIRST value when the header
+		// appears more than once, and a mesh configured to APPEND (Envoy/
+		// Istio's request_headers_to_add default action) leaves a
+		// client-prepended value in front of the mesh's own. Fail closed on
+		// that ambiguity rather than picking one -- same discipline as
+		// MTLSBootstrapper.TenantOf and LoadMTLSBootstrapper's duplicate
+		// spiffe_id check. Zero, empty, and more-than-one all share the one
+		// generic 401 so nothing here is enumerable.
+		vals := r.Header.Values(h.mtlsHeader)
+		if len(vals) != 1 || vals[0] == "" {
 			h.logger.Warn("credential bootstrap failed", "remote_addr", r.RemoteAddr)
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
+		secret = vals[0]
 	} else {
 		r.Body = http.MaxBytesReader(w, r.Body, maxTokenRequestBodyBytes) // 64 KiB — generous for a {"secret":"..."} body
 		var req tokenRequest

@@ -569,7 +569,10 @@ func runServe(logger *slog.Logger, args []string) {
 	if blockChecker != nil {
 		autoBlockChecker = blockChecker
 	}
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker)
+	// mtlsHeader is "" unless bootstrap_source is mtls; when set, the proxy
+	// strips it before forwarding so the untrusted upstream never learns
+	// the string that mints Wardline bearer tokens.
+	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader)
 
 	startedAt := time.Now()
 
