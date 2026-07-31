@@ -300,12 +300,20 @@ func TestPostgresRevoker_LegacyBareIdentityRowStillDeniesEveryTenant(t *testing.
 // tenant and identity with a single separator byte (first \x00, which
 // Postgres's TEXT type rejects outright; then \x1f, which Postgres accepts
 // but which a JWT claim -- an arbitrary JSON string with no charset
-// restriction -- can legitimately contain). Either way, a separator-based
-// join is spoofable: tenant="a", identity="1:b-pgtest" and
-// tenant="a:1", identity="b-pgtest" would collide onto the identical string
-// "a:1:b-pgtest" under naive "tenant:identity" concatenation. The
-// length-prefixed encoding (fmt.Sprintf("%d:%s:%s", len(tenantName), ...))
-// must keep them distinct regardless of what bytes either half contains.
+// restriction -- can legitimately contain). The fixture below uses values
+// that actually collide under that real, previously-shipped \x1f-based
+// join: tenant="a\x1f1", identity="b-pgtest" and tenant="a",
+// identity="1\x1fb-pgtest" both produce the identical string
+// "a\x1f1\x1fb-pgtest" under naive "tenant\x1fidentity" concatenation.
+// (An earlier version of this fixture used a ":"-separator strawman --
+// tenant="a", identity="1:b-pgtest" vs. tenant="a:1", identity="b-pgtest"
+// -- which does NOT collide under the real \x1f-based old code, so it
+// passed even against the actual bug and would stay green if
+// postgresSafeKey ever regressed to any single-byte separator other than
+// ":". I1's final-review fix-wave verification: reverting postgresSafeKey
+// to the \x1f join makes THIS fixture fail; the length-prefixed encoding
+// (fmt.Sprintf("%d:%s:%s", len(tenantName), ...)) keeps the two pairs
+// distinct -- "3:a\x1f1:b-pgtest" vs. "1:a:1\x1fb-pgtest".
 func TestPostgresRevoker_LengthPrefixKeyEncodingAvoidsSeparatorCollision(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
@@ -317,14 +325,14 @@ func TestPostgresRevoker_LengthPrefixKeyEncodingAvoidsSeparatorCollision(t *test
 	defer func() { _ = r.Close() }()
 
 	now := time.Now()
-	if err := r.Revoke("a", "1:b-pgtest", now.Add(time.Hour)); err != nil {
+	if err := r.Revoke("a\x1f1", "b-pgtest", now.Add(time.Hour)); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if r.IsRevoked("a:1", "b-pgtest") {
-		t.Error(`tenant="a", identity="1:b-pgtest" must not collide with tenant="a:1", identity="b-pgtest"`)
+	if r.IsRevoked("a", "1\x1fb-pgtest") {
+		t.Error(`tenant="a\x1f1", identity="b-pgtest" must not collide with tenant="a", identity="1\x1fb-pgtest"`)
 	}
-	if !r.IsRevoked("a", "1:b-pgtest") {
+	if !r.IsRevoked("a\x1f1", "b-pgtest") {
 		t.Error("expected the actual revoked pair to still be revoked")
 	}
 }
