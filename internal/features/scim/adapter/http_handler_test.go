@@ -229,6 +229,12 @@ func TestHandler_ListUsers_UnsupportedFilterExpression_Returns400(t *testing.T) 
 		// `"`, so a naive prefix/suffix check alone wrongly accepts it
 		// (extracting the garbage value `alice" and userName eq "bob`).
 		`userName eq "alice" and userName eq "bob"`,
+		// M1 regression: exactly the prefix, with no closing quote of its
+		// own -- the same trailing quote satisfies both HasPrefix and
+		// HasSuffix, so a naive check alone wrongly accepts this as an
+		// empty-value filter (200 + empty list) instead of rejecting an
+		// unterminated one (400).
+		`userName eq "`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Users?filter=" + url.QueryEscape(filter)
@@ -536,6 +542,9 @@ func TestHandler_ListGroups_UnsupportedFilterExpression_Returns400(t *testing.T)
 		// Regression: Groups equivalent of the Users
 		// eq-followed-by-another-eq-clause repro above.
 		`displayName eq "wardline:role-viewer" and displayName eq "wardline:role-admin"`,
+		// M1 regression: Groups equivalent of the Users unterminated-filter
+		// repro above.
+		`displayName eq "`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Groups?filter=" + url.QueryEscape(filter)

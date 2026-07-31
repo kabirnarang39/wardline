@@ -125,6 +125,16 @@ func parseEqFilter(rawFilter, wantAttr string) (value string, ok bool, err error
 	if !strings.HasPrefix(rawFilter, prefix) || !strings.HasSuffix(rawFilter, `"`) {
 		return "", false, fmt.Errorf("unsupported filter expression")
 	}
+	// rawFilter == prefix exactly (e.g. `userName eq "`) satisfies both
+	// checks above using the SAME trailing quote as both the prefix's
+	// opening quote and the required closing quote -- an unterminated
+	// filter, not a valid empty-value one. Without this guard,
+	// TrimPrefix/TrimSuffix below both reduce to "", so this would
+	// silently answer ("", true, nil) -- a 200 with an empty list -- where
+	// scim.md promises a 400 for anything outside the supported shape.
+	if len(rawFilter) <= len(prefix) {
+		return "", false, fmt.Errorf("unsupported filter expression")
+	}
 	value = strings.TrimSuffix(strings.TrimPrefix(rawFilter, prefix), `"`)
 	// A prefix/suffix match alone doesn't rule out a second clause tacked
 	// on after the closing quote of an *earlier* clause, e.g.
