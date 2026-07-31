@@ -596,7 +596,31 @@ func runServe(logger *slog.Logger, args []string) {
 			scopeResolver = newScopeResolver(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver)
+		// unblockAuthorizer gates DELETE /dashboard/api/anomalies/blocked/{identity}
+		// separately from the read-only dashboard:view permission the rest
+		// of the dashboard route relies on: an unblock is a mutation that
+		// undoes an automated enforcement decision, so it requires
+		// credential:revoke -- the closest existing permission tier for
+		// "an admin may override a security decision" -- rather than
+		// dashboard:view. Built the same way scopeResolver is just above
+		// (identityAuth captured by value, not by pointer like
+		// newRevokeAuthorizer's use of it) since both closures are built
+		// after every reassignment of identityAuth earlier in runServe has
+		// already happened. The handler itself (not this authorizer) is
+		// what enforces tenant scoping via h.tenantFilter/?tenant=, so this
+		// only needs to answer the permission question.
+		var unblockAuthorizer dashboardadapter.UnblockAuthorizer
+		if rbacEnabled {
+			unblockAuthorizer = unblockAuthorizerFunc(func(r *http.Request) bool {
+				who, callerTenant, err := identityAuth.Authenticate(r)
+				if err != nil {
+					return false
+				}
+				return rbacChecker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke)
+			})
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -803,6 +827,14 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 type revokeAuthorizerFunc func(r *http.Request) bool
 
 func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
+
+// unblockAuthorizerFunc adapts a plain function to
+// dashboardadapter.UnblockAuthorizer, mirroring revokeAuthorizerFunc's
+// exact pattern immediately above -- the closure built in runServe
+// doesn't need its own named type there either.
+type unblockAuthorizerFunc func(r *http.Request) bool
+
+func (f unblockAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 
 // tenantScopeResolverFunc adapts a plain function to
 // dashboardadapter.TenantScopeResolver, matching revokeAuthorizerFunc's

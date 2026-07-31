@@ -51,6 +51,17 @@ type FederationSource interface {
 // Handler depends on.
 type BlockedSource interface {
 	List(tenantFilter string) []anomalydomain.BlockedEntry
+	Unblock(identity, tenantName string) bool
+}
+
+// UnblockAuthorizer decides whether a caller may clear an active
+// auto-block before its TTL expires -- mirrors credentialadapter.RevokeAuthorizer's
+// shape and posture exactly. nil means "not wired" (rbac off); handleUnblock
+// treats that the same as blocked == nil (feature not wired at all) and
+// answers 404, matching every other "not wired" route in this file rather
+// than silently allowing an unauthenticated unblock.
+type UnblockAuthorizer interface {
+	Allowed(r *http.Request) bool
 }
 
 // TenantScopeResolver derives the effective tenant filter for the
@@ -89,6 +100,7 @@ type Handler struct {
 	federation FederationSource
 	blocked    BlockedSource
 	scope      TenantScopeResolver
+	unblock    UnblockAuthorizer
 	mux        *http.ServeMux
 }
 
@@ -104,9 +116,11 @@ type Handler struct {
 // anomaly_detection feature is off) -- /dashboard/api/anomalies/blocked
 // then answers 404 the same way. scope may likewise be nil (rbac is off)
 // -- every view then answers unfiltered, identical to today's behavior;
-// see tenantFilter's doc comment.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope}
+// see tenantFilter's doc comment. unblock may likewise be nil (rbac is
+// off) -- DELETE /dashboard/api/anomalies/blocked/{identity} then answers
+// 404 the same way as every other "not wired" route above.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -115,6 +129,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
+	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -251,6 +266,59 @@ func (h *Handler) handleBlocked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, h.blocked.List(h.tenantFilter(r)))
+}
+
+// handleUnblock serves DELETE /dashboard/api/anomalies/blocked/{identity},
+// clearing an active auto-block before its TTL expires. This is a
+// mutation with real security weight (undoing an automated enforcement
+// decision), so it is gated by UnblockAuthorizer (requiring
+// credential:revoke when rbac is on) separately from the read-only
+// dashboard:view permission the rest of this file's routes rely on.
+func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.blocked == nil || h.unblock == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if !h.unblock.Allowed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	identity := strings.TrimPrefix(r.URL.Path, "/dashboard/api/anomalies/blocked/")
+	if identity == "" {
+		http.Error(w, "identity is required", http.StatusBadRequest)
+		return
+	}
+	// Resolved design (locked by the coordinator, not a guess): h.tenantFilter(r)
+	// returns "" in exactly two cases -- rbac off, or the caller holds a
+	// global (IsGlobal) grant -- both of which already carry authority over
+	// every tenant, same as every other route in this file. A scoped caller
+	// (non-empty tenantFilter) unblocks only within their own tenant, and
+	// that value is NEVER overridable by anything the client supplies --
+	// identical IDOR posture to every other route in this file. A caller
+	// with "" authority must name which tenant's block to clear via an
+	// explicit ?tenant= query parameter (safe: they already have
+	// cross-tenant authority, this is just picking which tenant, not
+	// escalating into one). Missing ?tenant= for such a caller is a 400,
+	// not a silent no-op -- BlockChecker.Unblock's tenantName=="" is a
+	// real, distinct key (unlike domain.Revoker's wildcard convention in
+	// Task 1), so an accidental empty string must never reach it.
+	targetTenant := h.tenantFilter(r)
+	if targetTenant == "" {
+		targetTenant = r.URL.Query().Get("tenant")
+		if targetTenant == "" {
+			http.Error(w, "tenant query parameter is required for a caller with cross-tenant authority", http.StatusBadRequest)
+			return
+		}
+	}
+	if !h.blocked.Unblock(identity, targetTenant) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
