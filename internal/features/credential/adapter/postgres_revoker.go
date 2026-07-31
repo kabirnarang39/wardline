@@ -6,26 +6,30 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-
-	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
-// postgresSafeKey adapts tenant.Key's \x00-separated composite key for
-// storage in a Postgres TEXT column. Postgres rejects \x00 in TEXT under
-// UTF8 encoding outright (verified locally: INSERT ... VALUES ($1) with a
-// \x00 byte fails with `invalid byte sequence for encoding "UTF8": 0x00`,
-// SQLSTATE 22021) -- so the separator is swapped for \x1f (unit separator)
-// after composing through tenant.Key, not by building the composite key
-// inline (tenant.Key's own doc comment requires every composite key to go
-// through it exclusively). \x1f is, like \x00, not expected to appear in a
-// tenant or identity string in practice (both come from JWT claims/header
-// values/SCIM UserNames).
+// postgresSafeKey composes a tenant and identity into one Postgres-storable
+// key. It deliberately does NOT go through tenant.Key: that function joins
+// with \x00, which Postgres's TEXT type rejects outright under UTF8
+// encoding (verified locally: INSERT ... VALUES ($1) with a \x00 byte fails
+// with `invalid byte sequence for encoding "UTF8": 0x00`, SQLSTATE 22021).
+// A first attempt swapped the separator for \x1f instead -- also wrong: JWT
+// claims (where both tenantName and identity ultimately come from) are
+// arbitrary JSON strings with no charset restriction, so \x1f is no safer a
+// separator than \x00 was, just less likely to be hit by accident. Any
+// separator byte is spoofable by construction if the caller doesn't
+// control the input alphabet, and this adapter doesn't.
+//
+// A length-prefixed encoding sidesteps the whole class of separator-based
+// collision: the boundary between tenantName and identity is the explicit
+// length prefix, not a byte pattern either string could contain, so no
+// value of either string can make two distinct (tenant, identity) pairs
+// collide onto the same key.
 func postgresSafeKey(tenantName, identity string) string {
-	return strings.ReplaceAll(tenant.Key(tenantName, identity), "\x00", "\x1f")
+	return fmt.Sprintf("%d:%s:%s", len(tenantName), tenantName, identity)
 }
 
 // revokerTimeout bounds every Postgres operation this adapter performs --
@@ -121,7 +125,7 @@ func (r *PostgresRevoker) Revoke(tenantName, identity string, expiresAt time.Tim
 		key = postgresSafeKey(tenantName, identity)
 	}
 	if _, err := r.db.ExecContext(ctx, upsertRevocationSQL, key, expiresAt); err != nil {
-		return fmt.Errorf("write revocation for %q: %w", identity, err)
+		return fmt.Errorf("write revocation for %q (tenant %q): %w", identity, tenantName, err)
 	}
 	return nil
 }

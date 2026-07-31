@@ -295,6 +295,40 @@ func TestPostgresRevoker_LegacyBareIdentityRowStillDeniesEveryTenant(t *testing.
 	}
 }
 
+// TestPostgresRevoker_LengthPrefixKeyEncodingAvoidsSeparatorCollision proves
+// the fix for a real bug: an earlier version of postgresSafeKey joined
+// tenant and identity with a single separator byte (first \x00, which
+// Postgres's TEXT type rejects outright; then \x1f, which Postgres accepts
+// but which a JWT claim -- an arbitrary JSON string with no charset
+// restriction -- can legitimately contain). Either way, a separator-based
+// join is spoofable: tenant="a", identity="1:b-pgtest" and
+// tenant="a:1", identity="b-pgtest" would collide onto the identical string
+// "a:1:b-pgtest" under naive "tenant:identity" concatenation. The
+// length-prefixed encoding (fmt.Sprintf("%d:%s:%s", len(tenantName), ...))
+// must keep them distinct regardless of what bytes either half contains.
+func TestPostgresRevoker_LengthPrefixKeyEncodingAvoidsSeparatorCollision(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTable(t, dsn)
+
+	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresRevoker: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	now := time.Now()
+	if err := r.Revoke("a", "1:b-pgtest", now.Add(time.Hour)); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	if r.IsRevoked("a:1", "b-pgtest") {
+		t.Error(`tenant="a", identity="1:b-pgtest" must not collide with tenant="a:1", identity="b-pgtest"`)
+	}
+	if !r.IsRevoked("a", "1:b-pgtest") {
+		t.Error("expected the actual revoked pair to still be revoked")
+	}
+}
+
 func TestPostgresRevoker_IsRevoked_NotFoundIsNeverLogged(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
