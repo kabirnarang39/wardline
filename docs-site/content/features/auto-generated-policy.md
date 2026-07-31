@@ -21,12 +21,29 @@ dangling symlink there), the same convention `policy-pack install` uses.
 
 ## What gets learned
 
-Only audit entries whose `decision` is `allow` or `passthrough` — traffic
-that actually reached upstream — feed the generated rules. Entries
-recorded as `deny`, `throttled`, `blocked`, or `error` are excluded on
-purpose: a call that didn't succeed shouldn't be allow-listed just
-because it was attempted, or the generated policy would grant more than
-was ever actually observed.
+Only audit entries whose `decision` is exactly `allow` — calls the policy
+engine itself evaluated and permitted — feed the generated rules, so
+inference can only ever reproduce a grant your policy already made.
+
+Entries recorded as `deny`, `throttled`, `blocked`, or `error` are
+excluded on purpose: a call that didn't succeed shouldn't be allow-listed
+just because it was attempted, or the generated policy would grant more
+than was ever actually observed.
+
+`passthrough` entries are excluded too, even though they did reach
+upstream: a passthrough is a non-`tools/call` JSON-RPC request that
+bypassed policy evaluation entirely, so its audited `tool` field holds a
+raw, caller-supplied *method name* rather than a policy-evaluated tool
+name — and with the default header authenticator its `identity`/`tenant`
+are caller-supplied as well. Learning from that would let anyone who can
+reach the proxy dictate a rule, which is the opposite of learning from
+observed grants.
+
+Entries with an empty `identity` or `tool`, or with `tool: "*"`, are
+skipped as well: the first two would produce a rule the real policy loader
+rejects, and the third would synthesize an allow-everything wildcard from
+observed traffic. An entry with no `tenant` is attributed to tenant
+`default` rather than emitted as an untenanted (all-tenant) rule.
 
 The output is one `allow` rule per distinct `(tenant, identity, tool)`
 combination seen, sorted for a stable diff across reruns over the same
@@ -45,6 +62,9 @@ generate the file, read it, edit it, *then* point `policy_file` at it.
 **Requires a queryable audit trail**, the same requirement
 `export-evidence` has: `audit.output: stdout` has nothing to read back —
 point `audit.output` at a file, or turn on `features.postgres_storage`.
+The postgres path needs a DDL-capable DSN, not a SELECT-only one (also the
+same as `export-evidence`): connecting runs `CREATE TABLE/INDEX IF NOT
+EXISTS`.
 
 ## Known limitations
 

@@ -27,6 +27,14 @@ import (
 // commandName appears in the stdout-rejection error message, so the
 // operator sees which command they ran (e.g. "export-evidence",
 // "infer-policy").
+//
+// On the postgres path, NewPostgresWriter runs CREATE TABLE/INDEX IF NOT
+// EXISTS on connect, so every caller -- read-only ones included -- needs
+// the same DDL-capable DSN serve uses; a SELECT-only role can't run it.
+// See README.md "Compliance evidence export" and "Auto-generated sandbox
+// policy". A dedicated read-only connector is deferred: it also needs a
+// separate DSN config field to be useful, which is a design change, not a
+// bug fix.
 func newAuditReader(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig, commandName string) (auditdomain.Reader, *auditadapter.JSONLReader, error) {
 	if featureFlags.Enabled("postgres_storage") {
 		if cfg.Output != "" {
