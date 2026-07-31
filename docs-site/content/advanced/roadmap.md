@@ -30,10 +30,17 @@ policy-pack marketplace, HA deployment.
   check. See [SSO](/features/sso/), [SCIM](/features/scim/), and
   [RBAC](/features/rbac/)'s known limitations for what's still out of
   scope (OIDC discovery, full SCIM 2.0 compliance).
+- **Auto-generated sandbox policy** — `wardline infer-policy` reads the
+  audit trail over an operator-chosen range and writes a starter
+  `policy.yaml` allow-listing exactly the `(tenant, identity, tool)`
+  combinations seen in traffic that reached upstream, defaulting to deny
+  for everything else. See [Auto-Generated Sandbox
+  Policy](/features/auto-generated-policy/) for what's deliberately out
+  of scope (a live/continuous learning mode, tool-argument-aware
+  inference).
 
 ## v2.0 (planned, not yet shipped)
 
-- **Auto-generated sandbox policy** — inferring a starter policy from observed traffic.
 - **mTLS/SPIFFE credential bootstrap** — as a credential-issuance adapter for secure bootstrapping.
 - **Refresh tokens + configurable JWT TTL** — issuing short-lived access tokens with refresh token rotation and tunable expiration.
 - **Distributed/shared budget-enforcement counters** — sharing budget state across replicas for consistent enforcement.
