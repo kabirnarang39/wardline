@@ -16,13 +16,13 @@ func (s stubFlags) Enabled(name string) bool { return s.enabled }
 
 type alwaysDenyLimiter struct{}
 
-func (alwaysDenyLimiter) Allow(identity, tenant string, now time.Time) domain.Verdict {
+func (alwaysDenyLimiter) Allow(identity, tenant, tool string, now time.Time) domain.Verdict {
 	return domain.Verdict{Allowed: false, Reason: "always denies"}
 }
 
 func TestChecker_FlagOffAlwaysAllows(t *testing.T) {
 	c := usecase.NewChecker(stubFlags{enabled: false}, alwaysDenyLimiter{})
-	got := c.Check("agent-abc123", "acme", time.Now())
+	got := c.Check("agent-abc123", "acme", "some_tool", time.Now())
 	if !got.Allowed {
 		t.Errorf("expected allowed when flag is off, even with a deny-everything limiter, got %+v", got)
 	}
@@ -31,19 +31,21 @@ func TestChecker_FlagOffAlwaysAllows(t *testing.T) {
 type recordingLimiter struct {
 	calledWith       string
 	calledWithTenant string
+	calledWithTool   string
 	verdict          domain.Verdict
 }
 
-func (r *recordingLimiter) Allow(identity, tenant string, now time.Time) domain.Verdict {
+func (r *recordingLimiter) Allow(identity, tenant, tool string, now time.Time) domain.Verdict {
 	r.calledWith = identity
 	r.calledWithTenant = tenant
+	r.calledWithTool = tool
 	return r.verdict
 }
 
 func TestChecker_FlagOnDelegatesToLimiter(t *testing.T) {
 	limiter := &recordingLimiter{verdict: domain.Verdict{Allowed: false, Reason: "over budget"}}
 	c := usecase.NewChecker(stubFlags{enabled: true}, limiter)
-	got := c.Check("agent-abc123", "acme", time.Now())
+	got := c.Check("agent-abc123", "acme", "some_tool", time.Now())
 	if got.Allowed {
 		t.Error("expected the limiter's verdict (deny) to be used when flag is on")
 	}
@@ -52,5 +54,8 @@ func TestChecker_FlagOnDelegatesToLimiter(t *testing.T) {
 	}
 	if limiter.calledWithTenant != "acme" {
 		t.Errorf("expected limiter to be called with the tenant, got %q", limiter.calledWithTenant)
+	}
+	if limiter.calledWithTool != "some_tool" {
+		t.Errorf("expected limiter to be called with the tool, got %q", limiter.calledWithTool)
 	}
 }

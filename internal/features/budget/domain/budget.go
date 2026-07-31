@@ -15,7 +15,9 @@ type Verdict struct {
 
 // Limiter decides whether an identity may make another call right now.
 // tenant is the identity's resolved tenant; an empty tenant (or one with no
-// configured override) is simply not checked against any tenant-level bucket.
+// configured override) is simply not checked against any tenant-level
+// bucket. tool is the MCP tool being called; a tool with no configured
+// override is likewise never checked against any tool-level bucket.
 type Limiter interface {
-	Allow(identity, tenant string, now time.Time) Verdict
+	Allow(identity, tenant, tool string, now time.Time) Verdict
 }
