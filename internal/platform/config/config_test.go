@@ -368,6 +368,120 @@ audit:
 	}
 }
 
+// TestLoad_BudgetToolZeroRequestsPerWindowRejected mirrors
+// TestLoad_BudgetTenantMissingRequestsPerWindowRejected: an unvalidated 0
+// requests_per_window for a tool override would silently deny every call
+// to that tool forever.
+func TestLoad_BudgetToolZeroRequestsPerWindowRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tools:
+    expensive_tool:
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when a tool override's requests_per_window is unset (0)")
+	}
+	if !strings.Contains(err.Error(), "budget.tools.expensive_tool.requests_per_window must be > 0") {
+		t.Errorf("expected a clear per-tool error message, got %q", err.Error())
+	}
+}
+
+// TestLoad_BudgetToolZeroWindowSecondsRejected mirrors
+// TestLoad_BudgetTenantZeroWindowSecondsRejected.
+func TestLoad_BudgetToolZeroWindowSecondsRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tools:
+    expensive_tool:
+      requests_per_window: 1
+      window_seconds: 0
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when a tool override's window_seconds is 0")
+	}
+	if !strings.Contains(err.Error(), "budget.tools.expensive_tool.window_seconds must be > 0") {
+		t.Errorf("expected a clear per-tool error message, got %q", err.Error())
+	}
+}
+
+// TestLoad_BudgetToolEmptyKeyRejected mirrors
+// TestLoad_BudgetTenantEmptyKeyRejected: an empty-string tool key is the
+// same map-key-not-checked footgun budget.tenants had.
+func TestLoad_BudgetToolEmptyKeyRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tools:
+    "":
+      requests_per_window: 1
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error when budget.tools has an empty-string key")
+	}
+	if !strings.Contains(err.Error(), "budget.tools must not have an empty-string tool key") {
+		t.Errorf("expected a clear empty-key error message, got %q", err.Error())
+	}
+}
+
+// TestLoad_BudgetToolValidOverrideAccepted proves a well-formed tool
+// override still loads cleanly -- the new validation isn't over-strict.
+func TestLoad_BudgetToolValidOverrideAccepted(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 60
+  tools:
+    expensive_tool:
+      requests_per_window: 1
+      window_seconds: 60
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Budget.Tools["expensive_tool"]; got.RequestsPerWindow != 1 || got.WindowSeconds != 60 {
+		t.Errorf("unexpected tool override: %+v", got)
+	}
+}
+
 func TestLoad_TracingDisabledByDefaultNoValidation(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"
