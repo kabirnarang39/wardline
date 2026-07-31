@@ -51,11 +51,16 @@ type Handler struct {
 	revocation       *usecase.RevocationService
 	logger           *slog.Logger
 	revokeAuthorizer RevokeAuthorizer
-	now              func() time.Time
+	// targetTenant resolves the tenant of the identity being revoked (not
+	// the caller's own tenant). ok==false (no static registry entry, e.g.
+	// OIDC bootstrap source) falls back to the wildcard revoke ("") --
+	// see domain.Revoker's doc comment.
+	targetTenant func(identity string) (tenant string, ok bool)
+	now          func() time.Time
 }
 
-func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer) *Handler {
-	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, now: time.Now}
+func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer, targetTenant func(identity string) (tenant string, ok bool)) *Handler {
+	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, targetTenant: targetTenant, now: time.Now}
 }
 
 func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
@@ -107,14 +112,13 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// token already issued to this identity — every outstanding and
 	// future-until-expiry token is rejected from this point on. See
 	// design doc "Error handling".
-	// ponytail: tenantName "" here is domain.Revoker's documented wildcard
-	// (target's tenant not resolved) -- a real, safe revoke, not a stub.
-	// Resolving the target's actual tenant so a scoped revoke doesn't
-	// over-revoke other tenants sharing the identity name is a separate,
-	// larger change (main.go's identityTenantLookup wiring + a new
-	// NewHandler parameter); out of scope here, this only restores the
-	// build after RevocationService.Revoke's signature widened.
-	if err := h.revocation.Revoke("", req.Identity, h.now().Add(tokenTTL)); err != nil {
+	// targetTenant resolves the identity being revoked's own tenant so
+	// the revoke is scoped and doesn't over-revoke other tenants sharing
+	// the identity name. ok==false (e.g. OIDC bootstrap source, no
+	// static registry) falls back to "" -- domain.Revoker's documented
+	// wildcard, matching the pre-scoping behavior for those cases.
+	targetTenant, _ := h.targetTenant(req.Identity)
+	if err := h.revocation.Revoke(targetTenant, req.Identity, h.now().Add(tokenTTL)); err != nil {
 		// A 204 here would tell the caller a security action succeeded
 		// when it didn't -- an operator revoking a compromised identity
 		// needs to know the revocation was NOT persisted, not silently
