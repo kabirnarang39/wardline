@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/features/scim/adapter"
@@ -152,6 +153,85 @@ func TestHandler_ListUsers(t *testing.T) {
 	}
 	if len(out) != 2 {
 		t.Fatalf("expected 2 users, got %d", len(out))
+	}
+}
+
+// TestHandler_ListUsers_FilterByUserNameEq covers the one filter shape
+// real SCIM clients (Okta, Azure AD) send: an existence check before
+// create. Anything wider than this is deliberately out of scope -- see
+// TestHandler_ListUsers_UnsupportedFilterExpression_Returns400.
+func TestHandler_ListUsers_FilterByUserNameEq(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"bob","active":false}`, "secret-token")
+
+	path := "/scim/v2/Users?filter=" + url.QueryEscape(`userName eq "alice"`)
+	rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filtered list: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var out []struct {
+		UserName string `json:"userName"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if len(out) != 1 || out[0].UserName != "alice" {
+		t.Fatalf("got %d users, want exactly [alice]: %+v", len(out), out)
+	}
+}
+
+// TestHandler_ListUsers_NoFilterReturnsFullList is explicit regression
+// coverage: adding filter support must not change the no-filter default
+// (byte-for-byte backward compat), duplicating TestHandler_ListUsers'
+// assertions on the un-filtered request path.
+func TestHandler_ListUsers_NoFilterReturnsFullList(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"bob","active":false}`, "secret-token")
+
+	rec := doRequest(h, http.MethodGet, "/scim/v2/Users", "", "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var out []struct {
+		UserName string `json:"userName"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(out))
+	}
+}
+
+// TestHandler_ListUsers_UnsupportedFilterExpression_Returns400 is the
+// scope boundary: any filter expression beyond the narrow `eq` case
+// (a different operator, a different attribute, "and"/"or") must be
+// rejected with 400, not silently answered with the unfiltered list --
+// a client that sent a filter it expected honored getting the wrong
+// list back is a worse silent-failure mode than a clear rejection.
+func TestHandler_ListUsers_UnsupportedFilterExpression_Returns400(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+
+	cases := []string{
+		`userName co "ali"`,
+		`userName eq "alice" and active eq true`,
+		`displayName eq "alice"`,
+	}
+	for _, filter := range cases {
+		path := "/scim/v2/Users?filter=" + url.QueryEscape(filter)
+		rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("filter %q: got %d, want 400, body %s", filter, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -385,6 +465,77 @@ func TestHandler_ListGroups(t *testing.T) {
 	}
 	if len(out) != 2 {
 		t.Fatalf("expected 2 groups, got %d", len(out))
+	}
+}
+
+// TestHandler_ListGroups_FilterByDisplayNameEq mirrors
+// TestHandler_ListUsers_FilterByUserNameEq for Groups.
+func TestHandler_ListGroups_FilterByDisplayNameEq(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newGroupTestHandler(svc, usecase.NewBindingStore())
+
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin"}`, "secret-token")
+
+	path := "/scim/v2/Groups?filter=" + url.QueryEscape(`displayName eq "wardline:role-viewer"`)
+	rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filtered list: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var out []struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if len(out) != 1 || out[0].DisplayName != "wardline:role-viewer" {
+		t.Fatalf("got %d groups, want exactly [wardline:role-viewer]: %+v", len(out), out)
+	}
+}
+
+// TestHandler_ListGroups_NoFilterReturnsFullList mirrors
+// TestHandler_ListUsers_NoFilterReturnsFullList for Groups.
+func TestHandler_ListGroups_NoFilterReturnsFullList(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newGroupTestHandler(svc, usecase.NewBindingStore())
+
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin"}`, "secret-token")
+
+	rec := doRequest(h, http.MethodGet, "/scim/v2/Groups", "", "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var out []struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(out))
+	}
+}
+
+// TestHandler_ListGroups_UnsupportedFilterExpression_Returns400 mirrors
+// TestHandler_ListUsers_UnsupportedFilterExpression_Returns400 for Groups.
+func TestHandler_ListGroups_UnsupportedFilterExpression_Returns400(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newGroupTestHandler(svc, usecase.NewBindingStore())
+
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
+
+	cases := []string{
+		`displayName co "viewer"`,
+		`displayName eq "wardline:role-viewer" and active eq true`,
+		`userName eq "wardline:role-viewer"`,
+	}
+	for _, filter := range cases {
+		path := "/scim/v2/Groups?filter=" + url.QueryEscape(filter)
+		rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("filter %q: got %d, want 400, body %s", filter, rec.Code, rec.Body.String())
+		}
 	}
 }
 
