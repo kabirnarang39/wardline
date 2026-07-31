@@ -43,6 +43,14 @@ type InMemoryLimiter struct {
 	// deployment that never calls SetTenantLimit behaves exactly as before.
 	tenantLimits  map[string]tenantLimit
 	tenantBuckets map[string]*bucket
+
+	// toolLimits and toolBuckets back the optional per-tool override, same
+	// shape and same "unset means unchecked" semantics as tenantLimits
+	// above. Keyed by bare tool name (NOT tenant+tool): a tool's limit
+	// applies globally across every identity/tenant calling it, mirroring
+	// how a tenant's limit applies across all of that tenant's identities.
+	toolLimits  map[string]tenantLimit
+	toolBuckets map[string]*bucket
 }
 
 // tenantLimit is a tenant's override rate, set via SetTenantLimit.
@@ -69,6 +77,8 @@ func NewInMemoryLimiter(requestsPerWindow int, window time.Duration) *InMemoryLi
 		buckets:           make(map[string]*bucket),
 		tenantLimits:      make(map[string]tenantLimit),
 		tenantBuckets:     make(map[string]*bucket),
+		toolLimits:        make(map[string]tenantLimit),
+		toolBuckets:       make(map[string]*bucket),
 	}
 }
 
@@ -82,17 +92,40 @@ func (l *InMemoryLimiter) SetTenantLimit(tenantName string, requestsPerWindow in
 	l.tenantLimits[tenantName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
 }
 
-// Allow requires BOTH the identity bucket and the tenant bucket (if tenant
-// has a configured override) to admit the request -- an AND, not an OR. The
-// tenant check runs first so a request denied by an over-limit tenant never
-// also consumes identity budget.
-func (l *InMemoryLimiter) Allow(identity, tenantName string, now time.Time) domain.Verdict {
+// SetToolLimit configures an override rate for toolName, consulted alongside
+// (in addition to, not instead of) the identity and tenant buckets -- mirrors
+// SetTenantLimit exactly. A tool with no override configured here is never
+// checked against a tool bucket at all.
+func (l *InMemoryLimiter) SetToolLimit(toolName string, requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// Allow requires the identity bucket, the tenant bucket (if tenant has a
+// configured override), AND the tool bucket (if tool has a configured
+// override) to all admit the request -- an AND, not an OR. The tool check
+// runs first (cheapest to fail fast on a hot, narrow tool), then tenant,
+// then identity -- a request denied by an earlier check never consumes a
+// later, lower-priority bucket's budget.
+func (l *InMemoryLimiter) Allow(identity, tenantName, toolName string, now time.Time) domain.Verdict {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.calls++
 	if l.calls%evictionSweepInterval == 0 {
 		l.evictExpired(now)
+	}
+
+	if limit, ok := l.toolLimits[toolName]; ok {
+		tb, exists := l.toolBuckets[toolName]
+		if !exists {
+			tb = &bucket{}
+			l.toolBuckets[toolName] = tb
+		}
+		if v := checkAndAdvance(tb, limit.requestsPerWindow, limit.window, now); !v.Allowed {
+			return v
+		}
 	}
 
 	if limit, ok := l.tenantLimits[tenantName]; ok {
@@ -146,6 +179,11 @@ func (l *InMemoryLimiter) evictExpired(now time.Time) {
 	for name, b := range l.tenantBuckets {
 		if now.Sub(b.windowStart) >= l.tenantLimits[name].window {
 			delete(l.tenantBuckets, name)
+		}
+	}
+	for name, b := range l.toolBuckets {
+		if now.Sub(b.windowStart) >= l.toolLimits[name].window {
+			delete(l.toolBuckets, name)
 		}
 	}
 }
