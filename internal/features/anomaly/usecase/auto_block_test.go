@@ -122,6 +122,44 @@ func TestBlockChecker_List_FiltersExpiredEntriesWithoutGC(t *testing.T) {
 	}
 }
 
+func TestBlockChecker_Unblock_RemovesActiveBlock(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{BlockDurationSeconds: 900}, func() time.Time { return now })
+	b.Block("alice", "acme", "test block")
+
+	if v := b.Check("alice", "acme", now); v.Allowed {
+		t.Fatal("setup: expected alice to be blocked before Unblock")
+	}
+
+	if removed := b.Unblock("alice", "acme"); !removed {
+		t.Error("expected Unblock to report an entry was removed")
+	}
+	if v := b.Check("alice", "acme", now); !v.Allowed {
+		t.Error("expected alice to no longer be blocked after Unblock")
+	}
+}
+
+func TestBlockChecker_Unblock_NeverBlockedReturnsFalse(t *testing.T) {
+	now := time.Now()
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{BlockDurationSeconds: 900}, func() time.Time { return now })
+	if removed := b.Unblock("nobody", "acme"); removed {
+		t.Error("expected Unblock on a never-blocked identity to report false")
+	}
+}
+
+func TestBlockChecker_Unblock_DoesNotAffectOtherTenant(t *testing.T) {
+	now := time.Now()
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{BlockDurationSeconds: 900}, func() time.Time { return now })
+	b.Block("alice", "acme", "test block")
+	b.Block("alice", "widgets-inc", "different tenant, same identity name")
+
+	b.Unblock("alice", "acme")
+
+	if v := b.Check("alice", "widgets-inc", now); v.Allowed {
+		t.Error("unblocking acme's alice must not affect widgets-inc's alice")
+	}
+}
+
 func TestBlockChecker_List_FiltersByTenant(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, BlockDurationSeconds: 300}, func() time.Time { return now })

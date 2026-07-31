@@ -69,6 +69,23 @@ func (b *BlockChecker) Check(identity, tenantName string, now time.Time) domain.
 	return domain.BlockVerdict{Allowed: false, RetryAfter: entry.until.Sub(now), Reason: entry.reason}
 }
 
+// Unblock removes an active block for (identity, tenantName), if one
+// exists, before its TTL would otherwise expire it. Returns whether an
+// entry was actually present and removed -- not an error, matching this
+// codebase's idempotent-delete convention elsewhere (e.g.
+// scim.usecase.ProvisioningService.DeleteUser on an already-gone user).
+func (b *BlockChecker) Unblock(identity, tenantName string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	key := tenantIdentityKey(tenantName, identity)
+	if _, ok := b.blocked[key]; !ok {
+		return false
+	}
+	delete(b.blocked, key)
+	return true
+}
+
 // List returns every currently-blocked (tenant, identity) pair, filtered
 // by TTL as of now -- an expired entry answers "not blocked" here exactly
 // like it does in Check, rather than lingering in the dashboard's view for
