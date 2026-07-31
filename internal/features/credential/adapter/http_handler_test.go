@@ -57,7 +57,7 @@ func newTestHandler(revoker domain.Revoker) *adapter.Handler {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant)
+	return adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "")
 }
 
 func TestHandleToken_ValidSecretReturns200WithToken(t *testing.T) {
@@ -288,7 +288,7 @@ func TestHandleRevoke_NonLoopbackAllowedByAuthorizerRevokes(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: true}, noTargetTenant)
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: true}, noTargetTenant, "")
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -310,7 +310,7 @@ func TestHandleRevoke_NonLoopbackDeniedByAuthorizerIsForbidden(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: false}, noTargetTenant)
+	h := adapter.NewHandler(issuance, revocation, logger, fakeRevokeAuthorizer{allowed: false}, noTargetTenant, "")
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -332,7 +332,7 @@ func TestHandleRevoke_NonLoopbackNoAuthorizerWiredIsForbidden(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant) // rbac not wired -- today's behavior
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "") // rbac not wired -- today's behavior
 
 	body := bytes.NewBufferString(`{"identity":"agent-abc123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -357,7 +357,7 @@ func TestHandleRevoke_ResolvesTargetTenantBeforeRevoking(t *testing.T) {
 		}
 		return "", false
 	}
-	h := adapter.NewHandler(issuance, revocation, logger, nil, targetTenant)
+	h := adapter.NewHandler(issuance, revocation, logger, nil, targetTenant, "")
 
 	body := bytes.NewBufferString(`{"identity":"alice"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -376,7 +376,7 @@ func TestHandleRevoke_UnresolvableTargetTenantRevokesAsWildcard(t *testing.T) {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
 	revocation := usecase.NewRevocationService(revoker)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant) // e.g. OIDC bootstrap source, no static registry
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "") // e.g. OIDC bootstrap source, no static registry
 
 	body := bytes.NewBufferString(`{"identity":"mallory"}`)
 	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
@@ -387,5 +387,121 @@ func TestHandleRevoke_UnresolvableTargetTenantRevokesAsWildcard(t *testing.T) {
 
 	if revoker.tenant != "" {
 		t.Errorf("expected wildcard revoke (empty tenant), got %q", revoker.tenant)
+	}
+}
+
+func TestHandleToken_MTLSHeaderPresentAndValidReturns200WithToken(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", nil)
+	req.Header.Set("X-Wardline-Verified-Spiffe-Id", "good-secret") // fakeHandlerBootstrapper treats "good-secret" as valid regardless of source
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if resp.Token != "signed-jwt-for-agent-abc123" {
+		t.Errorf("unexpected token: %q", resp.Token)
+	}
+}
+
+func TestHandleToken_MTLSHeaderMissingReturns401Generic(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", nil) // header not set at all
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleToken_MTLSHeaderEmptyReturns401Generic(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", nil)
+	req.Header.Set("X-Wardline-Verified-Spiffe-Id", "")
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleToken_MTLSHeaderUnmappedValueReturns401Generic(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", nil)
+	req.Header.Set("X-Wardline-Verified-Spiffe-Id", "wrong-secret") // fakeHandlerBootstrapper rejects anything but "good-secret"
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestHandleToken_MTLSModeIgnoresRequestBodyEntirely proves the request
+// body is never consulted when mtlsHeader is set -- an oversized or
+// malformed body must not error, since HandleToken must not attempt to
+// read or decode it at all on this path.
+func TestHandleToken_MTLSModeIgnoresRequestBodyEntirely(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	oversized := bytes.Repeat([]byte("a"), (64<<10)+1) // exceeds maxTokenRequestBodyBytes
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", bytes.NewReader(oversized))
+	req.Header.Set("X-Wardline-Verified-Spiffe-Id", "good-secret")
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (body must be ignored entirely in mtls mode), got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleToken_EmptyMtlsHeaderPreservesBodyDecodingBehavior is a
+// regression guard, not a new-feature test: with mtlsHeader == "" (the
+// zero value, what every presharedsecret/oidc call site passes), an
+// oversized body must still be rejected exactly as it always has been --
+// proving the new branch's else path is unchanged.
+func TestHandleToken_EmptyMtlsHeaderPreservesBodyDecodingBehavior(t *testing.T) {
+	h := newTestHandler(&recordingRevoker{})
+	oversized := bytes.Repeat([]byte("a"), (64<<10)+1)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", bytes.NewReader(oversized))
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body when mtlsHeader is unset, got %d", w.Code)
 	}
 }

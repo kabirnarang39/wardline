@@ -57,10 +57,16 @@ type Handler struct {
 	// see domain.Revoker's doc comment.
 	targetTenant func(identity string) (tenant string, ok bool)
 	now          func() time.Time
+
+	// mtlsHeader names the HTTP header HandleToken reads the caller's
+	// already-verified SPIFFE ID from, instead of decoding a JSON body,
+	// when non-empty. Empty (the default) preserves the existing
+	// body-decoding behavior exactly for presharedsecret/oidc.
+	mtlsHeader string
 }
 
-func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer, targetTenant func(identity string) (tenant string, ok bool)) *Handler {
-	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, targetTenant: targetTenant, now: time.Now}
+func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer, targetTenant func(identity string) (tenant string, ok bool), mtlsHeader string) *Handler {
+	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, targetTenant: targetTenant, now: time.Now, mtlsHeader: mtlsHeader}
 }
 
 func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
@@ -68,17 +74,28 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTokenRequestBodyBytes) // 64 KiB — generous for a {"secret":"..."} body
-	var req tokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body")
-		return
+	var secret string
+	if h.mtlsHeader != "" {
+		secret = r.Header.Get(h.mtlsHeader)
+		if secret == "" {
+			h.logger.Warn("credential bootstrap failed", "remote_addr", r.RemoteAddr)
+			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, maxTokenRequestBodyBytes) // 64 KiB — generous for a {"secret":"..."} body
+		var req tokenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		secret = req.Secret
 	}
-	token, err := h.issuance.Bootstrap(req.Secret)
+	token, err := h.issuance.Bootstrap(secret)
 	if err != nil {
 		// Generic message regardless of cause (unknown identity vs. wrong
-		// secret) — avoids identity enumeration, see design doc. The secret
-		// itself must never be logged.
+		// secret/spiffe id) — avoids identity enumeration, see design doc.
+		// The secret/spiffe id itself must never be logged.
 		h.logger.Warn("credential bootstrap failed", "remote_addr", r.RemoteAddr)
 		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return
