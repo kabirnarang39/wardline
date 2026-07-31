@@ -212,12 +212,16 @@ mTLS/SPIFFE-style bootstrap is supported as a third bootstrap source —
 see mTLS/SPIFFE bootstrap below. IdP federation (Okta, Entra, generic
 OIDC) is supported too — see SSO below.
 
-**Known limitation:** revocation is keyed by identity name only, not
-`(tenant, identity)` — this branch made identity names per-tenant-unique
-(two different IdPs, or two `credentials.yaml` entries, can legitimately
-both provision "alice", one per tenant), but the revocation store was
-not re-keyed to match. Revoking your own tenant's `alice` currently
-revokes every tenant's `alice` too. See the [Credential
+**Known limitation:** revocation is keyed by `(tenant, identity)`, not
+identity name alone — revoking your own tenant's `alice` does not touch
+another tenant's `alice`. One residual gap remains: when a target
+identity's tenant can't be resolved at revoke time (which happens
+whenever that identity name is registered under more than one tenant —
+`Bootstrapper`/`MTLSBootstrapper.TenantOf` deliberately fail closed on
+that ambiguity rather than guessing), the revoke falls back to a
+wildcard, revoking every tenant's copy of that identity name at once.
+Only a caller holding a global `credential:revoke` grant (see
+[RBAC](#rbac)) can trigger this fallback. See the [Credential
 issuance](https://kabirnarang39.github.io/wardline/docs/features/credential-issuance/)
 docs page for the full explanation.
 
@@ -236,7 +240,7 @@ features:
   credential_issuance: true
 credential:
   identities_file: "credentials.yaml"   # still required even for oidc
-  bootstrap_source: "oidc"              # "presharedsecret" (default) | "oidc"
+  bootstrap_source: "oidc"              # "presharedsecret" (default) | "oidc" | "mtls"
   oidc:
     issuer: "https://idp.example.com/"
     jwks_uri: "https://idp.example.com/.well-known/jwks.json"
@@ -326,8 +330,9 @@ and the dashboard filters a non-globally-granted caller to their own
 tenant's data. A `ClusterRoleBinding` (no tenant segment) still grants
 globally, across every tenant — see [SCIM](#scim) below for how SCIM
 group naming mirrors this same convention. One known gap: credential
-revocation itself is still keyed by identity name only, not
-`(tenant, identity)` — see [Credential issuance](#credential-issuance).
+revocation's `(tenant, identity)` scoping falls back to a global
+wildcard when a target identity's tenant can't be resolved — see
+[Credential issuance](#credential-issuance).
 
 RBAC is only as strong as whatever resolves the caller's identity — the
 same disclaimer as budget enforcement's: pair it with `credential_issuance`

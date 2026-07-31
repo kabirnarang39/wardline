@@ -34,7 +34,7 @@ features: {}
 #   identities_file: "./credentials.yaml.example"
 #   # required when features.credential_issuance is true, regardless of
 #   # bootstrap_source (still required, though unused, under oidc below)
-#   bootstrap_source: "presharedsecret"   # "presharedsecret" (default) | "oidc" -- see README.md "SSO"
+#   bootstrap_source: "presharedsecret"   # "presharedsecret" (default) | "oidc" | "mtls" -- see README.md "SSO" / "mTLS/SPIFFE bootstrap"
 #   oidc:
 #     # only read when bootstrap_source is "oidc" -- an OIDC ID token,
 #     # verified against the IdP's JWKS, replaces the preshared secret
@@ -43,6 +43,13 @@ features: {}
 #     audience: "wardline"
 #     identity_claim: "sub"        # optional, default "sub"
 #     tenant_claim: "tenant"       # optional, default "tenant" -- required present on every token, no default
+#   mtls:
+#     # only read when bootstrap_source is "mtls" -- an already-verified
+#     # SPIFFE ID, forwarded by a terminating mTLS proxy/mesh via this
+#     # trusted header, replaces the preshared secret. No default: only
+#     # safe when Wardline is reachable exclusively through a proxy/mesh
+#     # that sets (and strips any client-supplied copy of) this header.
+#     header: "X-Wardline-Verified-Spiffe-Id"   # required, no default
 # rbac:
 #   config_file: "./rbac.yaml.example"
 #   # required when features.rbac is true
