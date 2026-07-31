@@ -483,9 +483,11 @@ func runServe(logger *slog.Logger, args []string) {
 	var credentialHandler *credentialadapter.Handler
 	var revokerCloser io.Closer
 	var oidcCloser io.Closer
+	var mtlsHeader string
 	if credentialIssuanceEnabled {
 		var bootstrapper credentialdomain.Bootstrapper
-		if cfg.Credential.BootstrapSource == "oidc" {
+		switch cfg.Credential.BootstrapSource {
+		case "oidc":
 			oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
 			if err != nil {
 				logger.Error("failed to initialize oidc bootstrapper", "error", err)
@@ -505,7 +507,17 @@ func runServe(logger *slog.Logger, args []string) {
 			// differently here.
 			identityTenantLookup = func(string) (string, bool) { return "", false }
 			logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
-		} else {
+		case "mtls":
+			mtlsBootstrapper, err := credentialadapter.LoadMTLSBootstrapper(cfg.Credential.IdentitiesFile)
+			if err != nil {
+				logger.Error("failed to load credentials file", "error", err)
+				os.Exit(1)
+			}
+			bootstrapper = mtlsBootstrapper
+			identityTenantLookup = mtlsBootstrapper.TenantOf
+			mtlsHeader = cfg.Credential.MTLS.Header
+			logger.Info("credential issuance enabled (mtls bootstrap)", "identities_file", cfg.Credential.IdentitiesFile, "header", mtlsHeader)
+		default:
 			psBootstrapper, err := credentialadapter.LoadBootstrapper(cfg.Credential.IdentitiesFile)
 			if err != nil {
 				logger.Error("failed to load credentials file", "error", err)
@@ -542,7 +554,7 @@ func runServe(logger *slog.Logger, args []string) {
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker)
-		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) })
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) }, mtlsHeader)
 		// verification already satisfies proxyadapter.Authenticator directly
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.
@@ -1077,6 +1089,16 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			logger.Warn("failed to initialize oidc bootstrapper (jwks endpoint may be unreachable); not treated as a hard failure", "error", err)
 		} else if err := oidcBootstrapper.Close(); err != nil {
 			logger.Warn("failed to shut down oidc bootstrapper after validation", "error", err)
+		}
+	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.BootstrapSource == "mtls" {
+		// Unlike the oidc block above, this is a local file read with no
+		// network call to fail softly on -- either the credentials file
+		// parses or it's a real config error, so this is a hard exit like
+		// the credential.identities_file emptiness check already is.
+		if _, err := credentialadapter.LoadMTLSBootstrapper(cfg.Credential.IdentitiesFile); err != nil {
+			logger.Error("failed to load credentials file", "error", err)
+			os.Exit(1)
 		}
 	}
 	// Check that anomaly.output's parent directory exists rather than
