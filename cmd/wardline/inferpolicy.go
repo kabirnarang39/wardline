@@ -18,7 +18,7 @@ import (
 
 // runInferPolicy implements `wardline infer-policy`: reads the audit
 // trail over [-from, -to), infers one allow rule per distinct
-// (tenant, identity, tool) combination seen in successful traffic, and
+// (tenant, identity, tool) combination seen in allow-decision traffic, and
 // writes it as a starter policy.yaml-shaped file at -output. No feature
 // flag -- an explicitly-invoked offline command, like validate-policy/
 // validate-config/export-evidence/policy-pack.
@@ -39,12 +39,20 @@ func runInferPolicy(logger *slog.Logger, args []string) {
 		logger.Error("invalid -from", "error", err)
 		os.Exit(1)
 	}
-	to := time.Now()
+	now := time.Now()
+	to := now
 	if *toStr != "" {
 		to, err = time.Parse(time.RFC3339, *toStr)
 		if err != nil {
 			logger.Error("invalid -to", "error", err)
 			os.Exit(1)
+		}
+		// Clamp a future -to to now: the audit trail cannot contain
+		// entries past this instant, so advertising a wider range in the
+		// generated header would overstate what was actually examined.
+		if to.After(now) {
+			logger.Warn("-to is in the future; clamping to now", "requested", to, "clamped", now)
+			to = now
 		}
 	}
 	if !from.Before(to) {
@@ -80,12 +88,12 @@ func runInferPolicy(logger *slog.Logger, args []string) {
 
 	matched := 0
 	for _, e := range entries {
-		if e.Decision == "allow" || e.Decision == "passthrough" {
+		if e.Decision == "allow" {
 			matched++
 		}
 	}
 	if matched == 0 {
-		logger.Warn("no allowed/passthrough audit entries found in range; writing an all-deny starter policy", "from", from, "to", to)
+		logger.Warn("no allow-decision audit entries found in range; writing an all-deny starter policy", "from", from, "to", to)
 	}
 
 	rules := policygendomain.Infer(entries)
@@ -95,6 +103,6 @@ func runInferPolicy(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("wrote %d rule(s) inferred from %d allowed/passthrough entries (of %d total) to %s\n",
+	fmt.Printf("wrote %d rule(s) inferred from %d allow-decision entries (of %d total) to %s\n",
 		len(rules), matched, len(entries), *outputPath)
 }

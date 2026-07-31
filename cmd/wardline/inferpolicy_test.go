@@ -31,11 +31,22 @@ func TestRunInferPolicy_EndToEndAgainstAJSONLAuditFile(t *testing.T) {
 
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	auditLines := strings.Join([]string{
+		// Two allow entries for one triple: exactly one rule, deduped.
 		`{"timestamp":"2026-07-25T10:00:00Z","identity":"alice","tenant":"acme","tool":"read_file","decision":"allow"}`,
 		`{"timestamp":"2026-07-25T10:00:01Z","identity":"alice","tenant":"acme","tool":"read_file","decision":"allow"}`,
+		// Non-allow decisions: never allow-listed.
 		`{"timestamp":"2026-07-25T10:00:02Z","identity":"alice","tenant":"acme","tool":"delete_file","decision":"deny"}`,
+		`{"timestamp":"2026-07-25T10:00:04Z","identity":"bob","tenant":"widgets-inc","tool":"throttled_file","decision":"throttled"}`,
+		// Critical 1: a passthrough entry's tool is a raw JSON-RPC method
+		// name policy never evaluated -- excluded even though it looks like
+		// a legitimate tool and even though it reached upstream.
 		`{"timestamp":"2026-07-25T10:00:03Z","identity":"bob","tenant":"widgets-inc","tool":"write_file","decision":"passthrough"}`,
-		`{"timestamp":"2026-07-25T10:00:04Z","identity":"bob","tenant":"widgets-inc","tool":"write_file","decision":"throttled"}`,
+		// Critical 1 (defense in depth): an allow entry can still never
+		// synthesize a wildcard rule.
+		`{"timestamp":"2026-07-25T10:00:05Z","identity":"mallory","tenant":"acme","tool":"*","decision":"allow"}`,
+		// Critical 2: an allow entry with no identity would produce a file
+		// policy/adapter.LoadFile rejects -- excluded.
+		`{"timestamp":"2026-07-25T10:00:06Z","identity":"","tenant":"acme","tool":"list_tools","decision":"allow"}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(auditPath, []byte(auditLines), 0600); err != nil {
 		t.Fatalf("write audit fixture: %v", err)
@@ -75,19 +86,58 @@ audit:
 		"identity: alice",
 		"tool: read_file",
 		"tenant: acme",
-		"identity: bob",
-		"tool: write_file",
-		"tenant: widgets-inc",
 		"default: deny",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected generated policy to contain %q, got:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "delete_file") {
-		t.Errorf("expected the denied delete_file call to be excluded, got:\n%s", got)
+	for _, unwanted := range []struct{ needle, why string }{
+		{"delete_file", "the denied delete_file call must be excluded"},
+		{"throttled_file", "the throttled call must be excluded"},
+		{"write_file", "the passthrough call must be excluded: its tool field is a raw JSON-RPC method name, not a policy-evaluated tool"},
+		{"bob", "the passthrough entry's caller-supplied identity must not appear"},
+		{`"*"`, "an observed allow must never synthesize a wildcard rule"},
+		{"mallory", "the wildcard-tool entry must be excluded entirely"},
+		{"list_tools", "the empty-identity entry must be excluded (LoadFile rejects an empty identity)"},
+		{`identity: ""`, "no rule may have an empty identity"},
+	} {
+		if strings.Contains(got, unwanted.needle) {
+			t.Errorf("found %q in the generated policy but %s; got:\n%s", unwanted.needle, unwanted.why, got)
+		}
 	}
-	if strings.Contains(got, "throttled") {
-		t.Errorf("expected the throttled write_file call to be excluded (only its earlier passthrough should appear), got:\n%s", got)
+
+	// The plan's global constraint: whatever is generated must load through
+	// the real, unmodified policy loader. Running the shipped
+	// `validate-policy` command against the output proves it end to end --
+	// an empty identity or tool would make this fail.
+	validate := exec.Command(binPath, "validate-policy", "-file", outputPath)
+	if vout, err := validate.CombinedOutput(); err != nil {
+		t.Errorf("generated policy failed to load through validate-policy: %v\noutput: %s\npolicy:\n%s", err, vout, got)
+	}
+
+	// Exactly one rule survives (alice/acme/read_file, deduped).
+	if n := strings.Count(got, "identity:"); n != 1 {
+		t.Errorf("expected exactly 1 generated rule, found %d identity: keys in:\n%s", n, got)
+	}
+
+	// A -to past now is clamped, so the header never advertises a range the
+	// audit trail could not possibly cover. Reuses the binary built above.
+	futurePath := filepath.Join(dir, "policy.future.yaml")
+	future := exec.Command(binPath, "infer-policy",
+		"-config", configPath,
+		"-from", "2026-07-01T00:00:00Z",
+		"-to", "3000-01-01T00:00:00Z",
+		"-output", futurePath,
+	)
+	if fout, err := future.CombinedOutput(); err != nil {
+		t.Fatalf("infer-policy with a future -to failed: %v\noutput: %s", err, fout)
+	}
+	futureData, err := os.ReadFile(futurePath)
+	if err != nil {
+		t.Fatalf("read future-range policy: %v", err)
+	}
+	if strings.Contains(string(futureData), "3000-") {
+		t.Errorf("expected a future -to to be clamped to now in the header, got:\n%s", futureData)
 	}
 }
