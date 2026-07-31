@@ -671,6 +671,31 @@ func postCredentialsToken(t *testing.T, listenAddr, secret string) *http.Respons
 	return resp
 }
 
+// postCredentialsTokenWithHeader posts an empty-bodied
+// /credentials/token request carrying headerValue in headerName --
+// simulates a terminating mTLS proxy/mesh forwarding an already-verified
+// SPIFFE ID, per the mtls bootstrap source's design (see
+// docs/superpowers/specs/2026-08-01-mtls-spiffe-bootstrap-design.md). An
+// empty headerValue omits the header entirely (simulating a caller that
+// never went through the terminating proxy at all), matching how a real
+// http.Header never has a header explicitly set to empty by a client
+// that simply didn't send it.
+func postCredentialsTokenWithHeader(t *testing.T, listenAddr, headerName, headerValue string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/credentials/token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headerValue != "" {
+		req.Header.Set(headerName, headerValue)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func postToolCallWithBearer(t *testing.T, listenAddr, bearerToken, tool string) *http.Response {
 	t.Helper()
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
@@ -799,6 +824,88 @@ credential:
 	revokedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
 	if revokedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a revoked identity's still-otherwise-valid token, got %d", revokedResp.StatusCode)
+	}
+}
+
+// TestServeEndToEnd_MTLSBootstrap proves the full mtls-bootstrap-source
+// flow over a real HTTP request through the real binary: a
+// terminating-proxy-forwarded SPIFFE ID header bootstraps a real bearer
+// token that then proxies a real allowed tool call, while a missing
+// header and an unmapped SPIFFE ID both fail closed with a generic 401.
+// No real X.509/mTLS handshake anywhere -- see this plan's Global
+// Constraints for why that's the correct test surface for this feature.
+func TestServeEndToEnd_MTLSBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: payments-worker
+    spiffe_id: "spiffe://example.org/ns/prod/sa/payments-worker"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const headerName = "X-Wardline-Verified-Spiffe-Id"
+	const mappedSpiffeID = "spiffe://example.org/ns/prod/sa/payments-worker"
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "payments-worker"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+  bootstrap_source: "mtls"
+  mtls:
+    header: "%s"`, credentialsPath, headerName))
+
+	// A missing header (no terminating proxy in front of this request)
+	// is rejected, no token issued.
+	missingResp := postCredentialsTokenWithHeader(t, listenAddr, headerName, "")
+	if missingResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a missing header, got %d (stderr: %s)", missingResp.StatusCode, stderr.String())
+	}
+
+	// An unmapped SPIFFE ID (a real terminating proxy verified SOME
+	// cert, but not one this Wardline instance's operator registered) is
+	// rejected the same way.
+	unmappedResp := postCredentialsTokenWithHeader(t, listenAddr, headerName, "spiffe://example.org/ns/prod/sa/some-other-worker")
+	if unmappedResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an unmapped spiffe id, got %d (stderr: %s)", unmappedResp.StatusCode, stderr.String())
+	}
+
+	// A mapped SPIFFE ID bootstraps a real token.
+	tokenResp := postCredentialsTokenWithHeader(t, listenAddr, headerName, mappedSpiffeID)
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a mapped spiffe id, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty token")
+	}
+
+	// The bearer token proxies a real allowed tool call.
+	allowedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with a valid bearer token, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// A raw X-Wardline-Identity header alone (no bearer token, no
+	// terminating-proxy header) must not work -- the same regression
+	// TestServeEndToEnd_CredentialIssuance guards for the other bootstrap
+	// sources.
+	legacyHeaderResp := postToolCall(t, listenAddr, "payments-worker", "read_file")
+	if legacyHeaderResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a raw X-Wardline-Identity header with credential_issuance on, got %d", legacyHeaderResp.StatusCode)
 	}
 }
 
