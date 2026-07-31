@@ -27,11 +27,11 @@ func (w *nopWriter) Write(a domain.Anomaly) error {
 }
 
 type blockRecorder struct {
-	calls []string
+	calls []struct{ identity, tenant, reason string }
 }
 
 func (b *blockRecorder) Block(identity, tenantName, reason string) {
-	b.calls = append(b.calls, identity+": "+reason)
+	b.calls = append(b.calls, struct{ identity, tenant, reason string }{identity, tenantName, reason})
 }
 
 type internalClock struct {

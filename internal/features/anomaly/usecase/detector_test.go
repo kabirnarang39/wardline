@@ -803,11 +803,11 @@ func TestDetector_MLScore_OrdinaryGrowth_NeverFlags(t *testing.T) {
 // can assert on whether Block was called at all, not just what an
 // anomaly writer recorded.
 type recordingBlocker struct {
-	calls []struct{ identity, reason string }
+	calls []struct{ identity, tenant, reason string }
 }
 
 func (b *recordingBlocker) Block(identity, tenantName, reason string) {
-	b.calls = append(b.calls, struct{ identity, reason string }{identity, reason})
+	b.calls = append(b.calls, struct{ identity, tenant, reason string }{identity, tenantName, reason})
 }
 
 // TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline is the
@@ -851,6 +851,52 @@ func TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline(t *testing.T) 
 	// map is keyed by (tenant, identity), not identity alone.
 	if v := blocker.Check("alice", "widgets-inc", clock.now()); !v.Allowed {
 		t.Fatal("widgets-inc's alice must not be blocked by acme's alice's anomaly -- cross-tenant bleed")
+	}
+}
+
+// TestDetector_BlockRecordsCorrectTenant asserts that when a Block call is
+// made, the test double's recorded call captures the tenant argument, not
+// just the identity and reason. This proves the fix for the regression where
+// a reversed or transposed argument could go undetected at the unit-test layer.
+func TestDetector_BlockRecordsCorrectTenant(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := &recordingBlocker{}
+	cfg := domain.HeuristicConfig{
+		WindowSeconds: 60,
+		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
+		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
+	}
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
+
+	// Helper to publish windows for a specific (identity, tenant) pair
+	feedTenantIdentity := func(identity, tenant string, tools []string, n int, spacing time.Duration) {
+		for i := 0; i < n; i++ {
+			d.Publish(auditdomain.Entry{Identity: identity, Tenant: tenant, Tool: tools[i%len(tools)], Decision: "allow"})
+			clock.t = clock.t.Add(spacing)
+		}
+	}
+
+	// Establish baseline for ("alice", "acme"): 8 windows alternating 10/11 calls
+	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
+		feedTenantIdentity("alice", "acme", manyToolNames(n), n, time.Second)
+		clock.t = clock.t.Add(61 * time.Second)
+	}
+
+	// Wild burst: 200 calls across 20 tools, 1ms apart -- will auto-block
+	feedTenantIdentity("alice", "acme", manyToolNames(20), 200, time.Millisecond)
+	clock.t = clock.t.Add(61 * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
+
+	// Assert the Block call recorded the correct tenant
+	if len(blocker.calls) != 1 {
+		t.Fatalf("expected 1 Block call, got %d: %+v", len(blocker.calls), blocker.calls)
+	}
+	if blocker.calls[0].identity != "alice" {
+		t.Errorf("expected identity=alice, got %s", blocker.calls[0].identity)
+	}
+	if blocker.calls[0].tenant != "acme" {
+		t.Errorf("expected tenant=acme, got %s", blocker.calls[0].tenant)
 	}
 }
 
