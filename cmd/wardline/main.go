@@ -593,16 +593,7 @@ func runServe(logger *slog.Logger, args []string) {
 		// happened -- there is no later reassignment for it to miss.
 		var scopeResolver dashboardadapter.TenantScopeResolver
 		if rbacEnabled {
-			scopeResolver = tenantScopeResolverFunc(func(r *http.Request) string {
-				who, callerTenant, err := identityAuth.Authenticate(r)
-				if err != nil {
-					return callerTenant // unreachable in practice -- RequirePermission already rejected an auth failure before this runs
-				}
-				if rbacChecker.IsGlobal(who, rbacdomain.PermissionDashboardView) {
-					return ""
-				}
-				return callerTenant
-			})
+			scopeResolver = newScopeResolver(identityAuth, rbacChecker)
 		}
 
 		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver)
@@ -820,6 +811,34 @@ func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 type tenantScopeResolverFunc func(r *http.Request) string
 
 func (f tenantScopeResolverFunc) TenantFilter(r *http.Request) string { return f(r) }
+
+// dashboardFailClosedTenantFilter is returned when the dashboard's
+// tenant-scope resolver hits an authentication error -- verified
+// unreachable in production (RequirePermission already rejects an
+// auth failure before this closure runs), but a security filter's
+// error path must fail closed, not silently fall back to "" (which
+// means unfiltered/see-everything). Contains \x00, which cannot appear
+// in a tenant name sourced from a JWT claim, SCIM UserName, or config
+// value -- so it can never accidentally match a real tenant's data,
+// meaning every tenant-filtered view returns zero entries instead.
+const dashboardFailClosedTenantFilter = "\x00unresolved"
+
+// newScopeResolver builds the dashboardadapter.TenantScopeResolver wired
+// into the dashboard route when rbac is on -- extracted out of runServe's
+// inline closure (mirroring newRevokeAuthorizer just below) so the
+// fail-closed-on-auth-error behavior can be unit-tested in isolation.
+func newScopeResolver(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.TenantScopeResolver {
+	return tenantScopeResolverFunc(func(r *http.Request) string {
+		who, callerTenant, err := identityAuth.Authenticate(r)
+		if err != nil {
+			return dashboardFailClosedTenantFilter // fail closed, not unfiltered -- see const's doc comment
+		}
+		if checker.IsGlobal(who, rbacdomain.PermissionDashboardView) {
+			return ""
+		}
+		return callerTenant
+	})
+}
 
 // newRevokeAuthorizer builds the RevokeAuthorizer wired into
 // /credentials/revoke when rbac is on: a non-loopback caller is allowed
