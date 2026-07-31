@@ -139,6 +139,31 @@ func TestBlockChecker_Unblock_RemovesActiveBlock(t *testing.T) {
 	}
 }
 
+// TestBlockChecker_Unblock_ExpiredEntryNotYetGCdReturnsFalse is M2's
+// regression test (final review): Unblock must compare against the same
+// expired() the other three readers of b.blocked (Check, List,
+// GCBlocksOnce) use, not a bare map-presence check. A block whose TTL has
+// already elapsed but whose entry GCBlocksOnce hasn't yet swept reads as
+// "not blocked" everywhere else (Check already allows it, List already
+// omits it) -- Unblock must agree: there's nothing left to "unblock", so
+// it must report false, not true.
+func TestBlockChecker_Unblock_ExpiredEntryNotYetGCdReturnsFalse(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	b := usecase.NewBlockChecker(domain.AutoBlockConfig{BlockDurationSeconds: 300}, func() time.Time { return now })
+	b.Block("alice", "acme", "test block")
+
+	now = now.Add(301 * time.Second) // past the TTL; GCBlocksOnce deliberately never called
+
+	if removed := b.Unblock("alice", "acme"); removed {
+		t.Error("expected Unblock to report false for an already-expired (but not yet GC'd) entry")
+	}
+	// Sanity: the stale entry is gone from the map now too (Unblock's own
+	// cleanup), not just reported correctly.
+	if v := b.Check("alice", "acme", now); !v.Allowed {
+		t.Error("expected alice to remain unblocked (already expired) after the no-op Unblock")
+	}
+}
+
 func TestBlockChecker_Unblock_NeverBlockedReturnsFalse(t *testing.T) {
 	now := time.Now()
 	b := usecase.NewBlockChecker(domain.AutoBlockConfig{BlockDurationSeconds: 900}, func() time.Time { return now })
