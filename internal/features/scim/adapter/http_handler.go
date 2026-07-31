@@ -3,6 +3,7 @@ package adapter
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -103,6 +104,31 @@ func (h *Handler) authenticated(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(h.bearerToken)) == 1
 }
 
+// parseEqFilter parses the narrow SCIM filter shape this handler
+// supports: `<attr> eq "<value>"` for exactly one named attribute --
+// the only filter real SCIM clients (Okta, Azure AD) send, to check
+// whether a User/Group already exists before creating one. This is a
+// deliberately bounded scope, not the start of a general SCIM filter
+// grammar (no "and"/"or", no other operators, no other fields).
+//
+// ok is false for an empty filter (no filtering requested -- the
+// caller's existing behavior). err is non-nil for anything else (a
+// different operator, a different attribute, malformed syntax) -- an
+// explicit 400 is safer than silently ignoring a filter the caller
+// expected to be honored.
+func parseEqFilter(rawFilter, wantAttr string) (value string, ok bool, err error) {
+	rawFilter = strings.TrimSpace(rawFilter)
+	if rawFilter == "" {
+		return "", false, nil
+	}
+	prefix := wantAttr + ` eq "`
+	if !strings.HasPrefix(rawFilter, prefix) || !strings.HasSuffix(rawFilter, `"`) {
+		return "", false, fmt.Errorf("unsupported filter expression")
+	}
+	value = strings.TrimSuffix(strings.TrimPrefix(rawFilter, prefix), `"`)
+	return value, true, nil
+}
+
 type userResource struct {
 	ID       string `json:"id,omitempty"`
 	UserName string `json:"userName"`
@@ -125,9 +151,17 @@ func (h *Handler) handleUsersCollection(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusCreated, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 	case http.MethodGet:
+		value, filtered, err := parseEqFilter(r.URL.Query().Get("filter"), "userName")
+		if err != nil {
+			writeSCIMError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		users := h.users.ListUsers()
 		out := make([]userResource, 0, len(users))
 		for _, u := range users {
+			if filtered && u.UserName != value {
+				continue
+			}
 			out = append(out, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -225,9 +259,17 @@ func (h *Handler) handleGroupsCollection(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusCreated, toGroupResource(g))
 	case http.MethodGet:
+		value, filtered, err := parseEqFilter(r.URL.Query().Get("filter"), "displayName")
+		if err != nil {
+			writeSCIMError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		groups := h.groups.ListGroups()
 		out := make([]groupResource, 0, len(groups))
 		for _, g := range groups {
+			if filtered && g.DisplayName != value {
+				continue
+			}
 			out = append(out, toGroupResource(g))
 		}
 		writeJSON(w, http.StatusOK, out)

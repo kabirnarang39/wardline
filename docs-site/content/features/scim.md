@@ -43,12 +43,17 @@ restart; set `scim.persist_postgres: true` (requires
 
 - **Not full SCIM 2.0 compliance.** No bulk operations, no
   `/ServiceProviderConfig`/`/Schemas`/`/ResourceTypes` discovery
-  endpoints, and no `?filter=` query support at all — `GET
-  /scim/v2/Users` and `GET /scim/v2/Groups` always return the full
-  list; the adapter doesn't parse a `filter` query parameter, not even
-  the narrow `userName eq "..."` / `displayName eq "..."` case. Only
-  the PATCH operations named above are recognized; every other
-  operation or path is silently ignored, not rejected.
+  endpoints, and only the narrow `?filter=` case real SCIM clients
+  (Okta, Azure AD) actually send when checking whether a user/group
+  already exists before creating one: `?filter=userName eq "..."` on
+  `GET /scim/v2/Users`, `?filter=displayName eq "..."` on `GET
+  /scim/v2/Groups`. No general filter grammar — no `and`/`or`, no
+  other operators (`ne`, `co`, `sw`, ...), no other fields; any filter
+  expression outside this shape is rejected with 400 rather than
+  silently answered with the unfiltered list. No filter at all still
+  returns the full list, unchanged. Only the PATCH operations named
+  above are recognized; every other operation or path is silently
+  ignored, not rejected.
 - Users track only `userName` and `active` — no name, email, or other
   SCIM User attributes.
 - A single shared bearer token, not per-client credentials or OAuth —
