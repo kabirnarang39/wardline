@@ -6,10 +6,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
+
+// postgresSafeKey adapts tenant.Key's \x00-separated composite key for
+// storage in a Postgres TEXT column. Postgres rejects \x00 in TEXT under
+// UTF8 encoding outright (verified locally: INSERT ... VALUES ($1) with a
+// \x00 byte fails with `invalid byte sequence for encoding "UTF8": 0x00`,
+// SQLSTATE 22021) -- so the separator is swapped for \x1f (unit separator)
+// after composing through tenant.Key, not by building the composite key
+// inline (tenant.Key's own doc comment requires every composite key to go
+// through it exclusively). \x1f is, like \x00, not expected to appear in a
+// tenant or identity string in practice (both come from JWT claims/header
+// values/SCIM UserNames).
+func postgresSafeKey(tenantName, identity string) string {
+	return strings.ReplaceAll(tenant.Key(tenantName, identity), "\x00", "\x1f")
+}
 
 // revokerTimeout bounds every Postgres operation this adapter performs --
 // same rationale and same value as audit/adapter.PostgresWriter's
@@ -29,8 +46,18 @@ INSERT INTO revoked_identities (identity, expires_at)
 VALUES ($1, $2)
 ON CONFLICT (identity) DO UPDATE SET expires_at = EXCLUDED.expires_at`
 
+// selectRevocationSQL checks both keys a (tenant, identity) pair could be
+// stored under in one round trip: the tenant-scoped key
+// (postgresSafeKey(tenantName, identity)) and the bare identity -- the latter
+// covers both the wildcard-revoke case (tenantName == "" at Revoke time)
+// and any pre-tenant-isolation row already sitting in the table (no
+// migration touched existing rows; see revoked_identities' doc comment
+// on PostgresRevoker). pgx/v5/stdlib's database/sql driver encodes a bare
+// Go []string as a Postgres text[] parameter directly (verified locally
+// against a real Postgres via ANY($1); no pq.Array-style wrapper needed --
+// that's lib/pq-specific and this project uses pgx).
 const selectRevocationSQL = `
-SELECT expires_at FROM revoked_identities WHERE identity = $1`
+SELECT expires_at FROM revoked_identities WHERE identity = ANY($1) ORDER BY expires_at DESC LIMIT 1`
 
 // PostgresRevoker is a credential/domain.Revoker backed by a real
 // Postgres database -- the HA-safe alternative to RevocationList, wired
@@ -86,10 +113,14 @@ func NewPostgresRevoker(dsn string, logger *slog.Logger) (*PostgresRevoker, erro
 // /credentials/revoke's HTTP handler) can tell an operator the
 // revocation did NOT take effect, instead of returning success for a
 // security action that never happened.
-func (r *PostgresRevoker) Revoke(identity string, expiresAt time.Time) error {
+func (r *PostgresRevoker) Revoke(tenantName, identity string, expiresAt time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
-	if _, err := r.db.ExecContext(ctx, upsertRevocationSQL, identity, expiresAt); err != nil {
+	key := identity
+	if tenantName != "" {
+		key = postgresSafeKey(tenantName, identity)
+	}
+	if _, err := r.db.ExecContext(ctx, upsertRevocationSQL, key, expiresAt); err != nil {
 		return fmt.Errorf("write revocation for %q: %w", identity, err)
 	}
 	return nil
@@ -107,15 +138,20 @@ func (r *PostgresRevoker) Revoke(identity string, expiresAt time.Time) error {
 // silent security gap, not an acceptable trade-off -- an operator
 // investigating "why did a revoked token still work" needs to be able to
 // find this in the logs.
-func (r *PostgresRevoker) IsRevoked(identity string) bool {
+func (r *PostgresRevoker) IsRevoked(tenantName, identity string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
 
+	keys := []string{identity}
+	if tenantName != "" {
+		keys = []string{postgresSafeKey(tenantName, identity), identity}
+	}
+
 	var expiresAt time.Time
-	err := r.db.QueryRowContext(ctx, selectRevocationSQL, identity).Scan(&expiresAt)
+	err := r.db.QueryRowContext(ctx, selectRevocationSQL, keys).Scan(&expiresAt)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) && r.logger != nil {
-			r.logger.Warn("revocation check failed open: treating as not-revoked", "identity", identity, "error", err)
+			r.logger.Warn("revocation check failed open: treating as not-revoked", "identity", identity, "tenant", tenantName, "error", err)
 		}
 		return false
 	}
