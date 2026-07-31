@@ -42,9 +42,18 @@ Tokens can be revoked; revocation is checked on every request.
   `(tenant, identity)` into its existing `identity` primary-key column
   via a length-prefixed key rather than adding a column). The gap that
   remains: when a target identity's tenant cannot be resolved at revoke
-  time (OIDC bootstrap has no static identity registry to look it up
-  from), the revoke falls back to the pre-scoping wildcard behavior —
+  time, the revoke falls back to the pre-scoping wildcard behavior —
   revoking every tenant's copy of that identity name at once, the same
-  as before this cycle's fix. This only affects the OIDC bootstrap
-  source; the preshared-secret bootstrapper always resolves a target's
-  tenant from `credentials.yaml`.
+  as before this cycle's fix. This is not an OIDC-only gap: it's
+  reachable under **either** bootstrap source. With `bootstrap_source:
+  oidc`, tenant lookup always fails (no static identity registry exists
+  to look a target up in). With the preshared-secret bootstrapper,
+  lookup normally succeeds from `credentials.yaml` — but fails the same
+  way whenever the target identity name is registered under two or more
+  distinct tenants (`Bootstrapper.TenantOf` deliberately fails closed to
+  "unresolved" on that ambiguity, rather than guessing which tenant's
+  copy to scope to) — precisely the "two `credentials.yaml` entries
+  legitimately provision the same name" scenario described above. A
+  caller holding a global `credential:revoke` grant (see
+  [RBAC](/features/rbac/)) can trigger this wildcard fallback under
+  preshared-secret bootstrap too, with no OIDC involved.

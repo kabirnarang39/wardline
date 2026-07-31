@@ -30,9 +30,16 @@ globally, across every tenant — the "no tenant means global" convention
   are additive on top, not a replacement.
 - When `credential.bootstrap_source: oidc`, cross-tenant credential-revoke
   scoping (see [SSO](/features/sso/)) falls back to requiring a global
-  `ClusterRoleBinding` grant for every revoke — the OIDC bootstrapper has
-  no static identity registry to look up an arbitrary target identity's
-  tenant from after the fact, unlike the preshared-secret bootstrapper.
+  `ClusterRoleBinding` grant for *every* revoke — the OIDC bootstrapper
+  has no static identity registry to look up an arbitrary target
+  identity's tenant from after the fact. The preshared-secret
+  bootstrapper normally resolves a target's tenant from
+  `credentials.yaml` and doesn't need this fallback — except for the
+  same edge case as [Credential issuance](/features/credential-issuance/)'s
+  revocation-keying gap: an identity name registered under two or more
+  distinct tenants resolves ambiguously there too, so a scoped (non-global)
+  caller revoking that name is denied and a global grant is required,
+  same as OIDC.
 - Credential revocation is now genuinely `(tenant, identity)`-keyed (see
   [Credential issuance](/features/credential-issuance/)'s known
   limitations for the residual gap: a revoke whose target tenant cannot
