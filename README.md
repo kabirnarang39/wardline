@@ -612,10 +612,12 @@ reads the audit trail over a time range and writes a starter
 tool)` combinations it saw succeed — no feature flag, an explicitly-
 invoked offline command like `export-evidence`/`policy-pack`.
 
-Only `allow`/`passthrough` audit entries feed the generated rules —
+Only `allow` audit entries feed the generated rules —
 `deny`/`throttled`/`blocked`/`error` entries are excluded, since
 allow-listing a call that didn't succeed would grant more than what was
-actually observed. `-output` defaults to `./policy.generated.yaml`, and,
+actually observed, and `passthrough` entries are excluded because their
+`tool` field holds a raw JSON-RPC method name that policy never
+evaluated, so it isn't an observed grant at all. `-output` defaults to `./policy.generated.yaml`, and,
 like `policy-pack install`, refuses to overwrite an existing file or
 follow a dangling symlink there.
 
@@ -627,7 +629,10 @@ full design, including why this deliberately has no live/continuous
 mode.
 
 **Requires a queryable audit trail**, same as `export-evidence`:
-`audit.output: stdout` has nothing to read back.
+`audit.output: stdout` has nothing to read back. On the postgres path it
+also needs a DDL-capable DSN, not a SELECT-only one — the same requirement
+`export-evidence` has, since connecting runs `CREATE TABLE/INDEX IF NOT
+EXISTS`.
 
 ## Tracing
 
