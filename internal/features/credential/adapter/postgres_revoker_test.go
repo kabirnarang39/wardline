@@ -71,11 +71,11 @@ func TestPostgresRevoker_RevokeThenIsRevokedRoundTrips(t *testing.T) {
 	}
 	defer func() { _ = r.Close() }()
 
-	if err := r.Revoke("agent-abc123", time.Now().Add(time.Hour)); err != nil {
+	if err := r.Revoke("", "agent-abc123", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if !r.IsRevoked("agent-abc123") {
+	if !r.IsRevoked("", "agent-abc123") {
 		t.Error("expected agent-abc123 to be revoked")
 	}
 }
@@ -90,7 +90,7 @@ func TestPostgresRevoker_UnrevokedIdentityIsNotRevoked(t *testing.T) {
 	}
 	defer func() { _ = r.Close() }()
 
-	if r.IsRevoked("never-revoked") {
+	if r.IsRevoked("", "never-revoked") {
 		t.Error("expected an identity with no revocation entry to not be revoked")
 	}
 }
@@ -105,11 +105,11 @@ func TestPostgresRevoker_ExpiredRevocationSelfHeals(t *testing.T) {
 	}
 	defer func() { _ = r.Close() }()
 
-	if err := r.Revoke("agent-abc123", time.Now().Add(-time.Minute)); err != nil { // already expired
+	if err := r.Revoke("", "agent-abc123", time.Now().Add(-time.Minute)); err != nil { // already expired
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if r.IsRevoked("agent-abc123") {
+	if r.IsRevoked("", "agent-abc123") {
 		t.Error("expected an expired revocation to no longer count as revoked")
 	}
 }
@@ -159,11 +159,11 @@ func TestPostgresRevoker_CrossInstanceRevocationPropagates(t *testing.T) {
 	}
 	defer func() { _ = replicaB.Close() }()
 
-	if err := replicaA.Revoke("agent-abc123", time.Now().Add(time.Hour)); err != nil {
+	if err := replicaA.Revoke("", "agent-abc123", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if !replicaB.IsRevoked("agent-abc123") {
+	if !replicaB.IsRevoked("", "agent-abc123") {
 		t.Error("expected a revocation made through replicaA to be visible through replicaB (same Postgres database)")
 	}
 }
@@ -180,7 +180,7 @@ func TestPostgresRevoker_RevokeAgainstClosedPoolReturnsError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if err := r.Revoke("agent-abc123", time.Now().Add(time.Hour)); err == nil {
+	if err := r.Revoke("", "agent-abc123", time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("expected Revoke against a closed connection pool to return an error")
 	}
 }
@@ -203,11 +203,95 @@ func TestPostgresRevoker_IsRevoked_QueryErrorIsLoggedAndFailsOpen(t *testing.T) 
 	// Query against a closed pool -- a real error, not sql.ErrNoRows --
 	// must fail open (return false) AND be logged, not swallowed
 	// identically to the ordinary "never revoked" case.
-	if r.IsRevoked("agent-abc123") {
+	if r.IsRevoked("", "agent-abc123") {
 		t.Error("expected IsRevoked to fail open (false) on a genuine query error")
 	}
 	if !strings.Contains(logBuf.String(), "revocation check failed open") {
 		t.Errorf("expected a query error to be logged, got log output: %q", logBuf.String())
+	}
+}
+
+func TestPostgresRevoker_ScopedRevokeDoesNotAffectOtherTenant(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTable(t, dsn)
+
+	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresRevoker: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	now := time.Now()
+	if err := r.Revoke("acme", "alice-pgtest", now.Add(time.Hour)); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	if !r.IsRevoked("acme", "alice-pgtest") {
+		t.Error("expected acme's alice-pgtest to be revoked")
+	}
+	if r.IsRevoked("widgets-inc", "alice-pgtest") {
+		t.Error("widgets-inc's alice-pgtest must not be revoked by acme's revoke")
+	}
+}
+
+func TestPostgresRevoker_WildcardRevokeAffectsEveryTenant(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTable(t, dsn)
+
+	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresRevoker: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	now := time.Now()
+	if err := r.Revoke("", "bob-pgtest", now.Add(time.Hour)); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	if !r.IsRevoked("acme", "bob-pgtest") {
+		t.Error("wildcard revoke must deny acme's bob-pgtest")
+	}
+	if !r.IsRevoked("widgets-inc", "bob-pgtest") {
+		t.Error("wildcard revoke must deny widgets-inc's bob-pgtest")
+	}
+}
+
+// insertLegacyBareIdentityRow simulates a pre-migration row by inserting
+// directly through its own connection, bypassing Revoke's key-composition
+// logic entirely -- same pattern as dropRevokedIdentitiesTable, since
+// package adapter_test has no access to PostgresRevoker's unexported db
+// field or SQL constants.
+func insertLegacyBareIdentityRow(t *testing.T, dsn, identity string, expiresAt time.Time) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for legacy row insert: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`INSERT INTO revoked_identities (identity, expires_at) VALUES ($1, $2)`, identity, expiresAt); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+}
+
+func TestPostgresRevoker_LegacyBareIdentityRowStillDeniesEveryTenant(t *testing.T) {
+	dsn := testDSN(t)
+	dropRevokedIdentitiesTable(t, dsn)
+
+	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresRevoker: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	now := time.Now()
+	insertLegacyBareIdentityRow(t, dsn, "carol-pgtest", now.Add(time.Hour))
+
+	if !r.IsRevoked("acme", "carol-pgtest") {
+		t.Error("legacy bare-identity row must deny acme's carol-pgtest")
+	}
+	if !r.IsRevoked("widgets-inc", "carol-pgtest") {
+		t.Error("legacy bare-identity row must deny widgets-inc's carol-pgtest")
 	}
 }
 
@@ -224,7 +308,7 @@ func TestPostgresRevoker_IsRevoked_NotFoundIsNeverLogged(t *testing.T) {
 	}
 	defer func() { _ = r.Close() }()
 
-	if r.IsRevoked("never-revoked") {
+	if r.IsRevoked("", "never-revoked") {
 		t.Error("expected an identity with no revocation entry to not be revoked")
 	}
 	if logBuf.Len() != 0 {
