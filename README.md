@@ -604,6 +604,31 @@ like "Wardline blocks everything" until you edit the file. See
 the full design, including why this ships as an embedded catalog rather
 than a live registry.
 
+## Auto-generated sandbox policy
+
+`wardline infer-policy -config wardline.yaml -from <RFC3339> [-to <RFC3339>] [-output <path>]`
+reads the audit trail over a time range and writes a starter
+`policy.yaml`-shaped file allow-listing exactly the `(tenant, identity,
+tool)` combinations it saw succeed — no feature flag, an explicitly-
+invoked offline command like `export-evidence`/`policy-pack`.
+
+Only `allow`/`passthrough` audit entries feed the generated rules —
+`deny`/`throttled`/`blocked`/`error` entries are excluded, since
+allow-listing a call that didn't succeed would grant more than what was
+actually observed. `-output` defaults to `./policy.generated.yaml`, and,
+like `policy-pack install`, refuses to overwrite an existing file or
+follow a dangling symlink there.
+
+The generated file is a normal `policy.yaml` — load it as-is with
+`policy_backend: yaml`. It is a *starting point*: review every rule
+before adopting it. See [Auto-Generated Sandbox
+Policy](docs-site/content/features/auto-generated-policy.md) for the
+full design, including why this deliberately has no live/continuous
+mode.
+
+**Requires a queryable audit trail**, same as `export-evidence`:
+`audit.output: stdout` has nothing to read back.
+
 ## Tracing
 
 Off by default. Opt in with `features.otel_tracing: true` plus a `tracing:`
