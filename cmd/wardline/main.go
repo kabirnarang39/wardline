@@ -95,7 +95,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if len(os.Args) < 2 {
-		logger.Error("usage: wardline <serve|validate-policy|validate-config|export-evidence|policy-pack> [flags]")
+		logger.Error("usage: wardline <serve|validate-policy|validate-config|export-evidence|policy-pack|infer-policy> [flags]")
 		os.Exit(1)
 	}
 
@@ -110,6 +110,8 @@ func main() {
 		runExportEvidence(logger, os.Args[2:])
 	case "policy-pack":
 		runPolicyPack(logger, os.Args[2:])
+	case "infer-policy":
+		runInferPolicy(logger, os.Args[2:])
 	default:
 		logger.Error("unknown command", "command", os.Args[1])
 		os.Exit(1)
