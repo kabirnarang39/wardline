@@ -729,6 +729,49 @@ credential:
 	}
 }
 
+// TestLoad_MTLSBootstrapRequiresHeader mirrors
+// TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience's shape for the third
+// bootstrap source.
+func TestLoad_MTLSBootstrapRequiresHeader(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "mtls"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for mtls bootstrap_source with no header configured")
+	}
+
+	path2 := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "mtls"
+  mtls:
+    header: "X-Wardline-Verified-Spiffe-Id"
+`)
+	cfg, err := config.Load(path2)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.MTLS.Header != "X-Wardline-Verified-Spiffe-Id" {
+		t.Errorf("expected mtls.header to round-trip, got %q", cfg.Credential.MTLS.Header)
+	}
+}
+
 func TestLoad_BootstrapSourceUnknownValueRejected(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

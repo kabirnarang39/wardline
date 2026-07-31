@@ -75,6 +75,20 @@ type OIDCConfig struct {
 	TenantClaim   string `yaml:"tenant_claim"`   // defaults to "tenant"
 }
 
+// MTLSConfig configures the mTLS/SPIFFE bootstrap adapter. Only
+// validated (and only meaningful) when credential.bootstrap_source is
+// "mtls". Wardline never terminates TLS or parses X.509 itself -- Header
+// names the HTTP header a terminating mTLS proxy/mesh (Envoy, Istio,
+// nginx with ssl_verify_client, ...) must set to the caller's
+// already-verified SPIFFE ID after successfully completing the mTLS
+// handshake. No default value: an operator must name a header their own
+// ingress/mesh actually sets (and strips from any client-supplied
+// value) -- a well-known default would invite accidentally trusting a
+// header nobody configured their proxy to guarantee.
+type MTLSConfig struct {
+	Header string `yaml:"header"`
+}
+
 // CredentialConfig configures credential issuance. Only validated (and
 // only meaningful) when the credential_issuance feature flag is on.
 type CredentialConfig struct {
@@ -93,9 +107,12 @@ type CredentialConfig struct {
 
 	// BootstrapSource selects which Bootstrapper adapter authenticates a
 	// credential exchange: "presharedsecret" (default, credentials.yaml
-	// via IdentitiesFile) or "oidc" (OIDC ID token via OIDC below).
+	// via IdentitiesFile), "oidc" (OIDC ID token via OIDC below), or
+	// "mtls" (already-verified SPIFFE ID via a trusted header, see MTLS
+	// below).
 	BootstrapSource string     `yaml:"bootstrap_source"`
 	OIDC            OIDCConfig `yaml:"oidc"`
+	MTLS            MTLSConfig `yaml:"mtls"`
 }
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
@@ -343,8 +360,8 @@ func (c *Config) validate() error {
 		}
 		if c.Credential.BootstrapSource == "" {
 			c.Credential.BootstrapSource = "presharedsecret"
-		} else if c.Credential.BootstrapSource != "presharedsecret" && c.Credential.BootstrapSource != "oidc" {
-			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret" or "oidc", got %q`, c.Credential.BootstrapSource))
+		} else if c.Credential.BootstrapSource != "presharedsecret" && c.Credential.BootstrapSource != "oidc" && c.Credential.BootstrapSource != "mtls" {
+			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret", "oidc", or "mtls", got %q`, c.Credential.BootstrapSource))
 		}
 		if c.Credential.BootstrapSource == "oidc" {
 			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.JWKSURI == "" || c.Credential.OIDC.Audience == "" {
@@ -356,6 +373,9 @@ func (c *Config) validate() error {
 			if c.Credential.OIDC.TenantClaim == "" {
 				c.Credential.OIDC.TenantClaim = "tenant"
 			}
+		}
+		if c.Credential.BootstrapSource == "mtls" && c.Credential.MTLS.Header == "" {
+			problems = append(problems, `credential.mtls.header must not be empty when credential.bootstrap_source is "mtls"`)
 		}
 	}
 	if c.Features["rbac"] && c.RBAC.ConfigFile == "" {
