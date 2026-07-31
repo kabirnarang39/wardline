@@ -1156,36 +1156,13 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	}
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 
-	var auditReader auditdomain.Reader
-	var jsonlReader *auditadapter.JSONLReader
-	if featureFlags.Enabled("postgres_storage") {
-		// Same precedence buildAuditSink applies for serve: postgres wins,
-		// audit.output is ignored. Logged here too because "my bundle is
-		// empty" against a config that has both set is otherwise silent --
-		// the operator can't tell which of the two stores was read.
-		if cfg.Audit.Output != "" {
-			logger.Info("audit.output is set but features.postgres_storage is on; exporting from postgres and ignoring audit.output",
-				"output", cfg.Audit.Output)
-		}
-		// NewPostgresWriter runs CREATE TABLE/INDEX IF NOT EXISTS on
-		// connect, so this read-only export needs the same DDL-capable DSN
-		// serve uses -- a SELECT-only compliance role can't run it. See
-		// README.md "Compliance evidence export"; a dedicated read-only
-		// connector is deferred (it also needs a separate DSN config field
-		// to be useful, which is a design change, not a bug fix).
-		pw, err := auditadapter.NewPostgresWriter(cfg.Audit.PostgresDSN)
-		if err != nil {
-			logger.Error("failed to connect to postgres", "error", err)
-			os.Exit(1)
-		}
-		defer func() { _ = pw.Close() }()
-		auditReader = pw
-	} else if cfg.Audit.Output == "stdout" {
-		logger.Error("audit trail is not queryable when audit.output is stdout -- configure a file path or features.postgres_storage to use export-evidence")
+	auditReader, jsonlReader, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
+	if err != nil {
+		logger.Error("failed to set up audit reader", "error", err)
 		os.Exit(1)
-	} else {
-		jsonlReader = auditadapter.NewJSONLReader(cfg.Audit.Output)
-		auditReader = jsonlReader
+	}
+	if closer, ok := auditReader.(io.Closer); ok {
+		defer func() { _ = closer.Close() }()
 	}
 
 	ctx := context.Background()
