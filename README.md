@@ -215,13 +215,17 @@ OIDC) is supported too — see SSO below.
 **Known limitation:** revocation is keyed by `(tenant, identity)`, not
 identity name alone — revoking your own tenant's `alice` does not touch
 another tenant's `alice`. One residual gap remains: when a target
-identity's tenant can't be resolved at revoke time (which happens
-whenever that identity name is registered under more than one tenant —
-`Bootstrapper`/`MTLSBootstrapper.TenantOf` deliberately fail closed on
-that ambiguity rather than guessing), the revoke falls back to a
-wildcard, revoking every tenant's copy of that identity name at once.
-Only a caller holding a global `credential:revoke` grant (see
-[RBAC](#rbac)) can trigger this fallback. See the [Credential
+identity's tenant can't be resolved at revoke time — always true under
+`bootstrap_source: oidc` (no static registry to look an arbitrary
+identity's tenant up in), and also true under `presharedsecret`/`mtls`
+whenever that identity name happens to be registered under more than one
+tenant (`Bootstrapper`/`MTLSBootstrapper.TenantOf` deliberately fail
+closed on that ambiguity rather than guessing) — the revoke falls back to
+a wildcard, revoking every tenant's copy of that identity name at once. A
+caller holding a global `credential:revoke` grant (see [RBAC](#rbac)) can
+trigger this fallback deliberately — but so can any loopback caller,
+since `/credentials/revoke` is reachable from loopback by default with no
+RBAC grant at all. See the [Credential
 issuance](https://kabirnarang39.github.io/wardline/docs/features/credential-issuance/)
 docs page for the full explanation.
 
