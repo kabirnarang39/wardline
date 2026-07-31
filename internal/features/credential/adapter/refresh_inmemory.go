@@ -27,10 +27,11 @@ type refreshEntry struct {
 // identity), this map is keyed by the opaque token value, with
 // (tenant, identity) stored as payload -- a single identity can have
 // many outstanding refresh tokens issued at different times, and
-// RevokeAllForIdentity has to find and delete every one of them, so a
-// second index (by identity key, mirroring RevocationList's
-// tenant.Key(tenantName, identity)-or-bare-identity shape) is
-// maintained alongside the primary map.
+// RevokeAllForIdentity has to find and delete every one of them. There
+// is no secondary index by identity: RevokeAllForIdentity does a full
+// O(n) scan of byTok instead (see its own doc comment), acceptable at
+// this store's expected scale the same way RevocationList's
+// evictExpired already does a full-map scan.
 type InMemoryRefreshStore struct {
 	mu    sync.Mutex
 	byTok map[string]refreshEntry
