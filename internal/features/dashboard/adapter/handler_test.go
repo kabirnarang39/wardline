@@ -111,11 +111,25 @@ func (f *fakeBlockedSource) Unblock(identity, tenantName string) bool {
 // without needing a real rbac wiring.
 type denyAllUnblockAuthorizer struct{}
 
-func (denyAllUnblockAuthorizer) Allowed(r *http.Request) bool { return false }
+func (denyAllUnblockAuthorizer) AllowedFor(r *http.Request, targetTenant string) bool { return false }
 
 type allowAllUnblockAuthorizer struct{}
 
-func (allowAllUnblockAuthorizer) Allowed(r *http.Request) bool { return true }
+func (allowAllUnblockAuthorizer) AllowedFor(r *http.Request, targetTenant string) bool { return true }
+
+// recordingUnblockAuthorizer is a spy on top of allowAllUnblockAuthorizer's
+// always-allow behavior: it records the targetTenant it was called with,
+// so a test can prove handleUnblock resolves targetTenant (h.tenantFilter
+// or ?tenant=) BEFORE calling AllowedFor, and passes that exact value
+// through -- not, e.g., the raw unresolved query parameter or "".
+type recordingUnblockAuthorizer struct {
+	lastTargetTenant string
+}
+
+func (r *recordingUnblockAuthorizer) AllowedFor(req *http.Request, targetTenant string) bool {
+	r.lastTargetTenant = targetTenant
+	return true
+}
 
 // fakeTenantScopeResolver is a settable stub for adapter.TenantScopeResolver
 // -- returns tenant for every request regardless of what the request
@@ -591,7 +605,8 @@ func TestHandler_FederationRoute_StaysUnfiltered(t *testing.T) {
 
 func TestHandler_UnblockRoute_RequiresUnblockAuthorizer(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil, denyAllUnblockAuthorizer{})
+	scope := fakeTenantScopeResolver{tenant: "acme"}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, denyAllUnblockAuthorizer{})
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -661,6 +676,30 @@ func TestHandler_UnblockRoute_UnfilteredCallerWithTenantParam_Succeeds(t *testin
 	}
 	if blocked.lastUnblockIdentity != "alice" || blocked.lastUnblockTenant != "widgets-inc" {
 		t.Errorf("Unblock called with (%q,%q), want (\"alice\",\"widgets-inc\")", blocked.lastUnblockIdentity, blocked.lastUnblockTenant)
+	}
+}
+
+// TestHandler_UnblockRoute_AllowedForReceivesResolvedTargetTenant proves
+// handleUnblock resolves targetTenant (h.tenantFilter, or ?tenant= for an
+// unfiltered-authority caller) BEFORE calling AllowedFor, and passes that
+// exact resolved value through -- the C1 fix's ordering requirement (final
+// review: "call AllowedFor(r, targetTenant) AFTER resolving targetTenant,
+// not before").
+func TestHandler_UnblockRoute_AllowedForReceivesResolvedTargetTenant(t *testing.T) {
+	blocked := &fakeBlockedSource{unblockResult: true}
+	scope := fakeTenantScopeResolver{tenant: ""}
+	authz := &recordingUnblockAuthorizer{}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, authz)
+
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if authz.lastTargetTenant != "widgets-inc" {
+		t.Errorf("AllowedFor called with targetTenant %q, want %q", authz.lastTargetTenant, "widgets-inc")
 	}
 }
 

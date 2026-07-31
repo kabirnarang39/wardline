@@ -255,14 +255,16 @@ func TestScopeResolver_AuthErrorFailsClosedNotUnfiltered(t *testing.T) {
 // of the closure DELETE /dashboard/api/anomalies/blocked/{identity} is
 // gated by -- checker.Check must be reached with the caller's own
 // (identity, tenant) and rbacdomain.PermissionCredentialRevoke, and a
-// grant must result in Allowed() == true.
+// grant must result in AllowedFor(r, "") == true (targetTenant == "" means
+// the caller's own tenant -- see UnblockAuthorizer's doc comment).
 func TestNewUnblockAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants(t *testing.T) {
 	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice", tenant: "acme"}
 	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true})
 
 	authz := newUnblockAuthorizer(identityAuth, checker)
-	if !authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/bob", nil)) {
-		t.Error("expected Allowed to return true when identity resolves and the checker grants credential:revoke")
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/bob", nil)
+	if !authz.AllowedFor(req, "") {
+		t.Error("expected AllowedFor to return true when identity resolves and the checker grants credential:revoke")
 	}
 }
 
@@ -274,8 +276,9 @@ func TestNewUnblockAuthorizer_DeniesWhenCheckerDenies(t *testing.T) {
 	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: false})
 
 	authz := newUnblockAuthorizer(identityAuth, checker)
-	if authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)) {
-		t.Error("expected Allowed to return false when the checker denies credential:revoke")
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
+	if authz.AllowedFor(req, "") {
+		t.Error("expected AllowedFor to return false when the checker denies credential:revoke")
 	}
 }
 
@@ -288,8 +291,122 @@ func TestNewUnblockAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t
 	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
 
 	authz := newUnblockAuthorizer(identityAuth, checker)
-	if authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)) {
-		t.Error("expected Allowed to return false when identity resolution fails")
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
+	if authz.AllowedFor(req, "") {
+		t.Error("expected AllowedFor to return false when identity resolution fails")
+	}
+}
+
+// TestNewUnblockAuthorizer_DeniesCrossTenantUnblock mirrors
+// TestNewRevokeAuthorizer_DeniesCrossTenantRevoke: bob is a tenant-scoped
+// (RoleBinding, not ClusterRoleBinding) admin for tenant "acme" and holds
+// credential:revoke, but he names a different tenant ("widgets-inc") as
+// the unblock target. Without a global credential:revoke grant, that must
+// be denied even though bob's own-tenant permission check passes.
+func TestNewUnblockAuthorizer_DeniesCrossTenantUnblock(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
+	if authz.AllowedFor(req, "widgets-inc") {
+		t.Fatal("bob (tenant acme) must not be allowed to unblock in widgets-inc")
+	}
+}
+
+// TestNewUnblockAuthorizer_AllowsSameTenantUnblock is the positive
+// counterpart: bob (tenant acme) naming "acme" itself as the target must
+// be allowed.
+func TestNewUnblockAuthorizer_AllowsSameTenantUnblock(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: false})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=acme", nil)
+	if !authz.AllowedFor(req, "acme") {
+		t.Error("expected bob (tenant acme) to be allowed to unblock within his own tenant")
+	}
+}
+
+// TestNewUnblockAuthorizer_GlobalGrantSkipsTenantCheck covers the
+// ClusterRoleBinding escape hatch: a caller globally granted
+// credential:revoke may unblock across tenants.
+func TestNewUnblockAuthorizer_GlobalGrantSkipsTenantCheck(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "root", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true, global: true})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
+	if !authz.AllowedFor(req, "widgets-inc") {
+		t.Error("expected a globally-granted caller to be allowed to unblock regardless of target tenant")
+	}
+}
+
+// funcAuthorizer is a domain.Authorizer fake whose Authorize/IsGlobal
+// answers are supplied as independent functions -- unlike stubAuthorizer
+// (one fixed verdict/global pair shared by every permission), this lets a
+// test control the verdict PER PERMISSION, which is exactly what's needed
+// to reproduce C1's exploit shape below (a caller holding a global grant
+// of one permission and only a tenant-scoped grant of a different one).
+type funcAuthorizer struct {
+	authorize func(identity, tenant string, perm rbacdomain.Permission) bool
+	isGlobal  func(identity string, perm rbacdomain.Permission) bool
+}
+
+func (f funcAuthorizer) Authorize(identity, tenant string, perm rbacdomain.Permission) bool {
+	return f.authorize(identity, tenant, perm)
+}
+
+func (f funcAuthorizer) IsGlobal(identity string, perm rbacdomain.Permission) bool {
+	return f.isGlobal(identity, perm)
+}
+
+// TestNewUnblockAuthorizer_DeniesCrossTenantUnblockFromGlobalDashboardViewOnly
+// is the single most important regression test in the C1 fix wave (final
+// whole-branch review, "known-limitations-closure"): it reproduces the
+// exact privilege-escalation exploit using only the codebase's two
+// built-in roles. alice holds:
+//
+//   - a GLOBAL grant of dashboard:view (the built-in "viewer" role via a
+//     ClusterRoleBinding) -- read-only, every tenant.
+//   - a TENANT-SCOPED grant of credential:revoke (the built-in "admin"
+//     role via a RoleBinding) in tenant "acme" ONLY.
+//
+// This is, per the review, "the single most natural way to express 'SRE
+// sees everything, tenant admins act within their tenant.'" Before the
+// C1 fix, newScopeResolver's IsGlobal(who, dashboard:view) check (reused
+// by handleUnblock as the cross-tenant-authority signal) would answer
+// true for alice, letting her clear a block in "widgets-inc" -- a tenant
+// she holds zero credential:revoke authority in. The fix requires
+// cross-tenant authority to come from credential:revoke's OWN IsGlobal,
+// which is false for alice, so she must be denied outside her own tenant.
+func TestNewUnblockAuthorizer_DeniesCrossTenantUnblockFromGlobalDashboardViewOnly(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice", tenant: "acme"}
+	authorizer := funcAuthorizer{
+		authorize: func(identity, tenant string, perm rbacdomain.Permission) bool {
+			switch perm {
+			case rbacdomain.PermissionDashboardView:
+				return true // global "viewer" grant covers every tenant
+			case rbacdomain.PermissionCredentialRevoke:
+				return tenant == "acme" // tenant-scoped "admin" grant, acme only
+			default:
+				return false
+			}
+		},
+		isGlobal: func(identity string, perm rbacdomain.Permission) bool {
+			return perm == rbacdomain.PermissionDashboardView // ONLY dashboard:view is global
+		},
+	}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, authorizer)
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/bob?tenant=widgets-inc", nil)
+	if authz.AllowedFor(req, "widgets-inc") {
+		t.Fatal("alice (global dashboard:view, tenant-scoped credential:revoke in acme only) must NOT be allowed to unblock in widgets-inc")
+	}
+	// Sanity: she IS allowed within her own tenant, acme.
+	if !authz.AllowedFor(req, "acme") {
+		t.Error("alice must still be allowed to unblock within her own tenant (acme)")
 	}
 }
 

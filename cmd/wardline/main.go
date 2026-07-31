@@ -826,9 +826,11 @@ func (f revokeAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
 // dashboardadapter.UnblockAuthorizer, mirroring revokeAuthorizerFunc's
 // exact pattern immediately above -- the closure built in runServe
 // doesn't need its own named type there either.
-type unblockAuthorizerFunc func(r *http.Request) bool
+type unblockAuthorizerFunc func(r *http.Request, targetTenant string) bool
 
-func (f unblockAuthorizerFunc) Allowed(r *http.Request) bool { return f(r) }
+func (f unblockAuthorizerFunc) AllowedFor(r *http.Request, targetTenant string) bool {
+	return f(r, targetTenant)
+}
 
 // tenantScopeResolverFunc adapts a plain function to
 // dashboardadapter.TenantScopeResolver, matching revokeAuthorizerFunc's
@@ -873,21 +875,31 @@ func newScopeResolver(identityAuth proxyadapter.IdentityAuthenticator, checker *
 // tier for "an admin may override a security decision" (an unblock undoes
 // an automated enforcement decision, so it is gated separately from the
 // read-only dashboard:view permission the rest of the dashboard route
-// relies on). Unlike newRevokeAuthorizer, there is no cross-tenant check
-// here: identityAuth is captured by value (not by pointer), matching
+// relies on). Mirrors newRevokeAuthorizer's cross-tenant reasoning
+// exactly, including the escape hatch: cross-tenant authority for THIS
+// mutation must come from credential:revoke's own IsGlobal, never from
+// dashboard:view's (the final-review C1 bug -- an earlier version of this
+// function delegated the cross-tenant decision to h.tenantFilter, which
+// is derived from a global grant of the READ-ONLY dashboard:view
+// permission; a caller with global dashboard:view plus only
+// tenant-scoped credential:revoke could then name and clear an arbitrary
+// other tenant's block despite having zero revoke authority there).
+// identityAuth is captured by value (not by pointer), matching
 // newScopeResolver just above rather than newRevokeAuthorizer just below,
 // since this closure is likewise built after every reassignment of
-// identityAuth earlier in runServe has already happened. Tenant scoping
-// for the unblock target is entirely Handler's own job (h.tenantFilter /
-// ?tenant=, see dashboard/adapter/handler.go's handleUnblock) -- this
-// function only answers the permission question.
+// identityAuth earlier in runServe has already happened.
 func newUnblockAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.UnblockAuthorizer {
-	return unblockAuthorizerFunc(func(r *http.Request) bool {
+	return unblockAuthorizerFunc(func(r *http.Request, targetTenant string) bool {
 		who, callerTenant, err := identityAuth.Authenticate(r)
 		if err != nil {
 			return false
 		}
-		return checker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke)
+		if !checker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke) {
+			return false
+		}
+		// Cross-tenant authority must come from THIS permission (the one
+		// this mutation actually exercises), never from dashboard:view.
+		return targetTenant == "" || targetTenant == callerTenant || checker.IsGlobal(who, rbacdomain.PermissionCredentialRevoke)
 	})
 }
 

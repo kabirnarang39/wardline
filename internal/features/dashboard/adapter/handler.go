@@ -55,13 +55,21 @@ type BlockedSource interface {
 }
 
 // UnblockAuthorizer decides whether a caller may clear an active
-// auto-block before its TTL expires -- mirrors credentialadapter.RevokeAuthorizer's
-// shape and posture exactly. nil means "not wired" (rbac off); handleUnblock
-// treats that the same as blocked == nil (feature not wired at all) and
-// answers 404, matching every other "not wired" route in this file rather
-// than silently allowing an unauthenticated unblock.
+// auto-block, within targetTenant specifically, before its TTL expires --
+// mirrors credentialadapter.RevokeAuthorizer's shape and posture exactly,
+// including its cross-tenant reasoning (see newRevokeAuthorizer /
+// newUnblockAuthorizer in cmd/wardline/main.go): cross-tenant authority
+// for this mutation must derive from the caller's own credential:revoke
+// grant, never from the read-only dashboard:view permission the rest of
+// this file's routes rely on (see the final-review C1 finding this
+// corrected). targetTenant == "" means "the caller's own tenant" -- a
+// scoped caller unblocking within the only tenant they're allowed to name.
+// nil means "not wired" (rbac off); handleUnblock treats that the same as
+// blocked == nil (feature not wired at all) and answers 404, matching
+// every other "not wired" route in this file rather than silently
+// allowing an unauthenticated unblock.
 type UnblockAuthorizer interface {
-	Allowed(r *http.Request) bool
+	AllowedFor(r *http.Request, targetTenant string) bool
 }
 
 // TenantScopeResolver derives the effective tenant filter for the
@@ -283,10 +291,6 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if !h.unblock.Allowed(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
 	identity := strings.TrimPrefix(r.URL.Path, "/dashboard/api/anomalies/blocked/")
 	if identity == "" {
 		http.Error(w, "identity is required", http.StatusBadRequest)
@@ -294,18 +298,22 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolved design (locked by the coordinator, not a guess): h.tenantFilter(r)
 	// returns "" in exactly two cases -- rbac off, or the caller holds a
-	// global (IsGlobal) grant -- both of which already carry authority over
-	// every tenant, same as every other route in this file. A scoped caller
-	// (non-empty tenantFilter) unblocks only within their own tenant, and
-	// that value is NEVER overridable by anything the client supplies --
-	// identical IDOR posture to every other route in this file. A caller
-	// with "" authority must name which tenant's block to clear via an
-	// explicit ?tenant= query parameter (safe: they already have
-	// cross-tenant authority, this is just picking which tenant, not
-	// escalating into one). Missing ?tenant= for such a caller is a 400,
-	// not a silent no-op -- BlockChecker.Unblock's tenantName=="" is a
-	// real, distinct key (unlike domain.Revoker's wildcard convention in
-	// Task 1), so an accidental empty string must never reach it.
+	// global (IsGlobal) dashboard:view grant -- both of which already carry
+	// read-scope over every tenant, same as every other route in this
+	// file. A scoped caller (non-empty tenantFilter) unblocks only within
+	// their own tenant, and that value is NEVER overridable by anything
+	// the client supplies -- identical IDOR posture to every other route
+	// in this file. A caller with "" scope must name which tenant's block
+	// to clear via an explicit ?tenant= query parameter -- but naming a
+	// tenant is not the same as having authority over it: h.unblock.AllowedFor
+	// below makes THAT decision from credential:revoke, the permission this
+	// mutation actually exercises, never from dashboard:view (see the
+	// final-review C1 finding: reusing dashboard:view's global-ness here
+	// was a privilege-escalation bug). Missing ?tenant= for such a caller
+	// is a 400, not a silent no-op -- BlockChecker.Unblock's
+	// tenantName=="" is a real, distinct key (unlike domain.Revoker's
+	// wildcard convention in Task 1), so an accidental empty string must
+	// never reach it.
 	targetTenant := h.tenantFilter(r)
 	if targetTenant == "" {
 		targetTenant = r.URL.Query().Get("tenant")
@@ -313,6 +321,10 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "tenant query parameter is required for a caller with cross-tenant authority", http.StatusBadRequest)
 			return
 		}
+	}
+	if !h.unblock.AllowedFor(r, targetTenant) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
 	}
 	if !h.blocked.Unblock(identity, targetTenant) {
 		http.Error(w, "not found", http.StatusNotFound)
