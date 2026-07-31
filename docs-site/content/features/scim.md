@@ -26,7 +26,9 @@ Serves `POST`/`GET /scim/v2/Users` and `GET`/`DELETE`/`PATCH
 verb set for `/scim/v2/Groups` (PATCH supports `{"op": "add"|"remove",
 "path": "members", "value": [...]}`). Every request needs
 `Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
-value, compared in constant time. A Group's `displayName` encodes the
+value, compared in constant time: a wrong or missing token gets `401`;
+an unknown user/group ID on `GET`/`DELETE`/`PATCH` gets `404`; a
+malformed PATCH body gets `400`. A Group's `displayName` encodes the
 RBAC grant it provisions: `wardline:tenant-<tenant>:role-<role>` makes
 every `active` member a `RoleBinding{Tenant: tenant}`;
 `wardline:role-<role>` (no tenant segment) makes every `active` member
@@ -37,7 +39,9 @@ re-derive immediately on every Group PATCH, additive on top of
 `rbac.yaml`'s static bindings (checked first), never a replacement.
 In-memory by default — provisioned Users/Groups/bindings are lost on
 restart; set `scim.persist_postgres: true` (requires
-`features.postgres_storage` also on) to persist them instead.
+`features.postgres_storage` also on) to persist group→member bindings
+in Postgres instead, so a replica restart or a second replica sees the
+same bindings.
 
 ## Known limitations
 
@@ -54,6 +58,23 @@ restart; set `scim.persist_postgres: true` (requires
   returns the full list, unchanged. Only the PATCH operations named
   above are recognized; every other operation or path is silently
   ignored, not rejected.
+- The `and`/`or`-combinator rejection above is a substring heuristic,
+  not a grammar parse: a legitimate `userName`/`displayName` value that
+  genuinely contains the space-padded substring `" and "` or `" or "`
+  (e.g. `"Sam and Dave Fan Club"`) is incorrectly rejected with 400,
+  since the filter parser can't distinguish that from an actual SCIM
+  `and`/`or` combinator without a real grammar tokenizer — deliberately
+  out of scope for the narrow eq-only support above.
+- **A global SCIM group (`wardline:role-<role>`, no tenant segment)
+  grants across every tenant's same-named identity, not just one.**
+  SCIM `Group` members are bare `userName`s with no tenant segment, and
+  the resulting `ClusterRoleBinding{Subject: identity}` is, by
+  definition, checked against every tenant — consistent with
+  `rbac.yaml`'s own no-tenant-means-global convention, but worth
+  calling out explicitly now that identity names are legitimately
+  per-tenant-unique (see [Credential issuance](/features/credential-issuance/)):
+  a global grant to `alice` reaches acme's `alice` and widgets-inc's
+  `alice` alike, even if only one of them was meant to have it.
 - Users track only `userName` and `active` — no name, email, or other
   SCIM User attributes.
 - A single shared bearer token, not per-client credentials or OAuth —

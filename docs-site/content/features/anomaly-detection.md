@@ -48,13 +48,18 @@ rejects 1.
 ## Known limitations
 
 - Scoped to a single identity's history on a single Wardline instance —
-  no cross-identity or cross-instance correlation. Federation (v2.0
-  roadmap) is the natural point to revisit this.
+  no cross-identity or cross-instance correlation. Federation shipped in
+  v2.0#1 (see [Roadmap](/advanced/roadmap/); it has no dedicated docs
+  page yet), but it doesn't close this gap: it correlates *alerts* — a
+  fingerprint-count threshold across instances — not raw per-identity
+  call history, so a correlated alert across instances never shares or
+  merges the underlying baseline state itself.
 - Baseline state (rate/novel-tool/`ml_score` history) resets on restart —
   in-memory only, no persistence. The failure mode is strictly more false
   positives right after a restart, never a missed detection.
-- `auto_block` is strictly time-bounded with no manual early unblock this
-  cycle — the block simply expires once its TTL elapses.
 - No dashboard frontend anomaly panel yet — ships `GET
   /dashboard/api/anomalies` and `GET /dashboard/api/anomalies/blocked`
-  JSON APIs only.
+  JSON APIs only. `auto_block` can be cleared early via `DELETE
+  /dashboard/api/anomalies/blocked/{identity}`, gated by the same
+  `credential:revoke` permission as credential revocation (when `rbac`
+  is on) — otherwise it simply expires once its TTL elapses.
