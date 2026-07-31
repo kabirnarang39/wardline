@@ -688,3 +688,29 @@ func TestHandler_UnblockRoute_NonDeleteMethod_Returns405(t *testing.T) {
 		t.Errorf("want 405 for non-DELETE method, got %d", rec.Code)
 	}
 }
+
+// TestHandler_UnblockRoute_TenantFilterIgnoresClientSuppliedTenantParam is
+// the unblock route's own IDOR regression test, mirroring
+// TestHandler_TenantFilterIgnoresClientSuppliedTenantParam for /api/audit:
+// a tenant-scoped caller (fakeTenantScopeResolver{tenant: "acme"}) cannot
+// widen or redirect their own unblock target by supplying a "tenant" query
+// parameter naming a different tenant. h.tenantFilter(r) -- derived only
+// from the RBAC-resolved caller identity -- must win; ?tenant= is honored
+// only for an unfiltered-authority caller (see the tests above), never to
+// override a scoped caller's own tenant.
+func TestHandler_UnblockRoute_TenantFilterIgnoresClientSuppliedTenantParam(t *testing.T) {
+	blocked := &fakeBlockedSource{unblockResult: true}
+	scope := fakeTenantScopeResolver{tenant: "acme"}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{})
+
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("want 204, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if blocked.lastUnblockIdentity != "alice" || blocked.lastUnblockTenant != "acme" {
+		t.Errorf("client-supplied ?tenant= must be ignored for a scoped caller -- Unblock called with (%q,%q), want (\"alice\",\"acme\")", blocked.lastUnblockIdentity, blocked.lastUnblockTenant)
+	}
+}

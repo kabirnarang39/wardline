@@ -249,6 +249,50 @@ func TestScopeResolver_AuthErrorFailsClosedNotUnfiltered(t *testing.T) {
 	}
 }
 
+// TestNewUnblockAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants
+// mirrors TestNewRevokeAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants:
+// newUnblockAuthorizer (main.go) is the extracted, directly-testable form
+// of the closure DELETE /dashboard/api/anomalies/blocked/{identity} is
+// gated by -- checker.Check must be reached with the caller's own
+// (identity, tenant) and rbacdomain.PermissionCredentialRevoke, and a
+// grant must result in Allowed() == true.
+func TestNewUnblockAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	if !authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/bob", nil)) {
+		t.Error("expected Allowed to return true when identity resolves and the checker grants credential:revoke")
+	}
+}
+
+// TestNewUnblockAuthorizer_DeniesWhenCheckerDenies mirrors
+// TestNewRevokeAuthorizer_DeniesWhenCheckerDenies: a caller who resolves
+// but lacks credential:revoke must be denied.
+func TestNewUnblockAuthorizer_DeniesWhenCheckerDenies(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: false})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	if authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)) {
+		t.Error("expected Allowed to return false when the checker denies credential:revoke")
+	}
+}
+
+// TestNewUnblockAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails
+// mirrors TestNewRevokeAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails:
+// an identity-resolution error must deny outright, without ever reaching
+// the checker (panicIfCalledAuthorizer proves this).
+func TestNewUnblockAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{err: errors.New("no identity")}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
+
+	authz := newUnblockAuthorizer(identityAuth, checker)
+	if authz.Allowed(httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)) {
+		t.Error("expected Allowed to return false when identity resolution fails")
+	}
+}
+
 // TestNewRevokeAuthorizer_DeniesCrossTenantRevoke covers the tenant-scoping
 // this task adds: bob is a tenant-scoped (RoleBinding, not
 // ClusterRoleBinding) admin for tenant "acme" and holds credential:revoke,

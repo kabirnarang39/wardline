@@ -602,22 +602,13 @@ func runServe(logger *slog.Logger, args []string) {
 		// undoes an automated enforcement decision, so it requires
 		// credential:revoke -- the closest existing permission tier for
 		// "an admin may override a security decision" -- rather than
-		// dashboard:view. Built the same way scopeResolver is just above
-		// (identityAuth captured by value, not by pointer like
-		// newRevokeAuthorizer's use of it) since both closures are built
-		// after every reassignment of identityAuth earlier in runServe has
-		// already happened. The handler itself (not this authorizer) is
-		// what enforces tenant scoping via h.tenantFilter/?tenant=, so this
-		// only needs to answer the permission question.
+		// dashboard:view. Extracted to newUnblockAuthorizer (mirroring
+		// newScopeResolver just above, and newRevokeAuthorizer below) so the
+		// permission wiring is directly unit-testable rather than only
+		// reachable through runServe's full wiring.
 		var unblockAuthorizer dashboardadapter.UnblockAuthorizer
 		if rbacEnabled {
-			unblockAuthorizer = unblockAuthorizerFunc(func(r *http.Request) bool {
-				who, callerTenant, err := identityAuth.Authenticate(r)
-				if err != nil {
-					return false
-				}
-				return rbacChecker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke)
-			})
+			unblockAuthorizer = newUnblockAuthorizer(identityAuth, rbacChecker)
 		}
 
 		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer)
@@ -869,6 +860,31 @@ func newScopeResolver(identityAuth proxyadapter.IdentityAuthenticator, checker *
 			return ""
 		}
 		return callerTenant
+	})
+}
+
+// newUnblockAuthorizer builds the dashboardadapter.UnblockAuthorizer wired
+// into DELETE /dashboard/api/anomalies/blocked/{identity} when rbac is on:
+// a caller is allowed through only if identity resolves and the resolved
+// identity holds credential:revoke -- the closest existing permission
+// tier for "an admin may override a security decision" (an unblock undoes
+// an automated enforcement decision, so it is gated separately from the
+// read-only dashboard:view permission the rest of the dashboard route
+// relies on). Unlike newRevokeAuthorizer, there is no cross-tenant check
+// here: identityAuth is captured by value (not by pointer), matching
+// newScopeResolver just above rather than newRevokeAuthorizer just below,
+// since this closure is likewise built after every reassignment of
+// identityAuth earlier in runServe has already happened. Tenant scoping
+// for the unblock target is entirely Handler's own job (h.tenantFilter /
+// ?tenant=, see dashboard/adapter/handler.go's handleUnblock) -- this
+// function only answers the permission question.
+func newUnblockAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.UnblockAuthorizer {
+	return unblockAuthorizerFunc(func(r *http.Request) bool {
+		who, callerTenant, err := identityAuth.Authenticate(r)
+		if err != nil {
+			return false
+		}
+		return checker.Check(who, callerTenant, rbacdomain.PermissionCredentialRevoke)
 	})
 }
 
