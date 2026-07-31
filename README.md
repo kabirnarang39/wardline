@@ -208,8 +208,9 @@ process (or running more than one replica) invalidates every outstanding
 token, the same "no shared state across restarts" posture already true of
 the budget limiter and dashboard ring buffer.
 
-mTLS/SPIFFE-style bootstrap is explicitly out of scope for this version.
-IdP federation (Okta, Entra, generic OIDC) is not — see SSO below.
+mTLS/SPIFFE-style bootstrap is supported as a third bootstrap source —
+see mTLS/SPIFFE bootstrap below. IdP federation (Okta, Entra, generic
+OIDC) is supported too — see SSO below.
 
 **Known limitation:** revocation is keyed by identity name only, not
 `(tenant, identity)` — this branch made identity names per-tenant-unique
@@ -249,6 +250,49 @@ token missing the configured tenant claim is rejected outright. See the
 [SSO docs page](https://kabirnarang39.github.io/wardline/docs/features/sso/)
 for the full config shape and known limitations (one IdP at a time, no
 OIDC discovery-document fetching).
+
+## mTLS/SPIFFE bootstrap
+
+Off by default. A third [Credential issuance](#credential-issuance)
+bootstrap adapter: instead of a preshared secret or an OIDC ID token,
+the caller's identity comes from an already-verified SPIFFE ID,
+forwarded by a terminating mTLS proxy or service mesh via a trusted HTTP
+header. Wardline never terminates TLS or parses an X.509 certificate
+itself — the existing Helm-chart decision that an Ingress/LB terminates
+TLS stands unchanged; this adapter adopts the same pattern every
+SPIFFE-aware mesh already uses (sidecar/gateway verifies the peer cert,
+forwards the verified SPIFFE ID as a header). Enable by pointing
+`credential_issuance`'s existing bootstrap source at `mtls`:
+
+```yaml
+features:
+  credential_issuance: true
+credential:
+  identities_file: "credentials.yaml"   # still required even for mtls
+  bootstrap_source: "mtls"              # "presharedsecret" (default) | "oidc" | "mtls"
+  mtls:
+    header: "X-Wardline-Verified-Spiffe-Id"   # required, no default
+```
+
+`credentials.yaml` maps SPIFFE IDs to identities (`spiffe_id` instead of
+`secret`):
+
+```yaml
+identities:
+  - name: payments-worker
+    spiffe_id: "spiffe://example.org/ns/prod/sa/payments-worker"
+    tenant: acme
+```
+
+**Trust boundary:** `credential.mtls.header` has no default value —
+Wardline trusts this header completely, so it is only safe when
+Wardline is unreachable except through the proxy/mesh that sets it, and
+that proxy/mesh strips or overwrites any client-supplied value of the
+same header. Wardline cannot verify either condition itself; this is a
+deployment requirement your network topology must guarantee. See the
+[mTLS/SPIFFE Bootstrap
+docs page](https://kabirnarang39.github.io/wardline/docs/features/mtls-bootstrap/)
+for the full design and known limitations.
 
 ## RBAC
 

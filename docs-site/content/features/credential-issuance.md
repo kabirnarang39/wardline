@@ -20,12 +20,13 @@ Tokens can be revoked; revocation is checked on every request.
 
 ## Known limitations
 
-- No mTLS/SPIFFE-style X.509-SVID bootstrap yet — designed for
-  (`domain.Bootstrapper` is the seam), not built.
 - IdP-backed bootstrap is OIDC only (`credential.bootstrap_source:
   oidc`, no discovery-document fetching) — see [SSO](/features/sso/).
   No other IdP protocol (SAML, generic non-OIDC federation) is
-  supported.
+  supported, and mTLS/SPIFFE bootstrap (`credential.bootstrap_source:
+  mtls`) trusts a single static header — see [mTLS/SPIFFE
+  Bootstrap](/features/mtls-bootstrap/) for its trust-boundary
+  requirements before enabling it.
 - No refresh tokens — rotation model is re-bootstrap with the same
   registration secret before expiry.
 - Revocation state is per-process unless `postgres_storage` is also on

@@ -38,10 +38,18 @@ policy-pack marketplace, HA deployment.
   Policy](/features/auto-generated-policy/) for what's deliberately out
   of scope (a live/continuous learning mode, tool-argument-aware
   inference).
+- **mTLS/SPIFFE credential bootstrap** — a third `credential_issuance`
+  bootstrap source that resolves an already-verified SPIFFE ID
+  (forwarded by a terminating mTLS proxy or mesh via a trusted header)
+  to a registered identity and tenant. Wardline never terminates TLS or
+  parses X.509 itself — the existing Ingress-terminates-TLS decision
+  stands. See [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/) for the
+  trust-boundary requirements and what's deliberately out of scope (a
+  SPIFFE Workload API client inside Wardline itself, dynamic
+  SPIFFE-ID-to-tenant mapping).
 
 ## v2.0 (planned, not yet shipped)
 
-- **mTLS/SPIFFE credential bootstrap** — as a credential-issuance adapter for secure bootstrapping.
 - **Refresh tokens + configurable JWT TTL** — issuing short-lived access tokens with refresh token rotation and tunable expiration.
 - **Distributed/shared budget-enforcement counters** — sharing budget state across replicas for consistent enforcement.
 - **Persistent anomaly-detection baseline state + dashboard panel** — storing detection baselines and surfacing anomalies in a UI panel.
