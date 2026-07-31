@@ -229,6 +229,26 @@ func TestNewRevokeAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t 
 // the checker denies first, or the grant is global).
 func noIdentityTenantLookup(identity string) (string, bool) { return "", false }
 
+// TestScopeResolver_AuthErrorFailsClosedNotUnfiltered proves newScopeResolver
+// (the extracted form of the dashboard's tenant-scope resolver closure,
+// see main.go) fails closed on an identity-resolution error: the returned
+// filter must be the dashboardFailClosedTenantFilter sentinel, never ""
+// (unfiltered/see-everything). checker.IsGlobal must also never be
+// reached -- an auth error must short-circuit before any RBAC check runs.
+func TestScopeResolver_AuthErrorFailsClosedNotUnfiltered(t *testing.T) {
+	identityAuth := fakeRevokeIdentityAuth{err: errors.New("no identity")}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
+
+	resolver := newScopeResolver(identityAuth, checker)
+	got := resolver.TenantFilter(httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil))
+	if got == "" {
+		t.Error("auth error must not resolve to the unfiltered (\"\") tenant filter")
+	}
+	if got != dashboardFailClosedTenantFilter {
+		t.Errorf("expected the fail-closed sentinel %q, got %q", dashboardFailClosedTenantFilter, got)
+	}
+}
+
 // TestNewRevokeAuthorizer_DeniesCrossTenantRevoke covers the tenant-scoping
 // this task adds: bob is a tenant-scoped (RoleBinding, not
 // ClusterRoleBinding) admin for tenant "acme" and holds credential:revoke,
