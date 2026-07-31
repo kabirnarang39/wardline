@@ -6,16 +6,25 @@
 // packages.
 package tenant
 
+import "strconv"
+
 // Default is the implicit tenant for any identity/rule/binding that
 // doesn't specify one — preserves every pre-this-cycle deployment's
 // behavior exactly (see docs/superpowers/specs/2026-07-30-sso-scim-tenant-isolation-design.md).
 const Default = "default"
 
-// Key composes a tenant and identity into one map key. \x00 can't appear
-// in either a tenant or identity string in practice (both come from JWT
-// claims / header values / SCIM UserNames), so this is a safe,
-// unambiguous join — avoids a struct key's extra allocation overhead on
-// hot paths that run per-request.
+// Key composes a tenant and identity into one map key using a
+// length-prefixed encoding, not a fixed separator byte. tenantName and
+// identity ultimately come from JWT claims / header values / SCIM
+// UserNames -- arbitrary strings with no charset restriction, since this
+// package doesn't control the input alphabet -- so ANY single-byte (or
+// fixed-string) separator is spoofable by construction:
+// Key("acme\x00", "alice") and Key("acme", "\x00alice") would otherwise
+// collide onto the identical string. Prefixing tenantName's length makes
+// the split point unambiguous regardless of what bytes either string
+// contains -- the same reasoning postgresSafeKey
+// (credential/adapter/postgres_revoker.go) applies to its own encoding
+// for the identical (tenant, identity) pair.
 //
 // Any map or table keyed on a per-identity value that this branch made
 // non-globally-unique (anomaly baselines/auto-blocks, the budget
@@ -27,5 +36,5 @@ const Default = "default"
 // rate-spike, auto-block, or budget exhaustion poison or lock out the
 // other tenant's identically-named identity.
 func Key(tenantName, identity string) string {
-	return tenantName + "\x00" + identity
+	return strconv.Itoa(len(tenantName)) + ":" + tenantName + identity
 }
