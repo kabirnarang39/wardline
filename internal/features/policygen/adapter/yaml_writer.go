@@ -27,7 +27,13 @@ type Meta struct {
 type ruleOut struct {
 	Identity string `yaml:"identity"`
 	Tool     string `yaml:"tool"`
-	Tenant   string `yaml:"tenant,omitempty"`
+	// No omitempty: Infer always normalizes Tenant to a non-empty value
+	// (see policygen/domain.Infer) precisely because policy.domain.Rule's
+	// Tenant == "" means global -- matches every tenant, not "untenanted".
+	// Dropping omitempty means a future caller of WriteFile that skips
+	// that normalization gets a visibly-wrong "tenant: ''" in the output
+	// instead of a silently-global rule.
+	Tenant string `yaml:"tenant"`
 	Effect   string `yaml:"effect"`
 }
 

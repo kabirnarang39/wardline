@@ -97,7 +97,7 @@ audit:
 		{"throttled_file", "the throttled call must be excluded"},
 		{"write_file", "the passthrough call must be excluded: its tool field is a raw JSON-RPC method name, not a policy-evaluated tool"},
 		{"bob", "the passthrough entry's caller-supplied identity must not appear"},
-		{`"*"`, "an observed allow must never synthesize a wildcard rule"},
+		{`tool: '*'`, "an observed allow must never synthesize a wildcard rule"},
 		{"mallory", "the wildcard-tool entry must be excluded entirely"},
 		{"list_tools", "the empty-identity entry must be excluded (LoadFile rejects an empty identity)"},
 		{`identity: ""`, "no rule may have an empty identity"},
