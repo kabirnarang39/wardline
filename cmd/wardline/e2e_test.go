@@ -909,6 +909,135 @@ credential:
 	}
 }
 
+// TestServeEndToEnd_MTLSTrustedHeaderStrippedBeforeUpstream proves the
+// real deployment shape for bootstrap_source: mtls end to end: the
+// terminating mesh sets its trusted SPIFFE-ID header on every request
+// that reaches Wardline, not just the bootstrap call, so it is still
+// present on the proxied tool call that follows the same one that
+// bootstrapped the token. Confirms the untrusted upstream MCP server
+// never receives it -- the same guarantee
+// TestHandler_TrustedIdentityHeaderStrippedBeforeForwarding proves at the
+// unit level, proven here through the real binary and a real proxied hop.
+func TestServeEndToEnd_MTLSTrustedHeaderStrippedBeforeUpstream(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: payments-worker
+    spiffe_id: "spiffe://example.org/ns/prod/sa/payments-worker"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const headerName = "X-Wardline-Verified-Spiffe-Id"
+	const mappedSpiffeID = "spiffe://example.org/ns/prod/sa/payments-worker"
+
+	var mu sync.Mutex
+	var gotTrustedHeader string
+	var upstreamHit bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotTrustedHeader = r.Header.Get(headerName)
+		upstreamHit = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	binPath := filepath.Join(dir, "wardline")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - identity: "payments-worker"
+    tool: "read_file"
+    effect: allow
+default: deny
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listenAddr := reserveAddr(t)
+	configPath := filepath.Join(dir, "wardline.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+  bootstrap_source: "mtls"
+  mtls:
+    header: "%s"
+audit:
+  output: stdout
+`, listenAddr, upstream.URL, policyPath, credentialsPath, headerName)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	var stderr safeBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+listenAddr)
+
+	// Bootstrap a real token via the trusted header.
+	tokenResp := postCredentialsTokenWithHeader(t, listenAddr, headerName, mappedSpiffeID)
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a mapped spiffe id, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+
+	// The real deployment shape: the mesh sets this header on ALL traffic
+	// reaching Wardline, not just the bootstrap request -- so it's still
+	// present here, alongside the bearer token, on the proxied tool call.
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr,
+		bytes.NewBufferString(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tokenBody.Token)
+	req.Header.Set(headerName, mappedSpiffeID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the allowed proxied call, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !upstreamHit {
+		t.Fatal("expected the upstream to be reached for an allowed call")
+	}
+	if gotTrustedHeader != "" {
+		t.Errorf("expected the upstream to never see the trusted mtls header, got %q", gotTrustedHeader)
+	}
+}
+
 // TestServeEndToEnd_AllFeaturesCombined is the v0.5 roadmap's final
 // comprehensive check: every optional feature this project has built
 // (OPA policy backend, budget enforcement, OTel tracing, the dashboard,

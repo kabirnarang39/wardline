@@ -99,13 +99,20 @@ type Handler struct {
 	tracer           trace.Tracer
 	logger           *slog.Logger
 	now              func() time.Time
+	// trustedIdentityHeader names the header credential/adapter.Handler
+	// trusts to carry an already-verified SPIFFE ID under
+	// bootstrap_source: mtls. Non-empty only in that mode; stripped
+	// before forwarding for exactly the reason Authorization is (see
+	// forward()).
+	trustedIdentityHeader string
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
 // gated by a feature flag (see CLAUDE.md "Feature flags"), and callers that
 // don't wire one up (including every existing test in this package) get the
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker) *Handler {
+// trustedIdentityHeader is "" for every bootstrap source but mtls.
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -124,6 +131,8 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 		tracer:           tracer,
 		logger:           logger,
 		now:              time.Now,
+
+		trustedIdentityHeader: trustedIdentityHeader,
 	}
 }
 
@@ -247,6 +256,14 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 	// credential of its own today, so nothing downstream depends on this
 	// header surviving.
 	r.Header.Del("Authorization")
+
+	// mtls bootstrap mode trusts this header the same way Authorization
+	// is trusted above -- same rationale, same fix: never let it reach
+	// the untrusted upstream, which would otherwise learn the exact
+	// string it needs to mint its own Wardline bearer tokens.
+	if h.trustedIdentityHeader != "" {
+		r.Header.Del(h.trustedIdentityHeader)
+	}
 
 	// Inject Wardline's own span context into the outgoing request headers
 	// before proxying, overwriting any traceparent the caller sent. Without

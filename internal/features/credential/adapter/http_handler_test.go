@@ -21,8 +21,19 @@ var errRevokeBackendUnavailable = errors.New("revocation backend unavailable")
 type fakeHandlerBootstrapper struct{}
 
 func (fakeHandlerBootstrapper) Authenticate(secret string) (string, string, error) {
-	if secret == "good-secret" {
+	switch secret {
+	case "good-secret":
 		return "agent-abc123", "", nil
+	case "attacker-secret":
+		// A second, distinct identity this fake bootstrapper genuinely
+		// recognizes -- see TestHandleToken_MTLSHeaderRepeatedReturns401Generic:
+		// the repeated-header test needs the attacker's pre-set value to
+		// itself authenticate successfully (as the WRONG identity) so the
+		// test actually discriminates a Header.Get-based regression
+		// (silent 200 as agent-attacker) from the fixed behavior (401),
+		// rather than both happening to 401 for the unrelated reason that
+		// an arbitrary attacker string fails Authenticate anyway.
+		return "agent-attacker", "", nil
 	}
 	return "", "", domain.ErrInvalidCredentials
 }
@@ -463,6 +474,36 @@ func TestHandleToken_MTLSHeaderUnmappedValueReturns401Generic(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestHandleToken_MTLSHeaderRepeatedReturns401Generic proves the
+// append-mode mesh case fails closed: an attacker that pre-sets the
+// trusted header sends its value FIRST, so a Header.Get-based read would
+// hand the attacker's string to the bootstrapper and ignore the mesh's
+// appended, genuinely-verified one. Two values must be rejected, not
+// disambiguated. The attacker's pre-set value ("attacker-secret") is
+// itself a secret fakeHandlerBootstrapper genuinely authenticates (as a
+// different identity, agent-attacker) -- deliberately, so this test
+// actually discriminates: a Header.Get-based regression would return 200
+// with a token for the WRONG identity here, not just an unrelated 401,
+// which is what makes this the operationally dangerous shape of the bug
+// and what a naive "first value happens to be garbage" test would miss.
+func TestHandleToken_MTLSHeaderRepeatedReturns401Generic(t *testing.T) {
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
+	revocation := usecase.NewRevocationService(&recordingRevoker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, logger, nil, noTargetTenant, "X-Wardline-Verified-Spiffe-Id")
+
+	req := httptest.NewRequest(http.MethodPost, "/credentials/token", nil)
+	req.Header.Add("X-Wardline-Verified-Spiffe-Id", "attacker-secret") // arrives first; itself authenticates, as the WRONG identity
+	req.Header.Add("X-Wardline-Verified-Spiffe-Id", "good-secret")     // mesh's appended, real value
+	w := httptest.NewRecorder()
+
+	h.HandleToken(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a repeated trusted header, got %d (body: %s)", w.Code, w.Body.String())
 	}
 }
 
