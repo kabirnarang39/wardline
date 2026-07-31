@@ -31,6 +31,14 @@ func TestRevocationService_RevokeAlsoInvalidatesRefreshTokens(t *testing.T) {
 	if refreshStore.revokedIdent != "agent-abc123" || refreshStore.revokedTenant != "acme" {
 		t.Errorf("expected RevokeAllForIdentity called with (\"acme\", \"agent-abc123\"), got (%q, %q)", refreshStore.revokedTenant, refreshStore.revokedIdent)
 	}
+	// Restores the coverage a prior version of this test provided
+	// (TestRevocationService_RevokePassesTenantThrough): a future
+	// refactor that swaps or drops the (tenantName, identity) args
+	// passed to the underlying Revoker.Revoke call must fail here, not
+	// just in the RefreshStore half of this method.
+	if revoker.lastTenant != "acme" || revoker.lastIdentity != "agent-abc123" {
+		t.Errorf("expected Revoker.Revoke called with (\"acme\", \"agent-abc123\"), got (%q, %q)", revoker.lastTenant, revoker.lastIdentity)
+	}
 }
 
 func TestRevocationService_RevokePropagatesRevokerError(t *testing.T) {
