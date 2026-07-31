@@ -21,12 +21,20 @@ type tokenRequest struct {
 	Secret string `json:"secret"`
 }
 
+// tokenResponse is returned by both HandleToken (initial bootstrap) and
+// HandleRefresh (rotation) -- both mint the identical (access token,
+// refresh token) pair shape.
 type tokenResponse struct {
-	Token string `json:"token"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type revokeRequest struct {
 	Identity string `json:"identity"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
 }
 
 // RevokeAuthorizer decides whether a non-loopback caller may still
@@ -49,6 +57,7 @@ type RevokeAuthorizer interface {
 type Handler struct {
 	issuance         *usecase.IssuanceService
 	revocation       *usecase.RevocationService
+	refresh          *usecase.RefreshService
 	logger           *slog.Logger
 	revokeAuthorizer RevokeAuthorizer
 	// targetTenant resolves the tenant of the identity being revoked (not
@@ -63,10 +72,20 @@ type Handler struct {
 	// when non-empty. Empty (the default) preserves the existing
 	// body-decoding behavior exactly for presharedsecret/oidc.
 	mtlsHeader string
+
+	// revocationHorizon sizes a revocation entry's expiry
+	// (h.now().Add(revocationHorizon) in HandleRevoke) -- set at
+	// construction to the operator-configured access-token TTL
+	// (config.CredentialConfig.AccessTokenTTLSeconds). Handler only
+	// holds the narrower domain.Issuer/domain.Verifier interfaces (via
+	// IssuanceService/VerificationService), not a *JWTIssuerVerifier
+	// directly, so this is how it learns the configured TTL rather than
+	// reading a since-removed package constant.
+	revocationHorizon time.Duration
 }
 
-func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer, targetTenant func(identity string) (tenant string, ok bool), mtlsHeader string) *Handler {
-	return &Handler{issuance: issuance, revocation: revocation, logger: logger, revokeAuthorizer: revokeAuthorizer, targetTenant: targetTenant, now: time.Now, mtlsHeader: mtlsHeader}
+func NewHandler(issuance *usecase.IssuanceService, revocation *usecase.RevocationService, refresh *usecase.RefreshService, logger *slog.Logger, revokeAuthorizer RevokeAuthorizer, targetTenant func(identity string) (tenant string, ok bool), mtlsHeader string, revocationHorizon time.Duration) *Handler {
+	return &Handler{issuance: issuance, revocation: revocation, refresh: refresh, logger: logger, revokeAuthorizer: revokeAuthorizer, targetTenant: targetTenant, now: time.Now, mtlsHeader: mtlsHeader, revocationHorizon: revocationHorizon}
 }
 
 func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +119,7 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		secret = req.Secret
 	}
-	token, err := h.issuance.Bootstrap(secret)
+	accessToken, refreshToken, err := h.issuance.Bootstrap(secret)
 	if err != nil {
 		// Generic message regardless of cause (unknown identity vs. wrong
 		// secret/spiffe id) — avoids identity enumeration, see design doc.
@@ -110,7 +129,37 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(tokenResponse{Token: token})
+	_ = json.NewEncoder(w).Encode(tokenResponse{Token: accessToken, RefreshToken: refreshToken})
+}
+
+// HandleRefresh exchanges a still-valid, not-yet-used refresh token for
+// a new (access token, refresh token) pair, without requiring the
+// original bootstrap credential again. Same generic-401,
+// never-log-the-token-value posture as every other credential-rejection
+// path in this handler.
+func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTokenRequestBodyBytes) // 64 KiB — generous for a {"refresh_token":"..."} body
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	accessToken, newRefreshToken, err := h.refresh.Refresh(req.RefreshToken)
+	if err != nil {
+		// Generic message regardless of cause (unknown token, already
+		// rotated/used, expired, revoked identity) — avoids leaking which
+		// specific reason a refresh token was rejected, same discipline as
+		// HandleToken. The refresh token value itself must never be logged.
+		h.logger.Warn("credential refresh failed", "remote_addr", r.RemoteAddr)
+		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(tokenResponse{Token: accessToken, RefreshToken: newRefreshToken})
 }
 
 func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
@@ -134,8 +183,8 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body: identity is required")
 		return
 	}
-	// expiresAt is now+tokenTTL: the worst-case remaining lifetime of any
-	// token already issued to this identity — every outstanding and
+	// expiresAt is now+revocationHorizon: the worst-case remaining lifetime
+	// of any token already issued to this identity — every outstanding and
 	// future-until-expiry token is rejected from this point on. See
 	// design doc "Error handling".
 	// targetTenant resolves the identity being revoked's own tenant so
@@ -144,7 +193,7 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// static registry) falls back to "" -- domain.Revoker's documented
 	// wildcard, matching the pre-scoping behavior for those cases.
 	targetTenant, _ := h.targetTenant(req.Identity)
-	if err := h.revocation.Revoke(targetTenant, req.Identity, h.now().Add(tokenTTL)); err != nil {
+	if err := h.revocation.Revoke(targetTenant, req.Identity, h.now().Add(h.revocationHorizon)); err != nil {
 		// A 204 here would tell the caller a security action succeeded
 		// when it didn't -- an operator revoking a compromised identity
 		// needs to know the revocation was NOT persisted, not silently
