@@ -107,7 +107,14 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// token already issued to this identity — every outstanding and
 	// future-until-expiry token is rejected from this point on. See
 	// design doc "Error handling".
-	if err := h.revocation.Revoke(req.Identity, h.now().Add(tokenTTL)); err != nil {
+	// ponytail: tenantName "" here is domain.Revoker's documented wildcard
+	// (target's tenant not resolved) -- a real, safe revoke, not a stub.
+	// Resolving the target's actual tenant so a scoped revoke doesn't
+	// over-revoke other tenants sharing the identity name is a separate,
+	// larger change (main.go's identityTenantLookup wiring + a new
+	// NewHandler parameter); out of scope here, this only restores the
+	// build after RevocationService.Revoke's signature widened.
+	if err := h.revocation.Revoke("", req.Identity, h.now().Add(tokenTTL)); err != nil {
 		// A 204 here would tell the caller a security action succeeded
 		// when it didn't -- an operator revoking a compromised identity
 		// needs to know the revocation was NOT persisted, not silently

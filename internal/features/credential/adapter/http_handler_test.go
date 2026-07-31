@@ -34,19 +34,20 @@ func (fakeHandlerIssuer) Issue(identity, tenant string) (string, error) {
 }
 
 type recordingRevoker struct {
+	tenant    string
 	identity  string
 	expiresAt time.Time
 	err       error // when set, Revoke returns this instead of recording
 }
 
-func (r *recordingRevoker) Revoke(identity string, expiresAt time.Time) error {
+func (r *recordingRevoker) Revoke(tenantName, identity string, expiresAt time.Time) error {
 	if r.err != nil {
 		return r.err
 	}
-	r.identity, r.expiresAt = identity, expiresAt
+	r.tenant, r.identity, r.expiresAt = tenantName, identity, expiresAt
 	return nil
 }
-func (r *recordingRevoker) IsRevoked(identity string) bool { return false }
+func (r *recordingRevoker) IsRevoked(tenantName, identity string) bool { return false }
 
 func newTestHandler(revoker domain.Revoker) *adapter.Handler {
 	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{})
