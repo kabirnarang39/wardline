@@ -33,6 +33,10 @@ type BudgetConfig struct {
 	// nested tenants.acme.tenants.* entry is syntactically valid YAML that
 	// is silently ignored. Do not nest.
 	Tenants map[string]BudgetConfig `yaml:"tenants"`
+	// Tools holds optional per-tool overrides, keyed by tool name -- same
+	// recursively-self-typed shape and same "only one level deep is wired
+	// up, do not nest" caveat as Tenants above.
+	Tools map[string]BudgetConfig `yaml:"tools"`
 }
 
 // maxBudgetWindowSeconds bounds budget.window_seconds to 24h, a reasonable
@@ -302,6 +306,26 @@ func (c *Config) validate() error {
 				problems = append(problems, fmt.Sprintf("budget.tenants.%s.window_seconds must be > 0 when features.budget_enforcement is true", name))
 			} else if t.WindowSeconds > maxBudgetWindowSeconds {
 				problems = append(problems, fmt.Sprintf("budget.tenants.%s.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", name, maxBudgetWindowSeconds, t.WindowSeconds))
+			}
+		}
+		// Same validation, mirrored for per-tool overrides.
+		toolNames := make([]string, 0, len(c.Budget.Tools))
+		for name := range c.Budget.Tools {
+			toolNames = append(toolNames, name)
+		}
+		sort.Strings(toolNames)
+		for _, name := range toolNames {
+			t := c.Budget.Tools[name]
+			if name == "" {
+				problems = append(problems, "budget.tools must not have an empty-string tool key")
+			}
+			if t.RequestsPerWindow <= 0 {
+				problems = append(problems, fmt.Sprintf("budget.tools.%s.requests_per_window must be > 0 when features.budget_enforcement is true", name))
+			}
+			if t.WindowSeconds <= 0 {
+				problems = append(problems, fmt.Sprintf("budget.tools.%s.window_seconds must be > 0 when features.budget_enforcement is true", name))
+			} else if t.WindowSeconds > maxBudgetWindowSeconds {
+				problems = append(problems, fmt.Sprintf("budget.tools.%s.window_seconds must be <= %d (24h) when features.budget_enforcement is true, got %d", name, maxBudgetWindowSeconds, t.WindowSeconds))
 			}
 		}
 	}

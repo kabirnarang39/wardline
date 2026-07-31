@@ -344,6 +344,9 @@ func runServe(logger *slog.Logger, args []string) {
 	for tenantName, tenantCfg := range cfg.Budget.Tenants {
 		limiter.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
 	}
+	for toolName, toolCfg := range cfg.Budget.Tools {
+		limiter.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
 	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)
