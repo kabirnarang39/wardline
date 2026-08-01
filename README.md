@@ -502,7 +502,19 @@ rather than on every call or at shutdown, so a baseline can be up to one
 GC interval stale relative to the most recent traffic regardless of
 whether the process crashed or stopped cleanly. This is per-instance
 persistence, not cross-replica sharing — each replica still checkpoints
-and reloads only the traffic it itself has seen; see
+and reloads only the traffic it itself has seen, mechanically: every
+persisted row is keyed on `(instance_id, tenant, identity)`, not just
+`(tenant, identity)`, where `instance_id` defaults to this replica's own
+hostname (the same derivation federation's own instance ID uses — see
+[Federation](#federation)), so two replicas sharing one Postgres DSN each
+get their own row per identity instead of last-writer-wins overwriting
+each other's checkpoint. A consequence worth knowing: if a replica's
+hostname ever changes (e.g. pod recreation on a rolling deploy), its old
+rows are orphaned under the previous hostname — never reloaded again,
+and not currently pruned — which is an acceptable, if unbounded, cost
+matching this feature's existing "reappears as novel" fallback posture;
+see [Anomaly detection](/features/anomaly-detection/)'s Known
+Limitations for the pruning caveat. See
 [Credential issuance](#credential-issuance) for the same
 `postgres_storage`-gated pattern applied to revocation state, and the
 "Still per-replica" list in [HA deployment](#ha-deployment) for what
@@ -782,10 +794,13 @@ Then visit `http://<listen-addr>/dashboard/`.
 - **Anomalies** — a live-updating table of detected anomalies (same
   after-ID polling pattern as Activity), backed by `GET
   /dashboard/api/anomalies` — see [Anomaly detection](#anomaly-detection).
-  Empty when `anomaly_detection` is off (the underlying API answers
-  `404`, the same "not wired" posture as every other feature-gated
-  dashboard route). Read-only: it does not surface a way to clear an
-  `auto_block` early — that's still `DELETE
+  The nav item is always shown, even when `anomaly_detection` is off (the
+  underlying API then answers `404` on every poll, the same "not wired"
+  posture as every other feature-gated dashboard route) — the panel
+  itself renders its own "No anomalies detected yet." empty state in
+  that case rather than a permanently-blank table, and logs the poll
+  failure to the browser console. Read-only: it does not surface a way
+  to clear an `auto_block` early — that's still `DELETE
   /dashboard/api/anomalies/blocked/{identity}`, API-only.
 - **Policy** — the active policy backend and raw policy file content, as
   loaded at startup (not hot-reloaded — restart Wardline after editing
@@ -838,9 +853,9 @@ automatically.
 
 `postgres_storage` is not audit-only, though: it's the shared flag every
 Postgres-backed feature keys off. Each one you also enable (credential
-revocation, refresh tokens, budget counters, SCIM group bindings)
-creates its own table in the same database on first connection, and
-manages its own connection pool.
+revocation, refresh tokens, budget counters, SCIM group bindings,
+anomaly-detection baselines) creates its own table in the same database
+on first connection, and manages its own connection pool.
 
 **A real tradeoff, not an oversight:** each audit write is a synchronous
 SQL `INSERT` on the client-visible request path — it happens before the
