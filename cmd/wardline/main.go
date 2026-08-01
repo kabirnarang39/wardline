@@ -344,10 +344,19 @@ func runServe(logger *slog.Logger, args []string) {
 	decider := proxyusecase.NewDecider(engine)
 
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
+	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
+	// Gated on budget_enforcement as well as postgres_storage, mirroring
+	// how scim and credential_issuance each gate their own Postgres branch
+	// on their own feature flag first. Without the budget_enforcement
+	// check, an operator who turned on postgres_storage alone would get
+	// the budget_buckets table created, a 10-connection pool opened, and a
+	// possible os.Exit(1) on init failure -- all for a feature they never
+	// enabled. The Checker no-ops on the flag regardless of which Limiter
+	// backs it, so InMemoryLimiter is the harmless choice when off.
 	var limiter budgetdomain.Limiter
 	var budgetLimiterCloser io.Closer
-	if postgresStorageEnabled {
+	if postgresStorageEnabled && budgetEnforcementEnabled {
 		pl, err := budgetadapter.NewPostgresLimiter(cfg.Audit.PostgresDSN, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
 		if err != nil {
 			logger.Error("failed to initialize postgres budget limiter", "error", err)
@@ -371,7 +380,12 @@ func runServe(logger *slog.Logger, args []string) {
 			il.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
 		}
 		limiter = il
-		logger.Warn("budget enforcement is in-process only; safe for exactly one replica -- enable features.postgres_storage to share across replicas")
+		// Only warn when the feature is actually on -- a disabled feature
+		// is silent in this codebase, and the "budget is not being
+		// enforced" Info log above already covers the off case.
+		if budgetEnforcementEnabled {
+			logger.Warn("budget enforcement is in-process only; safe for exactly one replica -- enable features.postgres_storage to share across replicas")
+		}
 	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
