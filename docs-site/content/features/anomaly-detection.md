@@ -45,6 +45,26 @@ bursty — so scoring such a window is how an identity that simply went
 quiet ends up blocked. `min_calls` must be at least 2; config validation
 rejects 1.
 
+Every identity's baseline state is garbage-collected on
+`anomaly.gc_interval_seconds` (an entry idle for more than 2x that
+interval is dropped, reappearing as "novel" on its next call — the same
+conservative posture as a restart). When `features.postgres_storage` is
+also on, that same GC tick doubles as a checkpoint: the full set of
+per-identity baselines is upserted into a shared Postgres table, and
+reloaded once at startup — so a restart no longer wipes every identity's
+history at once. Because the save only happens on the GC tick, not on
+every call or on shutdown, a baseline can be up to one
+`gc_interval_seconds` stale relative to the most recent traffic, whether
+the process ends in a crash or a graceful stop. This is single-instance
+persistence, not cross-instance sharing — each replica still checkpoints
+and reloads only the traffic it itself has seen (see "Known limitations"
+below for what that does and doesn't cover).
+
+When `features.web_ui` is also on, the dashboard's **Anomalies** panel
+gives this feature's `GET /dashboard/api/anomalies` a live view in the
+UI — see [Observability](/deployment/observability/)'s "Live dashboard"
+section.
+
 ## Known limitations
 
 - Scoped to a single identity's history on a single Wardline instance —
@@ -55,12 +75,23 @@ rejects 1.
   fingerprint-count threshold across instances — not raw per-identity
   call history, so a correlated alert across instances never shares or
   merges the underlying baseline state itself.
-- Baseline state (rate/novel-tool/`ml_score` history) resets on restart —
-  in-memory only, no persistence. The failure mode is strictly more false
-  positives right after a restart, never a missed detection.
-- No dashboard frontend anomaly panel yet — ships `GET
-  /dashboard/api/anomalies` and `GET /dashboard/api/anomalies/blocked`
-  JSON APIs only. `auto_block` can be cleared early via `DELETE
+- Baseline state (rate/novel-tool/`ml_score` history) resets on
+  restart, in-memory only — UNLESS `features.postgres_storage` is also
+  on: baselines then persist to a shared Postgres table and reload at
+  startup, checkpointed on the same interval as GC
+  (`anomaly.gc_interval_seconds`), the same way credential revocation
+  and refresh tokens already do for their own state. See [HA
+  deployment](/features/ha-deployment/) and [Credential
+  issuance](/features/credential-issuance/)'s sibling Postgres-backed
+  features for the general pattern. Persistence is still per-instance,
+  not per-fleet: it does not share baselines across replicas (each
+  replica keeps learning only from the traffic it itself sees — see HA
+  deployment's per-replica limitations), and there's no schema-migration
+  mechanism for the persisted JSON shape if it ever needs to change.
+- No dashboard panel for currently-blocked identities yet — only the
+  detected-anomalies view has one (see above); blocked identities still
+  ship as the `GET /dashboard/api/anomalies/blocked` JSON API only.
+  `auto_block` can be cleared early via `DELETE
   /dashboard/api/anomalies/blocked/{identity}`, gated by the same
   `credential:revoke` permission as credential revocation (when `rbac`
   is on) — otherwise it simply expires once its TTL elapses.
