@@ -25,9 +25,14 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
 
 ## Known limitations
 
-- Budget enforcement and anomaly-detection state stay per-replica —
-  already-documented limitations, not fixed by this cycle (effective
-  budget scales with replica count; anomaly signal is diluted across
+- Budget enforcement is per-replica **unless `postgres_storage` is also
+  on** — with it, the per-window counters live in the shared Postgres
+  database and one configured limit is enforced across the whole fleet,
+  the same pattern as credential revocation above. Without it the
+  limiter is in-process and the effective budget scales with replica
+  count. See [Budget Enforcement](/features/budget-enforcement/).
+- Anomaly-detection state stays per-replica — an already-documented
+  limitation, not fixed by this cycle (anomaly signal is diluted across
   replicas).
 - The dashboard's live audit view stays per-replica — no cluster-wide
   aggregation yet.

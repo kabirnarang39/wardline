@@ -50,6 +50,16 @@ tenant/tool buckets, so the effective limit no longer scales with
 replica count. No separate config flag: the same `budget:` block above
 applies unchanged, only the storage backend changes.
 
+**Postgres-backed checks fail open.** If the database query errors or
+times out (5-second bound per check), the call is admitted rather than
+rejected — availability over enforcement, the same posture credential
+revocation takes. A fail-open decision is not silent: it logs a warning
+*and* records the audit entry with decision `allow` and a reason of
+`budget check failed open: <cause>`, where an ordinary allow records an
+empty reason. Alert on that reason if you need to know when enforcement
+was skipped — `/readyz` only pings Postgres, so it stays green through
+the query-level failures that cause this.
+
 ## Known limitations
 
 - Dollar-cost/token-based budgets aren't supported (needs LLM-provider-
@@ -73,3 +83,18 @@ applies unchanged, only the storage backend changes.
   as a per-identity quota, so size `budget.tenants`/`budget.tools`
   overrides for the bucket's aggregate traffic, not per-identity
   traffic.
+- **Postgres-backed budget checks compete for connections with every
+  other Postgres-backed feature.** Each tier is its own round trip, so a
+  single request can cost up to three (tool, tenant, identity) when both
+  override kinds are configured. Every Postgres-backed feature — audit,
+  revocation, refresh tokens, SCIM, and the limiter — manages its own
+  independent connection pool rather than sharing one, so a replica with
+  `postgres_storage` on can hold tens of connections against a database
+  whose default `max_connections` is often 100. Under sustained load
+  beyond the available connections, a budget check blocks waiting for a
+  connection, hits its 5-second timeout, and **fails open** (see the
+  fail-open behavior above) rather than enforcing the limit — meaning
+  the harder the load spike, the more likely enforcement is skipped.
+  Size your pools and `max_connections` for the number of replicas ×
+  Postgres-backed features you actually run; a single shared pool across
+  features is a candidate for a future cycle.
