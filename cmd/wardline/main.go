@@ -147,6 +147,7 @@ func runServe(logger *slog.Logger, args []string) {
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
 	anomalyDetectionEnabled := featureFlags.Enabled("anomaly_detection")
+	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
@@ -160,6 +161,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var anomalyGCStop chan struct{}
 	var blockChecker *anomalyusecase.BlockChecker
 	var autoBlockGCStop chan struct{}
+	var anomalyBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
 		anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
 		if err != nil {
@@ -195,17 +197,50 @@ func runServe(logger *slog.Logger, args []string) {
 		onAnomalyWriteErr := func(err error) {
 			logger.Error("anomaly write failed", "error", err)
 		}
-		// blockChecker is passed through two branches, not directly as the
-		// possibly-nil *BlockChecker variable, for the same typed-nil
-		// reason as the liveSink switch below: a nil *BlockChecker placed
-		// into NewDetector's blocker interface parameter would be a
-		// non-nil interface wrapping a nil pointer, which Detector's own
-		// "d.blocker != nil" guard can't see -- it would call Block on a
-		// nil receiver on the first ml_score hit instead of skipping.
-		if blockChecker != nil {
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now)
+
+		// Gated on anomaly_detection as well as postgres_storage, mirroring
+		// how scim, credential_issuance, and budget_enforcement each gate
+		// their own Postgres branch on their own feature flag first. Without
+		// the anomaly_detection check, an operator who turned on
+		// postgres_storage alone would get the anomaly_baselines table
+		// touched and a connection pool opened for a feature they never
+		// enabled.
+		var baselineStore *anomalyadapter.PostgresBaselineStore
+		if postgresStorageEnabled {
+			bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
+				os.Exit(1)
+			}
+			baselineStore = bs
+			anomalyBaselineStoreCloser = bs
+			logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
 		} else {
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now)
+			logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
+		}
+
+		// blockChecker and baselineStore are each passed through explicit
+		// nil branches, not directly as their possibly-nil pointer
+		// variables, for the same typed-nil reason as the liveSink switch
+		// below: a nil *BlockChecker/*PostgresBaselineStore placed into
+		// NewDetector's blocker/store interface parameters would be a
+		// non-nil interface wrapping a nil pointer, which Detector's own
+		// "!= nil" guards can't see -- it would call through to a nil
+		// receiver on the first hit instead of skipping.
+		switch {
+		case blockChecker != nil && baselineStore != nil:
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now, baselineStore)
+		case blockChecker != nil:
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now, nil)
+		case baselineStore != nil:
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now, baselineStore)
+		default:
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now, nil)
+		}
+
+		if err := anomalyDetector.LoadBaselines(); err != nil {
+			logger.Error("failed to load persisted anomaly baselines", "error", err)
+			os.Exit(1)
 		}
 
 		anomalyGCStop = make(chan struct{})
@@ -343,7 +378,6 @@ func runServe(logger *slog.Logger, args []string) {
 
 	decider := proxyusecase.NewDecider(engine)
 
-	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
 	// Gated on budget_enforcement as well as postgres_storage, mirroring
@@ -769,6 +803,11 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("budget limiter shutdown failed", "error", err)
 				}
 			}
+			if anomalyBaselineStoreCloser != nil {
+				if err := anomalyBaselineStoreCloser.Close(); err != nil {
+					logger.Error("anomaly baseline store shutdown failed", "error", err)
+				}
+			}
 			if oidcCloser != nil {
 				if err := oidcCloser.Close(); err != nil {
 					logger.Error("oidc bootstrapper shutdown failed", "error", err)
@@ -862,6 +901,11 @@ func runServe(logger *slog.Logger, args []string) {
 	if budgetLimiterCloser != nil {
 		if err := budgetLimiterCloser.Close(); err != nil {
 			logger.Error("budget limiter shutdown failed", "error", err)
+		}
+	}
+	if anomalyBaselineStoreCloser != nil {
+		if err := anomalyBaselineStoreCloser.Close(); err != nil {
+			logger.Error("anomaly baseline store shutdown failed", "error", err)
 		}
 	}
 	if oidcCloser != nil {
