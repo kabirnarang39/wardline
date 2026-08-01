@@ -449,3 +449,48 @@ func TestPostgresLimiter_ToolDenialDoesNotConsumeTenantOrIdentityBudget(t *testi
 		t.Fatalf("expected the tenant bucket to still have budget (a denied tool-tier call must not consume tenant budget), got denied: %s", v.Reason)
 	}
 }
+
+// TestPostgresLimiter_CrossInstanceBudgetIsShared is the actual HA
+// scenario this whole plan exists for: two separate *PostgresLimiter
+// instances (simulating two wardline replicas) against the same DSN --
+// a budget consumed through one replica is visible to the other, proven
+// against a real shared database, not just the same in-process struct.
+// This is the property InMemoryLimiter's own doc comment documents as
+// NOT holding ("running multiple replicas gives each its own
+// independent budget") -- this test proves PostgresLimiter closes that
+// gap.
+func TestPostgresLimiter_CrossInstanceBudgetIsShared(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	replicaA, err := adapter.NewPostgresLimiter(dsn, 3, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("replicaA: %v", err)
+	}
+	defer func() { _ = replicaA.Close() }()
+
+	replicaB, err := adapter.NewPostgresLimiter(dsn, 3, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("replicaB: %v", err)
+	}
+	defer func() { _ = replicaB.Close() }()
+
+	now := time.Now()
+	// Alternate calls between the two replicas -- same identity/tenant,
+	// simulating a load balancer fanning one caller's traffic across
+	// both. With a limit of 3, only the first 3 calls total (across
+	// BOTH replicas combined) may be admitted.
+	replicas := []*adapter.PostgresLimiter{replicaA, replicaB, replicaA, replicaB, replicaA}
+	admitted := 0
+	for i, r := range replicas {
+		v := r.Allow("agent-abc123", "acme", "read_file", now)
+		if v.Allowed {
+			admitted++
+		}
+		t.Logf("call %d (replica %d): allowed=%v", i+1, i%2, v.Allowed)
+	}
+
+	if admitted != 3 {
+		t.Errorf("expected exactly 3 of 5 calls fanned across two replicas to be admitted (shared budget), got %d -- if this is 3 per replica (6 total possible), the replicas are NOT sharing state", admitted)
+	}
+}
