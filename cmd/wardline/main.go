@@ -1471,10 +1471,16 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 // federation.instance_id, for topologies where os.Hostname() isn't
 // unique per process -- see FederationConfig.InstanceID's doc comment).
 // Otherwise it derives an ID from os.Hostname(), falling back to a
-// random suffix (logged as a warning, never fatal) if that fails -- an
-// instance ID is only used to label this instance's own summaries to
-// peers and to the local Correlator, so a missing/unstable hostname
-// must never block startup.
+// random suffix (logged as a warning, never fatal) if that fails.
+// Shared by two independent callers -- federation (labeling this
+// instance's summaries to peers and the local Correlator) and the
+// anomaly baseline store (scoping Postgres rows to this replica, see
+// I1 in the anomaly-baseline-dashboard final review) -- so a
+// missing/unstable hostname must never block startup, and the random
+// suffix has a caller-specific consequence: for the baseline store, a
+// fresh random ID on every restart means every restart's baselines
+// start from empty and the previous run's rows become permanently
+// orphaned in anomaly_baselines (never re-adopted, never deleted).
 func deriveInstanceID(logger *slog.Logger, override string) string {
 	return deriveInstanceIDFrom(logger, override, os.Hostname)
 }
@@ -1499,7 +1505,12 @@ func deriveInstanceIDFrom(logger *slog.Logger, override string, hostname func() 
 		buf = []byte{0xde, 0xad, 0xbe, 0xef}
 	}
 	instanceID := fmt.Sprintf("wardline-%x", buf)
-	logger.Warn("failed to determine hostname for federation instance ID; using a random suffix instead", "instance_id", instanceID)
+	// Deliberately caller-agnostic -- this helper backs both federation
+	// and anomaly-baseline persistence, so naming either one here would
+	// misdirect debugging for the other (the exact wrong-subsystem
+	// problem M1 fixed for checkpoint-save errors elsewhere in this
+	// cycle).
+	logger.Warn("failed to determine hostname for instance ID derivation; using a random suffix instead", "instance_id", instanceID)
 	return instanceID
 }
 
