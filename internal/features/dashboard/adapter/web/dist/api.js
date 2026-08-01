@@ -9,6 +9,15 @@ export async function fetchAudit(afterID, limit) {
   return res.json();
 }
 
+export async function fetchAnomalies(afterID, limit) {
+  const url = `api/anomalies?after=${afterID}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`anomalies fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchPolicy() {
   const res = await fetch('api/policy');
   if (!res.ok) {
