@@ -11,6 +11,15 @@ type Verdict struct {
 	// RetryAfter is how long until the caller's window resets. Only
 	// meaningful when Allowed is false — never read otherwise.
 	RetryAfter time.Duration
+
+	// FailedOpen marks an Allowed verdict that was granted *without* the
+	// budget actually being checked, because a Postgres-backed Limiter hit
+	// a genuine backend error and chose availability over enforcement.
+	// Only ever true alongside Allowed — it exists so callers can record
+	// "enforcement was skipped" durably (in the audit trail) instead of
+	// leaving a single Warn log line as the only trace. InMemoryLimiter
+	// never sets it: an in-process map has no backend to fail.
+	FailedOpen bool
 }
 
 // Limiter decides whether an identity may make another call right now.

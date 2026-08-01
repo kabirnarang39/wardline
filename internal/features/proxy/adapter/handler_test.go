@@ -979,3 +979,80 @@ func TestHandler_AutoBlockCheckerNil_BehavesIdenticallyToBefore(t *testing.T) {
 		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
 	}
 }
+
+// stubBudgetChecker returns a fixed verdict, so a test can drive the
+// handler down the fail-open branch without a real Postgres backend.
+type stubBudgetChecker struct {
+	verdict budgetdomain.Verdict
+}
+
+func (s stubBudgetChecker) Check(identity, tenant, tool string, now time.Time) budgetdomain.Verdict {
+	return s.verdict
+}
+
+// TestHandler_FailOpenBudgetVerdictRecordsReasonInAudit proves a budget
+// check that failed open leaves a durable trace in the audit log rather
+// than being indistinguishable from an ordinary allow. The Warn log the
+// limiter emits is one line per request (easy to lose under load) and
+// /readyz stays green through the query-level failures that cause this,
+// so the audit entry is the only durable signal that enforcement was
+// skipped for this call.
+func TestHandler_FailOpenBudgetVerdictRecordsReasonInAudit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	const failOpenReason = "budget check failed open: dial tcp: connection refused"
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	checker := stubBudgetChecker{verdict: budgetdomain.Verdict{Allowed: true, FailedOpen: true, Reason: failOpenReason}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, checker, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (fail open means the call proceeds), got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
+	}
+	if writer.entries[0].Reason != failOpenReason {
+		t.Errorf("expected the fail-open reason %q recorded in the audit entry, got %q", failOpenReason, writer.entries[0].Reason)
+	}
+}
+
+// TestHandler_OrdinaryAllowRecordsEmptyAuditReason is the regression guard
+// on the other side of the fail-open threading: an ordinary allow must keep
+// recording an empty reason. Without this, threading the verdict's reason
+// through unconditionally would stamp "within budget" (or whatever the
+// limiter happens to say) onto every single successful call's audit entry.
+func TestHandler_OrdinaryAllowRecordsEmptyAuditReason(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	checker := stubBudgetChecker{verdict: budgetdomain.Verdict{Allowed: true, Reason: "within budget"}}
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, checker, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow audit entry, got %+v", writer.entries)
+	}
+	if writer.entries[0].Reason != "" {
+		t.Errorf("expected an ordinary allow to record an empty audit reason, got %q", writer.entries[0].Reason)
+	}
+}
