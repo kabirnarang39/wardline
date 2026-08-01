@@ -87,14 +87,14 @@ the query-level failures that cause this.
   other Postgres-backed feature.** Each tier is its own round trip, so a
   single request can cost up to three (tool, tenant, identity) when both
   override kinds are configured. Every Postgres-backed feature — audit,
-  revocation, refresh tokens, SCIM, and the limiter — manages its own
-  independent connection pool rather than sharing one, so a replica with
-  `postgres_storage` on can hold tens of connections against a database
-  whose default `max_connections` is often 100. Under sustained load
-  beyond the available connections, a budget check blocks waiting for a
-  connection, hits its 5-second timeout, and **fails open** (see the
-  fail-open behavior above) rather than enforcing the limit — meaning
-  the harder the load spike, the more likely enforcement is skipped.
-  Size your pools and `max_connections` for the number of replicas ×
-  Postgres-backed features you actually run; a single shared pool across
-  features is a candidate for a future cycle.
+  revocation, refresh tokens, SCIM, anomaly baselines, and the limiter —
+  manages its own independent connection pool rather than sharing one, so
+  a replica with `postgres_storage` on can hold tens of connections
+  against a database whose default `max_connections` is often 100. Under
+  sustained load beyond the available connections, a budget check blocks
+  waiting for a connection, hits its 5-second timeout, and **fails open**
+  (see the fail-open behavior above) rather than enforcing the limit —
+  meaning the harder the load spike, the more likely enforcement is
+  skipped. Size your pools and `max_connections` for the number of
+  replicas × Postgres-backed features you actually run; a single shared
+  pool across features is a candidate for a future cycle.

@@ -48,17 +48,36 @@ rejects 1.
 Every identity's baseline state is garbage-collected on
 `anomaly.gc_interval_seconds` (an entry idle for more than 2x that
 interval is dropped, reappearing as "novel" on its next call — the same
-conservative posture as a restart). When `features.postgres_storage` is
-also on, that same GC tick doubles as a checkpoint: the full set of
-per-identity baselines is upserted into a shared Postgres table, and
-reloaded once at startup — so a restart no longer wipes every identity's
-history at once. Because the save only happens on the GC tick, not on
-every call or on shutdown, a baseline can be up to one
-`gc_interval_seconds` stale relative to the most recent traffic, whether
-the process ends in a crash or a graceful stop. This is single-instance
-persistence, not cross-instance sharing — each replica still checkpoints
-and reloads only the traffic it itself has seen (see "Known limitations"
-below for what that does and doesn't cover).
+conservative posture as a restart). `gc_interval_seconds` is a
+three-way-coupled knob once `postgres_storage` is also on: it
+simultaneously sets (a) this eviction cutoff (2x interval), (b) the
+ceiling `auto_block.block_duration_seconds` may validate against (must
+stay `<= 2x gc_interval_seconds`, so a block always expires before its
+identity can go stale enough to be evicted), and (c) checkpoint
+frequency (below). Lowering it to shrink the crash-loss window also
+makes eviction more aggressive and may force `block_duration_seconds`
+shorter too — tune with all three effects in mind, not just whichever
+one motivated the change.
+
+When `features.postgres_storage` is also on, that same GC tick doubles
+as a checkpoint: the full set of per-identity baselines still in memory
+is upserted into a shared Postgres table (in batches, each its own
+transaction, so an arbitrarily large identity population doesn't risk
+one all-or-nothing transaction timing out) and reloaded once at
+startup — so a restart no longer wipes every identity's history at
+once. The same GC pass also deletes the Postgres row for every identity
+just evicted from memory, so an evicted identity doesn't resurrect a
+stale baseline from a leftover row on the next restart. Because the save
+only happens on the GC tick, not on every call or on shutdown, a
+baseline can be up to one `gc_interval_seconds` stale relative to the
+most recent traffic, whether the process ends in a crash or a graceful
+stop. This is single-instance persistence, not cross-instance sharing —
+every row is keyed on `(instance_id, tenant, identity)`, not just
+`(tenant, identity)`, where `instance_id` defaults to this replica's own
+hostname (the same derivation federation's own instance ID uses), so
+each replica still checkpoints and reloads only the traffic it itself
+has seen even when every replica shares one Postgres database (see
+"Known limitations" below for what that does and doesn't cover).
 
 When `features.web_ui` is also on, the dashboard's **Anomalies** panel
 gives this feature's `GET /dashboard/api/anomalies` a live view in the
@@ -85,9 +104,21 @@ section.
   issuance](/features/credential-issuance/)'s sibling Postgres-backed
   features for the general pattern. Persistence is still per-instance,
   not per-fleet: it does not share baselines across replicas (each
-  replica keeps learning only from the traffic it itself sees — see HA
+  replica keeps learning only from the traffic it itself sees, enforced
+  by keying every row on `(instance_id, tenant, identity)` — see HA
   deployment's per-replica limitations), and there's no schema-migration
   mechanism for the persisted JSON shape if it ever needs to change.
+  `instance_id` defaults to the replica's own hostname, so a hostname
+  change (pod recreation on a rolling deploy) orphans that replica's old
+  rows under the previous hostname — never reloaded again, harmless
+  (same "reappears as novel" fallback as any other eviction) but not
+  currently pruned either; see the next bullet.
+- Rows for an instance ID that never restarts again (a replica
+  permanently scaled down, or one whose hostname changed) are not
+  pruned — only rows belonging to identities evicted by a still-running
+  instance's own GC pass are deleted. Cleaning up a fully-abandoned
+  instance ID's rows is a coarser, lower-priority problem left for a
+  future cycle.
 - No dashboard panel for currently-blocked identities yet — only the
   detected-anomalies view has one (see above); blocked identities still
   ship as the `GET /dashboard/api/anomalies/blocked` JSON API only.
