@@ -60,8 +60,8 @@ applies unchanged, only the storage backend changes.
   on: budget enforcement then shares one Postgres-backed counter across
   every replica, the same way credential revocation and refresh tokens
   already do. See [HA deployment](/features/ha-deployment/) and
-  [Compliance evidence export](/features/compliance-evidence-export/)'s
-  sibling Postgres-backed features for the general pattern.
+  [Credential issuance](/features/credential-issuance/)'s sibling
+  Postgres-backed features for the general pattern.
 - **A `budget.tenants` or `budget.tools` override bucket is shared by
   every identity (or every call to that tool) that hits it, not
   per-identity.** Every configured bucket is an AND, not an OR: one
