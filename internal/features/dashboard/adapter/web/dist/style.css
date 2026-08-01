@@ -385,7 +385,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   padding: 0 14px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   font-family: var(--font-body);
   font-size: 13px;
@@ -396,6 +396,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
 .chip:hover { border-color: var(--brand); }
 .chip.is-active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+
+.chip:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip:active { transform: none; }
+}
 
 .table-wrap {
   overflow-x: auto;
@@ -462,7 +471,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   padding: 4px 12px;
   background: var(--brand-soft);
   color: var(--brand);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .policy-source {
