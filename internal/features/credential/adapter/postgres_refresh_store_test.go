@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
+	"github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 )
 
 const refreshTestSchema = "wardline_test_credential_refresh"
@@ -236,5 +238,78 @@ func TestPostgresRefreshStore_CrossInstanceRedeemPropagates(t *testing.T) {
 	}
 	if _, _, err := replicaA.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Error("expected replicaA to see the token as already-redeemed (single-use is cross-instance)")
+	}
+}
+
+// TestRefreshTokensSurviveNothingAfterWildcardRevoke_EndToEnd is the
+// composed security property the Postgres-adapter-level SQL bug broke,
+// proven through the real usecase services against a real database
+// rather than through the store's own methods: bootstrap an identity,
+// revoke it the way bootstrap_source: oidc always does (tenantName ==
+// "", because identityTenantLookup is hardcoded to fail there), and the
+// refresh token it was handed at bootstrap must be dead.
+//
+// This lives here rather than in usecase/ because usecase's own tests
+// deliberately don't import adapter (Clean Architecture's dependency
+// direction), and a fake refresh store could never have caught this --
+// the bug was in the DELETE's WHERE clause, nowhere else. Before the
+// fix, the revoke silently matched no rows and this Refresh returned a
+// brand-new access+refresh pair for an identity that had just been
+// revoked, renewable forever once the access-token revocation window
+// (access_token_ttl_seconds, default 15m) elapsed.
+func TestRefreshTokensSurviveNothingAfterWildcardRevoke_EndToEnd(t *testing.T) {
+	dsn := refreshTestDSN(t)
+	dropRefreshTokensTable(t, dsn)
+
+	store, err := adapter.NewPostgresRefreshStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresRefreshStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	credsPath := filepath.Join(t.TempDir(), "credentials.yaml")
+	if err := os.WriteFile(credsPath, []byte("identities:\n  - name: agent-abc123\n    secret: s3cret\n    tenant: acme\n"), 0o600); err != nil {
+		t.Fatalf("write credentials file: %v", err)
+	}
+	bootstrapper, err := adapter.LoadBootstrapper(credsPath)
+	if err != nil {
+		t.Fatalf("LoadBootstrapper: %v", err)
+	}
+	issuer, err := adapter.NewJWTIssuerVerifier("", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewJWTIssuerVerifier: %v", err)
+	}
+	revoker := adapter.NewRevocationList()
+
+	issuance := usecase.NewIssuanceService(bootstrapper, issuer, store, time.Hour)
+	revocation := usecase.NewRevocationService(revoker, store)
+	refresh := usecase.NewRefreshService(store, revoker, issuer, time.Hour, time.Now)
+
+	_, refreshToken, err := issuance.Bootstrap("s3cret")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// The wildcard revoke: tenantName == "", exactly what serve does for
+	// every revoke under bootstrap_source: oidc. The revocation horizon
+	// is deliberately tiny here: in production it is
+	// access_token_ttl_seconds (default 15m), and the Revoker entry is
+	// only meant to cover the window in which already-issued access
+	// tokens are still valid. Sleeping past it is what isolates the
+	// refresh store as the thing under test -- while the Revoker entry
+	// is still live, RefreshService's own IsRevoked check masks a
+	// surviving refresh token, which is exactly why the original bug
+	// stayed invisible until the horizon elapsed.
+	if err := revocation.Revoke("", "agent-abc123", time.Now().Add(150*time.Millisecond)); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if revoker.IsRevoked("acme", "agent-abc123") {
+		t.Fatal("test setup: expected the revocation horizon to have elapsed by now")
+	}
+
+	accessToken, rotatedRefreshToken, err := refresh.Refresh(refreshToken)
+	if !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+		t.Fatalf("a revoked identity's bootstrap refresh token must be dead once the revocation horizon elapses, got (%q, %q, %v) -- a fresh access token AND a fresh refresh token for a revoked identity, renewable forever", accessToken, rotatedRefreshToken, err)
 	}
 }

@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -14,38 +12,67 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 )
 
+// createRefreshTokensTableSQL keeps tenant and identity in two separate
+// columns rather than one encoded key (postgresSafeKey's
+// "<len>:<tenant>:<identity>" shape, as revoked_identities uses). Two
+// columns are what make the wildcard revoke below expressible at all:
+// "every tenant's rows for this identity" is a query on one column,
+// which no single-encoded-key column can answer without a prefix/suffix
+// match that would reintroduce exactly the tenant/identity boundary
+// ambiguity the length prefix exists to avoid. tenant stores "" for the
+// no-tenant case -- the same wildcard convention domain.Revoker uses,
+// made an explicit column value instead of a key shape.
 const createRefreshTokensTableSQL = `
 CREATE TABLE IF NOT EXISTS refresh_tokens (
 	token TEXT PRIMARY KEY,
-	identity_key TEXT NOT NULL,
+	tenant TEXT NOT NULL,
+	identity TEXT NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL
 )`
 
+// issueRefreshTokenSQL stores tenant and identity verbatim -- no
+// encoding step, so no decoding step on redeem either.
 const issueRefreshTokenSQL = `
-INSERT INTO refresh_tokens (token, identity_key, expires_at)
-VALUES ($1, $2, $3)`
+INSERT INTO refresh_tokens (token, tenant, identity, expires_at)
+VALUES ($1, $2, $3, $4)`
 
 // redeemRefreshTokenSQL atomically deletes and returns the row in one
 // round trip -- Postgres's DELETE ... RETURNING is exactly the
 // find-and-single-use-consume primitive this needs, with no
 // read-then-delete race window a two-statement version would have.
 const redeemRefreshTokenSQL = `
-DELETE FROM refresh_tokens WHERE token = $1 RETURNING identity_key, expires_at`
+DELETE FROM refresh_tokens WHERE token = $1 RETURNING tenant, identity, expires_at`
 
-// revokeAllForIdentitySQL deletes every refresh token whose identity_key
-// matches either the tenant-scoped key or the bare-identity/wildcard
-// key -- mirrors selectRevocationSQL's two-key check in
-// postgres_revoker.go, adapted to a DELETE.
-const revokeAllForIdentitySQL = `
-DELETE FROM refresh_tokens WHERE identity_key = ANY($1)`
+// revokeAllForIdentityScopedSQL deletes only the named tenant's refresh
+// tokens for this identity, leaving other tenants' rows for the same
+// identity string alone (distinct principals that merely share a name).
+const revokeAllForIdentityScopedSQL = `
+DELETE FROM refresh_tokens WHERE identity = $1 AND tenant = $2`
+
+// revokeAllForIdentityWildcardSQL deliberately has NO tenant predicate:
+// tenantName == "" means "revoke this identity everywhere", so filtering
+// on tenant at all -- including an ANY($1) set-membership check against
+// {tenant-scoped key, bare key} the way selectRevocationSQL does -- is
+// wrong here. That set-membership shape is right for the Revoker, whose
+// query looks up one row that could be stored under either shape for a
+// SPECIFIC tenant; applied to a wildcard DELETE it silently matched only
+// rows stored with no tenant, so tenant-scoped rows survived a revoke.
+// That was a real, reachable bug: under bootstrap_source: oidc every
+// revoke is a wildcard revoke (identityTenantLookup always fails) while
+// every oidc-issued token is stored tenant-scoped, so revoked identities
+// kept a live refresh token and could mint access tokens forever. Keep
+// these two queries structurally different.
+const revokeAllForIdentityWildcardSQL = `
+DELETE FROM refresh_tokens WHERE identity = $1`
 
 // PostgresRefreshStore is a credential/domain.RefreshStore backed by a
 // real Postgres database -- the HA-safe alternative to
 // InMemoryRefreshStore, wired in when both credential_issuance and
 // postgres_storage are on, mirroring PostgresRevoker's
-// connection-pool/idempotent-table/timeout pattern exactly. identity_key
-// reuses postgresSafeKey (postgres_revoker.go, same package) verbatim --
-// the identical (tenant, identity) collision reasoning applies here.
+// connection-pool/idempotent-table/timeout pattern exactly. Unlike
+// PostgresRevoker it stores tenant and identity as two plain columns
+// rather than one postgresSafeKey-encoded key -- see
+// createRefreshTokensTableSQL for why.
 type PostgresRefreshStore struct {
 	db *sql.DB
 }
@@ -84,11 +111,7 @@ func NewPostgresRefreshStore(dsn string) (*PostgresRefreshStore, error) {
 func (s *PostgresRefreshStore) Issue(token, identity, tenantName string, expiresAt time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
-	key := identity
-	if tenantName != "" {
-		key = postgresSafeKey(tenantName, identity)
-	}
-	if _, err := s.db.ExecContext(ctx, issueRefreshTokenSQL, token, key, expiresAt); err != nil {
+	if _, err := s.db.ExecContext(ctx, issueRefreshTokenSQL, token, tenantName, identity, expiresAt); err != nil {
 		return fmt.Errorf("issue refresh token for %q (tenant %q): %w", identity, tenantName, err)
 	}
 	return nil
@@ -103,9 +126,9 @@ func (s *PostgresRefreshStore) Redeem(token string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
 
-	var identityKey string
+	var tenantName, identity string
 	var expiresAt time.Time
-	err := s.db.QueryRowContext(ctx, redeemRefreshTokenSQL, token).Scan(&identityKey, &expiresAt)
+	err := s.db.QueryRowContext(ctx, redeemRefreshTokenSQL, token).Scan(&tenantName, &identity, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", domain.ErrRefreshTokenInvalid
@@ -115,19 +138,25 @@ func (s *PostgresRefreshStore) Redeem(token string) (string, string, error) {
 	if time.Now().After(expiresAt) {
 		return "", "", domain.ErrRefreshTokenInvalid
 	}
-	identity, tenantName := splitIdentityKey(identityKey)
 	return identity, tenantName, nil
 }
 
+// RevokeAllForIdentity matches InMemoryRefreshStore's semantics exactly:
+// tenantName == "" is a wildcard that deletes this identity's tokens in
+// EVERY tenant, anything else deletes only that tenant's. The two cases
+// need structurally different SQL, not one parameterised query -- see
+// revokeAllForIdentityWildcardSQL.
 func (s *PostgresRefreshStore) RevokeAllForIdentity(tenantName, identity string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
 
-	keys := []string{identity}
-	if tenantName != "" {
-		keys = []string{postgresSafeKey(tenantName, identity), identity}
+	var err error
+	if tenantName == "" {
+		_, err = s.db.ExecContext(ctx, revokeAllForIdentityWildcardSQL, identity)
+	} else {
+		_, err = s.db.ExecContext(ctx, revokeAllForIdentityScopedSQL, identity, tenantName)
 	}
-	if _, err := s.db.ExecContext(ctx, revokeAllForIdentitySQL, keys); err != nil {
+	if err != nil {
 		return fmt.Errorf("revoke refresh tokens for %q (tenant %q): %w", identity, tenantName, err)
 	}
 	return nil
@@ -135,45 +164,6 @@ func (s *PostgresRefreshStore) RevokeAllForIdentity(tenantName, identity string)
 
 func (s *PostgresRefreshStore) Close() error {
 	return s.db.Close()
-}
-
-// splitIdentityKey inverts postgresSafeKey (postgres_revoker.go): a key
-// with no length-prefix colon-delimiter pattern at all is a bare
-// identity (wildcard revoke, tenantName == "" at Issue time) --
-// returned with tenantName == "". A length-prefixed key
-// "<len>:<tenant>:<identity>" is split at exactly the byte offset the
-// prefix names, which is what makes the length-prefixed scheme safe
-// against tenant/identity strings containing colons themselves (see
-// postgresSafeKey's doc comment for the full collision-avoidance
-// reasoning) -- do not attempt to parse this with strings.SplitN(key,
-// ":", 3), which breaks the instant either string contains a colon.
-func splitIdentityKey(key string) (identity, tenantName string) {
-	firstColon := strings.IndexByte(key, ':')
-	if firstColon < 0 {
-		return key, ""
-	}
-	prefixLen, err := strconv.Atoi(key[:firstColon])
-	if err != nil {
-		// Not actually a length-prefixed key (e.g. a bare identity that
-		// happens to start with digits followed by a colon) -- treat the
-		// whole string as a bare identity, the safe fallback.
-		return key, ""
-	}
-	// strconv.Atoi accepts a leading '-', so a bare identity of the shape
-	// "-N:..." would otherwise reach rest[prefixLen] with prefixLen < 0 --
-	// a negative index, which panics rather than falling back safely.
-	// postgresSafeKey (the only real producer of a length-prefixed key)
-	// never emits a negative prefix, so this can only be reached by a
-	// bare identity string shaped like a malformed length-prefixed key --
-	// exactly the case this fallback exists to handle.
-	if prefixLen < 0 {
-		return key, ""
-	}
-	rest := key[firstColon+1:]
-	if len(rest) < prefixLen+1 || rest[prefixLen] != ':' {
-		return key, "" // malformed; fail safe to bare-identity interpretation
-	}
-	return rest[prefixLen+1:], rest[:prefixLen]
 }
 
 var _ domain.RefreshStore = (*PostgresRefreshStore)(nil)
