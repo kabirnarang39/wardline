@@ -17,12 +17,30 @@ import "time"
 // coupling Detector to BlockChecker.
 func (d *Detector) gc(now time.Time, interval time.Duration) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	cutoff := now.Add(-2 * interval)
 	for key, st := range d.state {
 		if st.lastSeen.Before(cutoff) {
 			delete(d.state, key)
+		}
+	}
+
+	var toSave map[string]IdentityStateSnapshot
+	if d.store != nil {
+		toSave = make(map[string]IdentityStateSnapshot, len(d.state))
+		for key, st := range d.state {
+			toSave[key] = snapshotIdentityState(st)
+		}
+	}
+	d.mu.Unlock()
+
+	// The snapshot map is built while still holding d.mu (a consistent
+	// point-in-time copy), then the lock is released before this network
+	// call -- holding d.mu across a Postgres round trip would block every
+	// concurrent Publish call for the duration of the save, violating
+	// Publish's own non-blocking contract transitively.
+	if d.store != nil {
+		if err := d.store.SaveAll(toSave); err != nil && d.onError != nil {
+			d.onError(err)
 		}
 	}
 }
