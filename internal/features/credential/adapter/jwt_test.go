@@ -377,8 +377,17 @@ func TestNewJWTIssuerVerifier_WeakPKCS8KeyRejected(t *testing.T) {
 	}
 }
 
+// TestJWTIssuerVerifier_IssuedTokenExpiresAtConfiguredTTL uses whole-second
+// TTLs, not sub-second ones -- lestrrat-go/jwx/v3's NumericDate defaults to
+// whole-second JSON precision, so a sub-second TTL is always instantly
+// expired at verification regardless of how recently it was issued. This
+// can never be reached through real config (CredentialConfig.
+// AccessTokenTTLSeconds is an int, so the smallest non-zero configured TTL
+// is exactly one whole second), but a test using a sub-second Duration
+// directly would spuriously fail on this jwx precision behavior rather
+// than testing anything real -- use realistic, config-shaped values here.
 func TestJWTIssuerVerifier_IssuedTokenExpiresAtConfiguredTTL(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", 50*time.Millisecond)
+	iv, err := NewJWTIssuerVerifier("", 2*time.Second)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier: %v", err)
 	}
@@ -389,14 +398,17 @@ func TestJWTIssuerVerifier_IssuedTokenExpiresAtConfiguredTTL(t *testing.T) {
 	if _, err := iv.Verify(token); err != nil {
 		t.Fatalf("expected token to verify immediately after issuance, got %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(2100 * time.Millisecond)
 	if _, err := iv.Verify(token); !errors.Is(err, domain.ErrTokenExpired) {
 		t.Errorf("expected ErrTokenExpired after the configured TTL elapsed, got %v", err)
 	}
 }
 
+// TestJWTIssuerVerifier_DifferentConfiguredTTLsProduceDifferentExpiryWindows
+// also uses a whole-second short TTL, for the same reason (see the
+// preceding test's doc comment).
 func TestJWTIssuerVerifier_DifferentConfiguredTTLsProduceDifferentExpiryWindows(t *testing.T) {
-	short, err := NewJWTIssuerVerifier("", 10*time.Millisecond)
+	short, err := NewJWTIssuerVerifier("", time.Second)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier (short): %v", err)
 	}
@@ -412,7 +424,7 @@ func TestJWTIssuerVerifier_DifferentConfiguredTTLsProduceDifferentExpiryWindows(
 	if err != nil {
 		t.Fatalf("Issue (long): %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
 	if _, err := short.Verify(shortToken); !errors.Is(err, domain.ErrTokenExpired) {
 		t.Errorf("expected the short-TTL token to have expired, got %v", err)
 	}
