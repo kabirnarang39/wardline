@@ -341,6 +341,27 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--color-foreground
 
 .empty-state { padding: 48px 20px; text-align: center; color: var(--color-muted-foreground); font-size: 14px; }
 
+/* Destructive row action (Blocked view's Unblock; Task 5's credential-revoke
+   reuses this same class/shape) -- confirmation itself is the browser's
+   native window.confirm, not a custom dialog, so there's no .confirm-dialog
+   element to style here. */
+.btn-unblock {
+  min-height: 36px;
+  padding: 0 14px;
+  background: transparent;
+  border: 1px solid var(--color-destructive);
+  border-radius: var(--radius-control);
+  color: var(--color-destructive);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+
+.btn-unblock:hover { background: var(--color-destructive); color: var(--color-on-primary); }
+
 .badge {
   font-family: var(--font-body);
   font-weight: 600;

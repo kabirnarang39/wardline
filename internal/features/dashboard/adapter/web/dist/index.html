@@ -18,6 +18,10 @@
         <span class="nav-icon" data-icon="anomalies"></span>
         <span>Anomalies</span>
       </button>
+      <button class="nav-item" data-view="blocked">
+        <span class="nav-icon" data-icon="blocked"></span>
+        <span>Blocked</span>
+      </button>
       <button class="nav-item" data-view="policy">
         <span class="nav-icon" data-icon="policy"></span>
         <span>Policy</span>
@@ -104,6 +108,27 @@
             <tbody id="anomaly-rows"></tbody>
           </table>
           <p id="anomaly-empty" class="empty-state" hidden>No anomalies detected yet.</p>
+        </div>
+      </section>
+
+      <section id="view-blocked" class="view" aria-labelledby="view-blocked-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-blocked-heading">Blocked</h1>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Identity</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Reason</th>
+                <th scope="col">Expires</th>
+                <th scope="col"></th>
+              </tr>
+            </thead>
+            <tbody id="blocked-rows"></tbody>
+          </table>
+          <p id="blocked-empty" class="empty-state" hidden>No identities are currently blocked.</p>
         </div>
       </section>
 
