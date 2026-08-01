@@ -74,15 +74,21 @@ flush) — the Helm chart's own template refuses to render if the two
 numbers don't leave enough room, so misconfiguring this is caught at
 `helm install`/`helm template` time, not at runtime.
 
-## What's still per-replica
+## Budget enforcement, and what's still per-replica
 
-Budget enforcement and anomaly-detection state are **not** shared across
-replicas in this release — each replica enforces its own independent
-budget and observes its own traffic for anomaly signals. Running N
-replicas means the effective request budget scales roughly with N, and
-each replica's anomaly detector sees only 1/N of the traffic to a given
-identity. This is a documented, deliberate limitation (see
-[Budget Enforcement](/features/budget-enforcement/) and
+Budget enforcement follows the same `postgres_storage` pattern as
+revocation above: with both `budget_enforcement` and `postgres_storage`
+on, the per-window counters live in the shared database and one
+configured limit is enforced across the whole fleet. With
+`postgres_storage` off, the limiter is in-process and each replica
+enforces its own independent budget, so the effective request budget
+scales roughly with N. See
+[Budget Enforcement](/features/budget-enforcement/).
+
+Anomaly-detection state is **not** shared across replicas in this
+release — each replica observes only its own traffic, so a detector
+sees roughly 1/N of the traffic to a given identity. This is a
+documented, deliberate limitation (see
 [Anomaly Detection](/features/anomaly-detection/)), not a defect — a
 future federation cycle is the natural place to revisit shared state.
 

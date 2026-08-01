@@ -804,12 +804,18 @@ audit:
 `audit.output` is ignored (with a warning logged at startup) when this
 flag is on — pick one audit sink, not both.
 
-**What it does:** creates a single `audit_entries` table (if it doesn't
+**What it does:** creates its `audit_entries` table (if it doesn't
 already exist) at startup, and writes one row per proxied request —
 identical data to the JSONL format, just in a queryable table instead of
 log lines. No migration framework; if the schema ever needs to change,
 that's a deliberate future decision, not something this handles
 automatically.
+
+`postgres_storage` is not audit-only, though: it's the shared flag every
+Postgres-backed feature keys off. Each one you also enable (credential
+revocation, refresh tokens, budget counters, SCIM group bindings)
+creates its own table in the same database on first connection, and
+manages its own connection pool.
 
 **A real tradeoff, not an oversight:** each audit write is a synchronous
 SQL `INSERT` on the client-visible request path — it happens before the
@@ -905,17 +911,21 @@ some capabilities staying explicitly per-replica.
   connections, since `/readyz` flipping to `503` on its own does not
   reliably achieve this (`http.Server.Shutdown()` closes the listener
   essentially synchronously once called, confirmed by live testing).
+- **Budget enforcement**, when both `budget_enforcement` and
+  `postgres_storage` are on — the per-window counters live in the same
+  shared Postgres database instead of per-process memory, so one
+  configured limit is enforced across the whole fleet. With
+  `postgres_storage` off the limiter is per-process, in-memory, and
+  each replica enforces the configured limit independently (2 replicas
+  ≈ 2× the configured per-window limit). See
+  [Budget enforcement](#budget-enforcement) above.
 
 **Still per-replica, by design, not yet cluster-aware:**
-- **Budget enforcement** — each replica enforces the configured limit
-  independently, so the effective global limit scales with the number
-  of replicas behind the load balancer (2 replicas ≈ 2× the configured
-  per-window limit). A shared/distributed counter store is a larger
-  design left for a future cycle.
 - **Anomaly detection** — each replica's heuristics only see the
   fraction of an identity's traffic that lands on that replica, so a
   real spike split evenly across replicas may not cross any single
-  replica's threshold. Same "future cycle" caveat as budget enforcement.
+  replica's threshold. A shared/distributed detection store is a larger
+  design left for a future cycle.
 - **The dashboard's live audit view** — `/dashboard/api/audit` reflects
   only the traffic that landed on the specific replica answering that
   request, not a cluster-wide view.
