@@ -58,10 +58,19 @@ policy-pack marketplace, HA deployment.
   Issuance](/features/credential-issuance/) for what's deliberately out
   of scope (refresh-token-reuse detection / cascading family
   revocation).
+- **Distributed/shared budget-enforcement counters** — a
+  Postgres-backed `PostgresLimiter`, enabled by `features.postgres_storage`
+  alongside `features.budget_enforcement`, shares identity/tenant/tool
+  rate-limit buckets across every replica instead of each replica
+  keeping its own independent, in-process counter. Same fixed-window
+  algorithm, same config shape (`budget.requests_per_window`,
+  `budget.tenants`, `budget.tools`) — only the bucket state moves. See
+  [Budget Enforcement](/features/budget-enforcement/) for what's
+  deliberately out of scope (a different rate-limiting algorithm,
+  cross-database sharding, bucket-row cleanup).
 
 ## v2.0 (planned, not yet shipped)
 
-- **Distributed/shared budget-enforcement counters** — sharing budget state across replicas for consistent enforcement.
 - **Persistent anomaly-detection baseline state + dashboard panel** — storing detection baselines and surfacing anomalies in a UI panel.
 - **Compliance-evidence-export hardening** — cryptographic signing, live query API, redacted credential inclusion, scheduled export, and log retention.
 - **Policy-pack marketplace expansion** — OPA/Cedar pack variants, a live registry, versioning, and pack composition.

@@ -43,15 +43,25 @@ all, same "absent means unchanged" behavior as `budget.tenants`. Both
 `window_seconds`) as the top-level default; only one level of nesting
 under each is wired up.
 
+When `features.postgres_storage` is also on, budget enforcement is
+backed by a shared Postgres table instead of an in-process map — every
+replica connected to the same database enforces the same identity/
+tenant/tool buckets, so the effective limit no longer scales with
+replica count. No separate config flag: the same `budget:` block above
+applies unchanged, only the storage backend changes.
+
 ## Known limitations
 
 - Dollar-cost/token-based budgets aren't supported (needs LLM-provider-
   facing traffic, not yet in Wardline's scope).
-- In-memory, per-process only — running N replicas gives each replica
-  its own independent budget, so the effective limit scales with
-  replica count. This is a known, documented limitation, not a bug; see
-  [HA deployment](/features/ha-deployment/) for the operational
-  consequence.
+- **In-memory by default, per-process only** — running N replicas gives
+  each replica its own independent budget, so the effective limit
+  scales with replica count, UNLESS `features.postgres_storage` is also
+  on: budget enforcement then shares one Postgres-backed counter across
+  every replica, the same way credential revocation and refresh tokens
+  already do. See [HA deployment](/features/ha-deployment/) and
+  [Compliance evidence export](/features/compliance-evidence-export/)'s
+  sibling Postgres-backed features for the general pattern.
 - **A `budget.tenants` or `budget.tools` override bucket is shared by
   every identity (or every call to that tool) that hits it, not
   per-identity.** Every configured bucket is an AND, not an OR: one
