@@ -1689,6 +1689,138 @@ default: allow
 	}
 }
 
+// TestServeEndToEnd_AnomalyBaselinePersistsAcrossRestart proves the
+// actual headline property this plan exists for: an identity's rate-spike
+// baseline (built by real traffic against one wardline process) survives
+// that process being killed and a fresh one started against the same
+// Postgres database -- not just that PostgresBaselineStore round-trips
+// in isolation. Requires WARDLINE_TEST_POSTGRES_DSN pointing at a real
+// Postgres instance; skips otherwise (see testDSN).
+//
+// Timing design: window_seconds=2 is deliberately short, not generous --
+// the property this test needs is the OPPOSITE of
+// TestServeEndToEnd_AnomalyDetectionRateSpike's headroom concern. Five
+// quick local calls plus a 1500ms sleep for a GC save (gc_interval_seconds=1)
+// happen well inside process1's original window (no rollover -- no
+// further calls occur during that sleep to trigger one), so the
+// snapshot saved to Postgres just before process1 is killed is exactly
+// cur.total=5, prev.total=0. What matters next is that process2's OWN
+// first request arrives measurably more than window_seconds after that
+// saved windowStart -- true here because killing process1, running `go
+// build` again for process2's binary (startWardline always rebuilds),
+// and waiting for it to become ready reliably takes several real
+// seconds, comfortably past a 2s window. That gap is what makes
+// process2's very first Publish call roll the window over immediately
+// in memory: the restored cur (5) becomes the new prev, which is
+// exactly the persisted baseline this test is proving survived. A
+// window_seconds large enough to survive a loaded CI runner mid-burst
+// (as the rate-spike test above needs) would instead risk staying
+// UNDER the restart gap here and never rolling over at all -- the
+// failure mode this test actually needs to avoid. rate_multiplier=3 /
+// min_calls=1 then means any cur.total > 15 within process2's own
+// first window trips rate_spike -- 20 calls clears that with room to
+// spare, and lands well inside a 2s window on localhost.
+func TestServeEndToEnd_AnomalyBaselinePersistsAcrossRestart(t *testing.T) {
+	dsn := testDSN(t)
+	dropAnomalyBaselinesTableE2E(t, dsn)
+
+	config := fmt.Sprintf(`features:
+  web_ui: true
+  anomaly_detection: true
+  postgres_storage: true
+anomaly:
+  output: stdout
+  window_seconds: 2
+  gc_interval_seconds: 1
+  rate_spike:
+    enabled: true
+    rate_multiplier: 3
+    min_calls: 1
+audit:
+  postgres_dsn: %q
+`, dsn)
+
+	listenAddr1, _, stderr1, cmd1, waiter1 := startWardline(t, "policy.yaml", "default: allow", config)
+
+	// Establish a baseline of 5 calls, all within process1's first window
+	// (window_seconds=2, five sequential local HTTP round-trips take
+	// nowhere near that long).
+	for i := 0; i < 5; i++ {
+		callResp := postToolCall(t, listenAddr1, "alice", "read_file")
+		_ = callResp.Body.Close()
+	}
+	// Let at least one GC tick (gc_interval_seconds=1) persist that
+	// state -- no further calls are made during this sleep, so no window
+	// rollover happens; the snapshot saved is exactly cur.total=5,
+	// prev.total=0.
+	time.Sleep(1500 * time.Millisecond)
+
+	// Kill process1 (simulating a restart) and block until it has
+	// actually exited -- reading the same waiter startWardline's own
+	// cleanup will later read from, per waitFor's doc comment, rather
+	// than calling cmd1.Wait() a second time. Waiting here (not just
+	// killing) matters: process2 below must not race process1 still
+	// holding its Postgres connection.
+	if err := cmd1.Process.Kill(); err != nil {
+		t.Fatalf("kill process1: %v", err)
+	}
+	select {
+	case <-waiter1.done:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("process1 did not exit within 15s of kill (stderr1: %s)", stderr1.String())
+	}
+
+	listenAddr2, _, stderr2, _, _ := startWardline(t, "policy.yaml", "default: allow", config)
+
+	// A burst well above what a truly-reset (never-restarted) baseline of
+	// zero would allow -- see this test's doc comment for why the
+	// persisted cur=5 becomes process2's prev on its very first call, and
+	// why 20 calls reliably trips rate_multiplier=3 against it.
+	for i := 0; i < 20; i++ {
+		callResp := postToolCall(t, listenAddr2, "alice", "read_file")
+		_ = callResp.Body.Close()
+	}
+
+	resp, err := http.Get("http://" + listenAddr2 + "/dashboard/api/anomalies")
+	if err != nil {
+		t.Fatalf("fetch anomalies: %v (stderr2: %s)", err, stderr2.String())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var alerts []struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&alerts); err != nil {
+		t.Fatalf("decode anomalies: %v", err)
+	}
+	found := false
+	for _, a := range alerts {
+		if a.Kind == "rate_spike" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a rate_spike anomaly on the fresh process (proving the baseline survived the restart), got alerts: %+v (stderr2: %s)", alerts, stderr2.String())
+	}
+}
+
+// dropAnomalyBaselinesTableE2E drops anomaly_baselines before a
+// cross-restart test runs, matching dropAuditEntriesTableE2E /
+// dropBudgetBucketsTableE2E's own cleanup pattern -- a stale row from a
+// previous run (same identity "alice", same testSchema) would otherwise
+// restore an unrelated leftover baseline instead of the one this test
+// establishes itself.
+func dropAnomalyBaselinesTableE2E(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS anomaly_baselines`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+}
+
 // TestServeEndToEnd_MLScoreAutoBlock proves ml_score's z-score detector
 // and auto_block's time-bounded block are wired together end to end
 // through the real binary: a wild post-baseline outlier window both
