@@ -482,6 +482,7 @@ func runServe(logger *slog.Logger, args []string) {
 
 	var credentialHandler *credentialadapter.Handler
 	var revokerCloser io.Closer
+	var refreshStoreCloser io.Closer
 	var oidcCloser io.Closer
 	var mtlsHeader string
 	if credentialIssuanceEnabled {
@@ -527,7 +528,9 @@ func runServe(logger *slog.Logger, args []string) {
 			identityTenantLookup = psBootstrapper.TenantOf
 			logger.Info("credential issuance enabled", "identities_file", cfg.Credential.IdentitiesFile)
 		}
-		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile)
+		accessTokenTTL := time.Duration(cfg.Credential.AccessTokenTTLSeconds) * time.Second
+		refreshTokenTTL := time.Duration(cfg.Credential.RefreshTokenTTLSeconds) * time.Second
+		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, accessTokenTTL)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
 			os.Exit(1)
@@ -537,6 +540,7 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 
 		var revoker credentialdomain.Revoker
+		var refreshStore credentialdomain.RefreshStore
 		if postgresStorageEnabled {
 			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN, logger)
 			if err != nil {
@@ -545,16 +549,25 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 			revoker = pr
 			revokerCloser = pr
-			logger.Info("credential revocation backed by postgres (shared across replicas)")
+			prs, err := credentialadapter.NewPostgresRefreshStore(cfg.Audit.PostgresDSN)
+			if err != nil {
+				logger.Error("failed to initialize postgres refresh store", "error", err)
+				os.Exit(1)
+			}
+			refreshStore = prs
+			refreshStoreCloser = prs
+			logger.Info("credential revocation and refresh tokens backed by postgres (shared across replicas)")
 		} else {
 			revoker = credentialadapter.NewRevocationList()
-			logger.Warn("credential revocation is in-process only; safe for exactly one replica -- enable features.postgres_storage to share revocation across replicas")
+			refreshStore = credentialadapter.NewInMemoryRefreshStore()
+			logger.Warn("credential revocation and refresh tokens are in-process only; safe for exactly one replica -- enable features.postgres_storage to share across replicas")
 		}
 
-		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier)
+		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier, refreshStore, refreshTokenTTL)
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
-		revocation := credentialusecase.NewRevocationService(revoker)
-		credentialHandler = credentialadapter.NewHandler(issuance, revocation, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) }, mtlsHeader)
+		revocation := credentialusecase.NewRevocationService(revoker, refreshStore)
+		refresh := credentialusecase.NewRefreshService(refreshStore, revoker, issuerVerifier, refreshTokenTTL, time.Now)
+		credentialHandler = credentialadapter.NewHandler(issuance, revocation, refresh, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) }, mtlsHeader, accessTokenTTL)
 		// verification already satisfies proxyadapter.Authenticator directly
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.
@@ -641,6 +654,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if credentialIssuanceEnabled {
 		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
 		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
+		extraRoutes["/credentials/refresh"] = http.HandlerFunc(credentialHandler.HandleRefresh)
 	}
 	if federationEnabled {
 		// Unconditional on web_ui, unlike the dashboard route above -- a
@@ -706,6 +720,11 @@ func runServe(logger *slog.Logger, args []string) {
 			if revokerCloser != nil {
 				if err := revokerCloser.Close(); err != nil {
 					logger.Error("revoker shutdown failed", "error", err)
+				}
+			}
+			if refreshStoreCloser != nil {
+				if err := refreshStoreCloser.Close(); err != nil {
+					logger.Error("refresh store shutdown failed", "error", err)
 				}
 			}
 			if oidcCloser != nil {
@@ -791,6 +810,11 @@ func runServe(logger *slog.Logger, args []string) {
 	if revokerCloser != nil {
 		if err := revokerCloser.Close(); err != nil {
 			logger.Error("revoker shutdown failed", "error", err)
+		}
+	}
+	if refreshStoreCloser != nil {
+		if err := refreshStoreCloser.Close(); err != nil {
+			logger.Error("refresh store shutdown failed", "error", err)
 		}
 	}
 	if oidcCloser != nil {
@@ -1077,7 +1101,7 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		_ = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
 	}
 	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.SigningKeyFile != "" {
-		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile); err != nil {
+		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, time.Duration(cfg.Credential.AccessTokenTTLSeconds)*time.Second); err != nil {
 			logger.Error("failed to load credential signing key file", "error", err)
 			os.Exit(1)
 		}
