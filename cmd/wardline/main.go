@@ -207,7 +207,17 @@ func runServe(logger *slog.Logger, args []string) {
 		// enabled.
 		var baselineStore *anomalyadapter.PostgresBaselineStore
 		if postgresStorageEnabled {
-			bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, logger)
+			// Reuses deriveInstanceID -- the same hostname-based (random-
+			// suffix-on-failure) identity federation already derives for its
+			// own instance ID -- rather than inventing a second ID scheme.
+			// Deliberately independent of federation's own instance_id
+			// config field and derived unconditionally here (no override,
+			// and regardless of federationEnabled): the baseline store's
+			// instance ID must answer "what stably identifies this replica"
+			// even when federation is off, so this feature isn't coupled to
+			// that one.
+			anomalyInstanceID := deriveInstanceID(logger, "")
+			bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
 				os.Exit(1)
@@ -227,6 +237,20 @@ func runServe(logger *slog.Logger, args []string) {
 		// non-nil interface wrapping a nil pointer, which Detector's own
 		// "!= nil" guards can't see -- it would call through to a nil
 		// receiver on the first hit instead of skipping.
+		//
+		// ponytail: a 4-arm combinatorial switch doesn't scale past 2
+		// nilable dependencies -- deliberately left as-is rather than
+		// collapsed, though: usecase.blocker/usecase.baselineStore (the
+		// interface types NewDetector's parameters actually have) are both
+		// unexported, so this package cannot name them to declare a local
+		// "var bc blocker" the way a cleaner version of this switch would
+		// need to. A helper inside the usecase package itself could nil-guard
+		// *BlockChecker (defined in that package, no cycle), but not
+		// *PostgresBaselineStore -- that type lives in the adapter package,
+		// which already imports usecase, so usecase importing it back would
+		// be a cycle. Exporting blocker/baselineStore purely to let main.go
+		// spell their names here would be an API-shape change for a cosmetic
+		// nit; not worth it for 2 dependencies.
 		switch {
 		case blockChecker != nil && baselineStore != nil:
 			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now, baselineStore)

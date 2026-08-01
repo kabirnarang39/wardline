@@ -19,8 +19,21 @@ import (
 // startup and on the GC ticker (never on the request path -- see this
 // plan's Global Constraints), but a blackholed connection must still
 // degrade to a bounded error rather than hang the ticker goroutine or
-// startup forever.
+// startup forever. SaveAll further chunks its work into batches (see
+// baselineSaveBatchSize) so this deadline bounds one batch, not an
+// arbitrarily large map in one shot.
 const baselineStoreTimeout = 5 * time.Second
+
+// baselineSaveBatchSize bounds how many upserts/deletes share one
+// transaction/timeout in SaveAll. Without this, one BeginTx/Commit
+// covering the whole map means baselineStoreTimeout has to cover every
+// sequential per-key ExecContext -- past roughly 34k identities over
+// loopback this blew the 5s deadline outright, and because SaveAll's
+// failure is all-or-nothing, every following GC tick failed identically
+// and persistence silently stopped for good. Chunking means an
+// arbitrarily large map still completes -- just proportionally slower
+// across the GC interval -- instead of failing past a size cliff.
+const baselineSaveBatchSize = 500
 
 // state is TEXT, not JSONB: a JSONB column rejects invalid JSON at INSERT
 // time (SQLSTATE 22P02), which would make row-level corruption
@@ -32,19 +45,32 @@ const baselineStoreTimeout = 5 * time.Second
 // future migration bug, disk-level corruption) round-trip through
 // LoadAll's per-row json.Unmarshal and get skipped-with-Warn instead of
 // being rejected by Postgres before this adapter ever sees it.
+//
+// Keyed on (instance_id, key), not key alone: two replicas sharing one
+// Postgres DSN (the documented HA config) each get their own row per
+// (tenant, identity) instead of last-writer-wins clobbering each
+// other's checkpoint -- instance_id defaults to os.Hostname() (see
+// cmd/wardline/main.go's deriveInstanceID), so a replica's rows survive
+// its own restarts but become orphaned (never read, never cleaned up --
+// see docs' Known Limitations) if its hostname ever changes, e.g. pod
+// recreation on a rolling deploy.
 const createBaselinesTableSQL = `
 CREATE TABLE IF NOT EXISTS anomaly_baselines (
-	key TEXT PRIMARY KEY,
+	instance_id TEXT NOT NULL,
+	key TEXT NOT NULL,
 	state TEXT NOT NULL,
-	updated_at TIMESTAMPTZ NOT NULL
+	updated_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (instance_id, key)
 )`
 
 const upsertBaselineSQL = `
-INSERT INTO anomaly_baselines (key, state, updated_at)
-VALUES ($1, $2, $3)
-ON CONFLICT (key) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`
+INSERT INTO anomaly_baselines (instance_id, key, state, updated_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (instance_id, key) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`
 
-const selectAllBaselinesSQL = `SELECT key, state FROM anomaly_baselines`
+const deleteBaselinesSQL = `DELETE FROM anomaly_baselines WHERE instance_id = $1 AND key = ANY($2)`
+
+const selectAllBaselinesSQL = `SELECT key, state FROM anomaly_baselines WHERE instance_id = $1`
 
 // PostgresBaselineStore persists Detector's per-identity baselines
 // (internal/features/anomaly/usecase.IdentityStateSnapshot) to a shared
@@ -54,9 +80,16 @@ const selectAllBaselinesSQL = `SELECT key, state FROM anomaly_baselines`
 // (see tenant_key.go) -- LoadAll/SaveAll never decode or re-derive
 // tenant/identity from it, sidestepping the key-encoding/decoding bug
 // class a prior cycle's Postgres refresh-token store had to fix.
+//
+// instanceID is fixed for this store's whole process lifetime (one
+// store instance = one instance ID) -- LoadAll only ever reloads this
+// instance's own rows, and SaveAll only ever writes/deletes this
+// instance's own rows, so two replicas sharing one DSN never see or
+// clobber each other's baselines.
 type PostgresBaselineStore struct {
-	db     *sql.DB
-	logger *slog.Logger
+	db         *sql.DB
+	logger     *slog.Logger
+	instanceID string
 }
 
 // NewPostgresBaselineStore opens a connection pool to dsn, creates the
@@ -64,8 +97,11 @@ type PostgresBaselineStore struct {
 // connection -- a bad DSN or unreachable database fails here, at
 // construction time, not on the first LoadAll/SaveAll call. logger is
 // used to surface a corrupt row skipped by LoadAll -- may be nil (see
-// LoadAll).
-func NewPostgresBaselineStore(dsn string, logger *slog.Logger) (*PostgresBaselineStore, error) {
+// LoadAll). instanceID identifies this replica (see
+// cmd/wardline/main.go's deriveInstanceID) and scopes every row this
+// store reads or writes -- callers must pass the same stable value
+// across a process's whole lifetime.
+func NewPostgresBaselineStore(dsn string, instanceID string, logger *slog.Logger) (*PostgresBaselineStore, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres connection: %w", err)
@@ -89,20 +125,22 @@ func NewPostgresBaselineStore(dsn string, logger *slog.Logger) (*PostgresBaselin
 		return nil, fmt.Errorf("create anomaly_baselines table: %w", err)
 	}
 
-	return &PostgresBaselineStore{db: db, logger: logger}, nil
+	return &PostgresBaselineStore{db: db, logger: logger, instanceID: instanceID}, nil
 }
 
-// LoadAll returns every persisted baseline, keyed by the same
-// tenantIdentityKey string they were saved under. A single row whose
-// state column fails to json.Unmarshal is skipped (logged at Warn if a
-// logger was supplied) rather than failing the whole call -- see this
-// plan's Global Constraints on per-key fail-closed behavior. An empty
-// table returns a non-nil, empty map and a nil error.
+// LoadAll returns every persisted baseline belonging to this store's own
+// instanceID, keyed by the same tenantIdentityKey string they were saved
+// under -- a replica never reloads another replica's rows. A single row
+// whose state column fails to json.Unmarshal is skipped (logged at Warn
+// if a logger was supplied) rather than failing the whole call -- see
+// this plan's Global Constraints on per-key fail-closed behavior. An
+// empty table (or no rows for this instance ID) returns a non-nil, empty
+// map and a nil error.
 func (s *PostgresBaselineStore) LoadAll() (map[string]anomalyusecase.IdentityStateSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, selectAllBaselinesSQL)
+	rows, err := s.db.QueryContext(ctx, selectAllBaselinesSQL, s.instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("query anomaly_baselines: %w", err)
 	}
@@ -130,13 +168,60 @@ func (s *PostgresBaselineStore) LoadAll() (map[string]anomalyusecase.IdentitySta
 	return out, nil
 }
 
-// SaveAll upserts every provided snapshot in one transaction. Called
+// SaveAll upserts every provided snapshot and deletes every row named in
+// deletedKeys (the identities GC just evicted from memory -- see this
+// plan's gc.go -- so an evicted identity's row doesn't survive in
+// Postgres and resurrect a stale baseline on the next restart). Called
 // from Detector's GC tick (internal/features/anomaly/usecase/gc.go),
 // never on the request path.
-func (s *PostgresBaselineStore) SaveAll(snapshots map[string]anomalyusecase.IdentityStateSnapshot) error {
-	if len(snapshots) == 0 {
+//
+// Both the upserts and the deletes are chunked into batches of
+// baselineSaveBatchSize keys, each batch its own transaction with its
+// own fresh baselineStoreTimeout deadline -- one unchunked transaction
+// covering an arbitrarily large map hit its deadline outright past
+// roughly 34k identities, failing the whole checkpoint (and every
+// following one identically). Batching means a large map still
+// completes, just proportionally slower. If a batch fails, SaveAll
+// aborts immediately and returns that error -- matching the previous
+// all-or-nothing-per-call semantics, just at batch granularity instead
+// of unbounded.
+//
+// A nil/empty snapshots with a non-empty deletedKeys (or vice versa)
+// still runs its non-empty half; only both-empty short-circuits.
+func (s *PostgresBaselineStore) SaveAll(snapshots map[string]anomalyusecase.IdentityStateSnapshot, deletedKeys []string) error {
+	if len(snapshots) == 0 && len(deletedKeys) == 0 {
 		return nil
 	}
+
+	keys := make([]string, 0, len(snapshots))
+	for key := range snapshots {
+		keys = append(keys, key)
+	}
+	for i := 0; i < len(keys); i += baselineSaveBatchSize {
+		end := i + baselineSaveBatchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		if err := s.saveBatch(keys[i:end], snapshots); err != nil {
+			return err
+		}
+	}
+
+	for i := 0; i < len(deletedKeys); i += baselineSaveBatchSize {
+		end := i + baselineSaveBatchSize
+		if end > len(deletedKeys) {
+			end = len(deletedKeys)
+		}
+		if err := s.deleteBatch(deletedKeys[i:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// saveBatch upserts exactly the snapshots named by batchKeys, in its own
+// transaction with its own fresh baselineStoreTimeout deadline.
+func (s *PostgresBaselineStore) saveBatch(batchKeys []string, snapshots map[string]anomalyusecase.IdentityStateSnapshot) error {
 	ctx, cancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
 	defer cancel()
 
@@ -147,17 +232,39 @@ func (s *PostgresBaselineStore) SaveAll(snapshots map[string]anomalyusecase.Iden
 	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
 
 	now := time.Now()
-	for key, snap := range snapshots {
-		raw, err := json.Marshal(snap)
+	for _, key := range batchKeys {
+		raw, err := json.Marshal(snapshots[key])
 		if err != nil {
 			return fmt.Errorf("marshal snapshot for key %q: %w", key, err)
 		}
-		if _, err := tx.ExecContext(ctx, upsertBaselineSQL, key, raw, now); err != nil {
+		if _, err := tx.ExecContext(ctx, upsertBaselineSQL, s.instanceID, key, raw, now); err != nil {
 			return fmt.Errorf("upsert baseline for key %q: %w", key, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit baseline save: %w", err)
+	}
+	return nil
+}
+
+// deleteBatch removes exactly the rows named by batchKeys (scoped to
+// this store's own instanceID), in its own transaction with its own
+// fresh baselineStoreTimeout deadline.
+func (s *PostgresBaselineStore) deleteBatch(batchKeys []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
+	defer cancel()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	if _, err := tx.ExecContext(ctx, deleteBaselinesSQL, s.instanceID, batchKeys); err != nil {
+		return fmt.Errorf("delete evicted baselines: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit baseline delete: %w", err)
 	}
 	return nil
 }

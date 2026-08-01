@@ -1,6 +1,9 @@
 package usecase
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // gc drops identityState entries whose lastSeen is more than 2x
 // interval before now. Dropping an identity's state is safe: it simply
@@ -18,9 +21,19 @@ import "time"
 func (d *Detector) gc(now time.Time, interval time.Duration) {
 	d.mu.Lock()
 	cutoff := now.Add(-2 * interval)
+	var deletedKeys []string
 	for key, st := range d.state {
 		if st.lastSeen.Before(cutoff) {
 			delete(d.state, key)
+			// Collected under the same lock/pass that evicts the entry
+			// from d.state, so the store's own row is deleted the same
+			// tick -- otherwise an evicted identity's row survives in
+			// Postgres indefinitely and LoadAll resurrects it (an
+			// arbitrarily stale baseline) on the next restart instead of
+			// the "novel" treatment eviction is supposed to guarantee.
+			if d.store != nil {
+				deletedKeys = append(deletedKeys, key)
+			}
 		}
 	}
 
@@ -33,14 +46,21 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 	}
 	d.mu.Unlock()
 
-	// The snapshot map is built while still holding d.mu (a consistent
-	// point-in-time copy), then the lock is released before this network
-	// call -- holding d.mu across a Postgres round trip would block every
-	// concurrent Publish call for the duration of the save, violating
-	// Publish's own non-blocking contract transitively.
+	// The snapshot map (and deletedKeys) are built while still holding
+	// d.mu (a consistent point-in-time copy), then the lock is released
+	// before this network call -- holding d.mu across a Postgres round
+	// trip would block every concurrent Publish call for the duration of
+	// the save, violating Publish's own non-blocking contract
+	// transitively.
 	if d.store != nil {
-		if err := d.store.SaveAll(toSave); err != nil && d.onError != nil {
-			d.onError(err)
+		if err := d.store.SaveAll(toSave, deletedKeys); err != nil && d.onError != nil {
+			// Wrapped with a subsystem-identifying prefix: d.onError is
+			// the same func(error) main.go's onAnomalyWriteErr uses for
+			// actual anomaly-write failures, so an unwrapped error here
+			// would log under that unrelated "anomaly write failed" line
+			// -- an operator debugging a checkpoint-save failure would
+			// grep the wrong subsystem name.
+			d.onError(fmt.Errorf("anomaly baseline checkpoint save failed: %w", err))
 		}
 	}
 }
