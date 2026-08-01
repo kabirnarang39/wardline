@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -231,6 +231,40 @@ async function confirmUnblock(identity, tenant) {
   renderBlocked();
 }
 
+function wireCredentials() {
+  const btn = document.getElementById('revoke-btn');
+  const input = document.getElementById('revoke-identity-input');
+  const result = document.getElementById('revoke-result');
+
+  btn.addEventListener('click', async () => {
+    const identity = input.value.trim();
+    if (!identity) {
+      result.hidden = false;
+      result.textContent = 'Enter an identity to revoke.';
+      result.style.color = 'var(--deny)';
+      return;
+    }
+    if (!window.confirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`)) {
+      return;
+    }
+    btn.disabled = true;
+    const res = await revokeCredential(identity);
+    btn.disabled = false;
+    result.hidden = false;
+    if (res.ok) {
+      result.textContent = `Revoked "${identity}".`;
+      result.style.color = 'var(--brand)';
+      input.value = '';
+    } else if (res.status === 403) {
+      result.textContent = 'You don’t have permission to revoke credentials.';
+      result.style.color = 'var(--deny)';
+    } else {
+      result.textContent = res.message;
+      result.style.color = 'var(--deny)';
+    }
+  });
+}
+
 function setLive(ok) {
   state.lastPollOK = ok;
   const dot = document.getElementById('live-dot');
@@ -341,6 +375,7 @@ function init() {
   mountIcons(document);
   wireNav();
   wireFilters();
+  wireCredentials();
   pollAudit();
   pollAnomalies();
   pollFederation();

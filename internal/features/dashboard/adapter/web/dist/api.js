@@ -51,6 +51,29 @@ export async function fetchBlocked() {
   return res.json();
 }
 
+// revokeCredential hits /credentials/revoke -- a TOP-LEVEL route (leading
+// `/`), NOT under `/dashboard/api/` like every other function in this file.
+// It's still reached identically via same-origin fetch, so no auth header
+// needs adding here: whatever credential this browser session already
+// carries to load the dashboard itself is the exact same credential this
+// fetch carries -- see task-4-brief.md's auth story.
+export async function revokeCredential(identity) {
+  const res = await fetch('/credentials/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identity }),
+  });
+  if (res.status === 204) {
+    return { ok: true };
+  }
+  let message = `revoke failed: ${res.status}`;
+  try {
+    const body = await res.json();
+    if (body && body.error) message = body.error;
+  } catch { /* non-JSON error body, keep the generic message */ }
+  return { ok: false, status: res.status, message };
+}
+
 export async function unblockIdentity(identity, tenant) {
   // tenant is appended as a query param so an unscoped caller (rbac off,
   // or a global dashboard:view grant) can satisfy handleUnblock's "name
