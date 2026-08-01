@@ -145,9 +145,11 @@ Off by default. Opt in with `features.budget_enforcement: true` plus a
 message; the audit log records `decision: "throttled"` with the detailed
 reason.
 
-The limiter is per-process, in-memory — running multiple `wardline`
-replicas gives each its own independent budget. This is a known limitation,
-not a bug.
+The limiter is per-process, in-memory by default — running multiple
+`wardline` replicas gives each its own independent budget. Enable
+`features.postgres_storage` to share one counter across every replica
+instead, the same Postgres-backed pattern already used for credential
+revocation and refresh tokens.
 
 This is a request-*rate* limit, not a success-rate limit: a request that's
 within budget but then fails upstream (502) still counts against the
