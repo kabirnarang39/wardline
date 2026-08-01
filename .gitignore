@@ -6,3 +6,4 @@
 /.superpowers/
 __pycache__/
 .hugo_build.lock
+/docs-site/public/
