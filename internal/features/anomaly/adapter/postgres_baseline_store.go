@@ -193,6 +193,25 @@ func (s *PostgresBaselineStore) SaveAll(snapshots map[string]anomalyusecase.Iden
 		return nil
 	}
 
+	// Deletes run before upserts: deletedKeys is a one-shot list built
+	// fresh each GC tick from that tick's own evictions (gc.go) -- if an
+	// upsert batch fails and SaveAll returns early, there is no later
+	// retry of this tick's deletes, so leaving them for last would let a
+	// transient upsert failure permanently orphan rows that should have
+	// been removed (silently reintroducing the evicted-row-resurrection
+	// bug this delete path exists to prevent). Running deletes first
+	// makes deletion the durable half regardless of what happens to the
+	// upserts that follow.
+	for i := 0; i < len(deletedKeys); i += baselineSaveBatchSize {
+		end := i + baselineSaveBatchSize
+		if end > len(deletedKeys) {
+			end = len(deletedKeys)
+		}
+		if err := s.deleteBatch(deletedKeys[i:end]); err != nil {
+			return err
+		}
+	}
+
 	keys := make([]string, 0, len(snapshots))
 	for key := range snapshots {
 		keys = append(keys, key)
@@ -203,16 +222,6 @@ func (s *PostgresBaselineStore) SaveAll(snapshots map[string]anomalyusecase.Iden
 			end = len(keys)
 		}
 		if err := s.saveBatch(keys[i:end], snapshots); err != nil {
-			return err
-		}
-	}
-
-	for i := 0; i < len(deletedKeys); i += baselineSaveBatchSize {
-		end := i + baselineSaveBatchSize
-		if end > len(deletedKeys) {
-			end = len(deletedKeys)
-		}
-		if err := s.deleteBatch(deletedKeys[i:end]); err != nil {
 			return err
 		}
 	}
