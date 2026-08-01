@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -9,6 +9,8 @@ const state = {
   lastID: 0,
   filters: { identity: '', tool: '', decisions: new Set() },
   lastPollOK: null,
+  anomalies: [],
+  lastAnomalyID: 0,
 };
 
 function escapeHTML(s) {
@@ -72,6 +74,49 @@ async function pollAudit() {
     setLive(true);
   } catch {
     setLive(false);
+  }
+}
+
+function renderAnomalies() {
+  const tbody = document.getElementById('anomaly-rows');
+  const empty = document.getElementById('anomaly-empty');
+
+  if (state.anomalies.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  // Newest first for scanning.
+  const rows = state.anomalies.slice().reverse().map((a) => `
+    <tr>
+      <td>${escapeHTML(formatTime(a.timestamp))}</td>
+      <td>${escapeHTML(a.identity)}</td>
+      <td>${escapeHTML(a.tenant)}</td>
+      <td>${escapeHTML(a.kind)}</td>
+      <td title="${escapeHTML(a.detail)}">${escapeHTML(a.detail)}</td>
+    </tr>
+  `).join('');
+  tbody.innerHTML = rows;
+}
+
+async function pollAnomalies() {
+  try {
+    const fresh = await fetchAnomalies(state.lastAnomalyID, 1000);
+    if (fresh.length > 0) {
+      state.anomalies.push(...fresh);
+      if (state.anomalies.length > MAX_CLIENT_ROWS) {
+        state.anomalies = state.anomalies.slice(state.anomalies.length - MAX_CLIENT_ROWS);
+      }
+      state.lastAnomalyID = fresh[fresh.length - 1].id;
+    }
+    renderAnomalies();
+  } catch {
+    // Anomalies polling failure doesn't affect the shared live-dot
+    // indicator -- that's pollAudit's own job; a failed anomalies poll
+    // here just means this view doesn't update this tick, silently
+    // retried next tick.
   }
 }
 
@@ -185,7 +230,9 @@ function init() {
   wireNav();
   wireFilters();
   pollAudit();
+  pollAnomalies();
   setInterval(pollAudit, POLL_INTERVAL_MS);
+  setInterval(pollAnomalies, POLL_INTERVAL_MS);
 }
 
 init();

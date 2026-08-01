@@ -14,6 +14,10 @@
         <span class="nav-icon" data-icon="activity"></span>
         <span>Activity</span>
       </button>
+      <button class="nav-item" data-view="anomalies">
+        <span class="nav-icon" data-icon="anomalies"></span>
+        <span>Anomalies</span>
+      </button>
       <button class="nav-item" data-view="policy">
         <span class="nav-icon" data-icon="policy"></span>
         <span>Policy</span>
@@ -62,6 +66,27 @@
             <tbody id="audit-rows"></tbody>
           </table>
           <p id="audit-empty" class="empty-state" hidden>No activity yet — requests through Wardline will show up here.</p>
+        </div>
+      </section>
+
+      <section id="view-anomalies" class="view" aria-labelledby="view-anomalies-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-anomalies-heading">Anomalies</h1>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Identity</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="anomaly-rows"></tbody>
+          </table>
+          <p id="anomaly-empty" class="empty-state" hidden>No anomalies detected yet.</p>
         </div>
       </section>
 
