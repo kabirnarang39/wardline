@@ -112,11 +112,18 @@ async function pollAnomalies() {
       state.lastAnomalyID = fresh[fresh.length - 1].id;
     }
     renderAnomalies();
-  } catch {
+  } catch (err) {
     // Anomalies polling failure doesn't affect the shared live-dot
     // indicator -- that's pollAudit's own job; a failed anomalies poll
     // here just means this view doesn't update this tick, silently
-    // retried next tick.
+    // retried next tick. Still surface it to devtools (a 404 when
+    // anomaly_detection is off is expected and constant, but a real
+    // 500 or network failure shouldn't be totally silent) and make sure
+    // the empty state actually renders instead of leaving a bare table
+    // header with no explanation -- a fetch failure on the very first
+    // poll otherwise never calls renderAnomalies at all.
+    console.error('anomalies poll failed:', err);
+    renderAnomalies();
   }
 }
 
