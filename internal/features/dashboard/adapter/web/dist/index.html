@@ -22,6 +22,10 @@
         <span class="nav-icon" data-icon="blocked"></span>
         <span>Blocked</span>
       </button>
+      <button class="nav-item" data-view="federation">
+        <span class="nav-icon" data-icon="federation"></span>
+        <span>Federation</span>
+      </button>
       <button class="nav-item" data-view="policy">
         <span class="nav-icon" data-icon="policy"></span>
         <span>Policy</span>
@@ -129,6 +133,27 @@
             <tbody id="blocked-rows"></tbody>
           </table>
           <p id="blocked-empty" class="empty-state" hidden>No identities are currently blocked.</p>
+        </div>
+      </section>
+
+      <section id="view-federation" class="view" aria-labelledby="view-federation-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-federation-heading">Federation</h1>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">First seen</th>
+                <th scope="col">Last seen</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Instances</th>
+                <th scope="col">Fingerprint</th>
+              </tr>
+            </thead>
+            <tbody id="federation-rows"></tbody>
+          </table>
+          <p id="federation-empty" class="empty-state" hidden>No cross-instance correlated alerts yet.</p>
         </div>
       </section>
 

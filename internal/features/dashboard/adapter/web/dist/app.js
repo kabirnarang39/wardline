@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -12,6 +12,8 @@ const state = {
   anomalies: [],
   lastAnomalyID: 0,
   blocked: [],
+  federationAlerts: [],
+  lastFederationID: 0,
 };
 
 function escapeHTML(s) {
@@ -125,6 +127,51 @@ async function pollAnomalies() {
     // poll otherwise never calls renderAnomalies at all.
     console.error('anomalies poll failed:', err);
     renderAnomalies();
+  }
+}
+
+function renderFederation() {
+  const tbody = document.getElementById('federation-rows');
+  const empty = document.getElementById('federation-empty');
+
+  if (state.federationAlerts.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  const rows = state.federationAlerts.slice().reverse().map((a) => `
+    <tr>
+      <td>${escapeHTML(formatTime(a.first_seen))}</td>
+      <td>${escapeHTML(formatTime(a.last_seen))}</td>
+      <td>${escapeHTML(a.kind)}</td>
+      <td>${escapeHTML(a.instance_ids.join(', '))}</td>
+      <td title="${escapeHTML(a.fingerprint)}">${escapeHTML(a.fingerprint.slice(0, 12))}</td>
+    </tr>
+  `).join('');
+  tbody.innerHTML = rows;
+}
+
+async function pollFederation() {
+  try {
+    const fresh = await fetchFederationCorrelated(state.lastFederationID, 1000);
+    if (fresh.length > 0) {
+      state.federationAlerts.push(...fresh);
+      if (state.federationAlerts.length > MAX_CLIENT_ROWS) {
+        state.federationAlerts = state.federationAlerts.slice(state.federationAlerts.length - MAX_CLIENT_ROWS);
+      }
+      state.lastFederationID = fresh[fresh.length - 1].id;
+    }
+    renderFederation();
+  } catch (err) {
+    // Same pattern as pollAnomalies: federation is off by default (404),
+    // so a failed poll here just means this view doesn't update this
+    // tick -- silently retried next tick. Still surface it to devtools,
+    // and always render so the empty state shows instead of a bare
+    // table header if the very first poll fails.
+    console.error('federation poll failed:', err);
+    renderFederation();
   }
 }
 
@@ -296,8 +343,10 @@ function init() {
   wireFilters();
   pollAudit();
   pollAnomalies();
+  pollFederation();
   setInterval(pollAudit, POLL_INTERVAL_MS);
   setInterval(pollAnomalies, POLL_INTERVAL_MS);
+  setInterval(pollFederation, POLL_INTERVAL_MS);
 }
 
 init();
