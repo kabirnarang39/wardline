@@ -231,6 +231,65 @@ func TestPostgresLimiter_AllowQueryErrorIsLoggedAndFailsOpen(t *testing.T) {
 	}
 }
 
+// TestPostgresLimiter_ToolTierQueryErrorFailsOpen and
+// TestPostgresLimiter_TenantTierQueryErrorFailsOpen exercise the
+// fail-open path specifically at the tool and tenant checkAndAdvance
+// call sites -- TestPostgresLimiter_AllowQueryErrorIsLoggedAndFailsOpen
+// above only ever hits the identity-tier call site, since it configures
+// no tool/tenant override. The code path is symmetric across all three
+// tiers, but a request-rejecting security control's fail-open behavior
+// deserves explicit coverage at every tier that can reach it, not just
+// implicit trust that "the same helper is called elsewhere".
+func TestPostgresLimiter_ToolTierQueryErrorFailsOpen(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, logger)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	v := l.Allow("agent-abc123", "acme", "expensive_tool", time.Now())
+	if !v.Allowed {
+		t.Error("expected Allow to fail open (Allowed: true) on a tool-tier query error")
+	}
+	if !strings.Contains(logBuf.String(), "budget check failed open") {
+		t.Errorf("expected the tool-tier query error to be logged, got log output: %q", logBuf.String())
+	}
+}
+
+func TestPostgresLimiter_TenantTierQueryErrorFailsOpen(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, logger)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	l.SetTenantLimit("acme", 1, time.Minute)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	v := l.Allow("agent-abc123", "acme", "read_file", time.Now())
+	if !v.Allowed {
+		t.Error("expected Allow to fail open (Allowed: true) on a tenant-tier query error")
+	}
+	if !strings.Contains(logBuf.String(), "budget check failed open") {
+		t.Errorf("expected the tenant-tier query error to be logged, got log output: %q", logBuf.String())
+	}
+}
+
 func TestPostgresLimiter_Allow_NoLoggerDoesNotPanicOnQueryError(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
