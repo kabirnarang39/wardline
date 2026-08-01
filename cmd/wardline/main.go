@@ -28,6 +28,7 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetadapter "github.com/kabirnarang39/wardline/internal/features/budget/adapter"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
 	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
 	complianceusecase "github.com/kabirnarang39/wardline/internal/features/compliance/usecase"
@@ -342,12 +343,35 @@ func runServe(logger *slog.Logger, args []string) {
 
 	decider := proxyusecase.NewDecider(engine)
 
-	limiter := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
-	for tenantName, tenantCfg := range cfg.Budget.Tenants {
-		limiter.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
-	}
-	for toolName, toolCfg := range cfg.Budget.Tools {
-		limiter.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
+
+	var limiter budgetdomain.Limiter
+	var budgetLimiterCloser io.Closer
+	if postgresStorageEnabled {
+		pl, err := budgetadapter.NewPostgresLimiter(cfg.Audit.PostgresDSN, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
+		if err != nil {
+			logger.Error("failed to initialize postgres budget limiter", "error", err)
+			os.Exit(1)
+		}
+		for tenantName, tenantCfg := range cfg.Budget.Tenants {
+			pl.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
+		}
+		for toolName, toolCfg := range cfg.Budget.Tools {
+			pl.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+		}
+		limiter = pl
+		budgetLimiterCloser = pl
+		logger.Info("budget enforcement backed by postgres (shared across replicas)")
+	} else {
+		il := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
+		for tenantName, tenantCfg := range cfg.Budget.Tenants {
+			il.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
+		}
+		for toolName, toolCfg := range cfg.Budget.Tools {
+			il.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+		}
+		limiter = il
+		logger.Warn("budget enforcement is in-process only; safe for exactly one replica -- enable features.postgres_storage to share across replicas")
 	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 
@@ -360,7 +384,6 @@ func runServe(logger *slog.Logger, args []string) {
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
 
-	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 	var healthPinger func(ctx context.Context) error
 	var healthDB *sql.DB
 	if postgresStorageEnabled {
@@ -727,6 +750,11 @@ func runServe(logger *slog.Logger, args []string) {
 					logger.Error("refresh store shutdown failed", "error", err)
 				}
 			}
+			if budgetLimiterCloser != nil {
+				if err := budgetLimiterCloser.Close(); err != nil {
+					logger.Error("budget limiter shutdown failed", "error", err)
+				}
+			}
 			if oidcCloser != nil {
 				if err := oidcCloser.Close(); err != nil {
 					logger.Error("oidc bootstrapper shutdown failed", "error", err)
@@ -815,6 +843,11 @@ func runServe(logger *slog.Logger, args []string) {
 	if refreshStoreCloser != nil {
 		if err := refreshStoreCloser.Close(); err != nil {
 			logger.Error("refresh store shutdown failed", "error", err)
+		}
+	}
+	if budgetLimiterCloser != nil {
+		if err := budgetLimiterCloser.Close(); err != nil {
+			logger.Error("budget limiter shutdown failed", "error", err)
 		}
 	}
 	if oidcCloser != nil {
