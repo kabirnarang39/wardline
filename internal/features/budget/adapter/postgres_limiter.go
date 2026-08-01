@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -82,13 +83,20 @@ RETURNING window_start, count, allowed`
 // both budget_enforcement and postgres_storage are on. Every Allow call
 // reaches the same shared database every replica connects to, so a
 // caller's budget is enforced across the whole fleet instead of
-// per-replica. tenantLimits/toolLimits are added in a later task; this
-// task's Allow checks only the identity bucket.
+// per-replica. tenantLimits/toolLimits stay exactly where
+// InMemoryLimiter already keeps them -- Go-side maps populated once at
+// construction from config -- only the bucket *state* moves to
+// Postgres; there is nothing tenant/tool-specific to share across
+// replicas except the counters themselves.
 type PostgresLimiter struct {
 	db                *sql.DB
 	requestsPerWindow int
 	window            time.Duration
 	logger            *slog.Logger
+
+	mu           sync.Mutex
+	tenantLimits map[string]tenantLimit
+	toolLimits   map[string]tenantLimit
 }
 
 // NewPostgresLimiter opens a connection pool to dsn, creates the
@@ -127,7 +135,30 @@ func NewPostgresLimiter(dsn string, requestsPerWindow int, window time.Duration,
 		requestsPerWindow: requestsPerWindow,
 		window:            window,
 		logger:            logger,
+		tenantLimits:      make(map[string]tenantLimit),
+		toolLimits:        make(map[string]tenantLimit),
 	}, nil
+}
+
+// SetTenantLimit configures an override rate for tenantName, consulted
+// alongside (in addition to, not instead of) the identity bucket. A
+// tenant with no override configured here is never checked against a
+// tenant bucket at all -- Allow falls straight through to the next
+// tier. Mirrors InMemoryLimiter.SetTenantLimit exactly.
+func (l *PostgresLimiter) SetTenantLimit(tenantName string, requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tenantLimits[tenantName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// SetToolLimit configures an override rate for toolName, consulted
+// alongside the identity and tenant buckets -- mirrors
+// InMemoryLimiter.SetToolLimit exactly. A tool with no override
+// configured here is never checked against a tool bucket at all.
+func (l *PostgresLimiter) SetToolLimit(toolName string, requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
 }
 
 // checkAndAdvance runs the atomic upsert for one bucket key and returns
@@ -158,24 +189,62 @@ func (l *PostgresLimiter) checkAndAdvance(key string, requestsPerWindow int, win
 	return domain.Verdict{Allowed: true, Reason: "within budget"}, nil
 }
 
-// Allow implements domain.Limiter. This task's version checks only the
-// identity bucket -- keyed by tenant.Key(tenantName, identity), same
-// composite-key collision-avoidance reasoning InMemoryLimiter's own
-// identity bucket already uses, prefixed with "identity:" so a later
-// task's tenant/tool buckets (sharing this same table) can never collide
-// with an identity bucket's key regardless of what any tenant/tool/
-// identity string contains -- the prefix is a fixed literal chosen by
-// this code, never influenced by caller input.
+// Allow implements domain.Limiter. Requires the tool bucket (if toolName
+// has a configured override), the tenant bucket (if tenantName has a
+// configured override), AND the identity bucket to all admit the
+// request -- an AND, not an OR, tool checked first (cheapest to fail
+// fast on a hot, narrow tool), then tenant, then identity -- exactly
+// mirroring InMemoryLimiter.Allow's tier order and short-circuit
+// behavior. A request denied by an earlier tier never touches a later,
+// lower-priority bucket's budget. Bucket keys are prefixed with
+// "tool:"/"tenant:"/"identity:" (fixed literals, never influenced by
+// caller input) so the three tiers, sharing one table, can never
+// collide regardless of what any tenant/tool/identity string contains.
+// Any Postgres query error at ANY tier fails the whole call open
+// immediately (matching PostgresRevoker.IsRevoked's precedent) rather
+// than degrading tier-by-tier.
 func (l *PostgresLimiter) Allow(identity, tenantName, toolName string, now time.Time) domain.Verdict {
+	l.mu.Lock()
+	toolLimit, hasToolLimit := l.toolLimits[toolName]
+	tenantLimitVal, hasTenantLimit := l.tenantLimits[tenantName]
+	l.mu.Unlock()
+
+	if hasToolLimit {
+		v, err := l.checkAndAdvance("tool:"+toolName, toolLimit.requestsPerWindow, toolLimit.window, now)
+		if err != nil {
+			return l.failOpen(identity, tenantName, toolName, err)
+		}
+		if !v.Allowed {
+			return v
+		}
+	}
+
+	if hasTenantLimit {
+		v, err := l.checkAndAdvance("tenant:"+tenantName, tenantLimitVal.requestsPerWindow, tenantLimitVal.window, now)
+		if err != nil {
+			return l.failOpen(identity, tenantName, toolName, err)
+		}
+		if !v.Allowed {
+			return v
+		}
+	}
+
 	key := "identity:" + tenant.Key(tenantName, identity)
 	v, err := l.checkAndAdvance(key, l.requestsPerWindow, l.window, now)
 	if err != nil {
-		if l.logger != nil {
-			l.logger.Warn("budget check failed open: treating as within budget", "identity", identity, "tenant", tenantName, "tool", toolName, "error", err)
-		}
-		return domain.Verdict{Allowed: true, Reason: fmt.Sprintf("budget check failed open: %v", err)}
+		return l.failOpen(identity, tenantName, toolName, err)
 	}
 	return v
+}
+
+// failOpen logs and returns the shared fail-open Verdict every tier's
+// query error produces -- factored out since Allow now has three call
+// sites that need the identical behavior.
+func (l *PostgresLimiter) failOpen(identity, tenantName, toolName string, err error) domain.Verdict {
+	if l.logger != nil {
+		l.logger.Warn("budget check failed open: treating as within budget", "identity", identity, "tenant", tenantName, "tool", toolName, "error", err)
+	}
+	return domain.Verdict{Allowed: true, Reason: fmt.Sprintf("budget check failed open: %v", err)}
 }
 
 // Close releases the underlying connection pool, draining in-flight

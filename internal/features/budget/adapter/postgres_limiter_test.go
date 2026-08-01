@@ -248,3 +248,145 @@ func TestPostgresLimiter_Allow_NoLoggerDoesNotPanicOnQueryError(t *testing.T) {
 		t.Error("expected Allow to fail open even with a nil logger")
 	}
 }
+
+func TestPostgresLimiter_ToolLimitDeniesBeforeConsumingIdentityBudget(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil) // generous identity limit
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("agent-abc123", "acme", "expensive_tool", now); !v.Allowed {
+		t.Fatalf("first call: expected Allowed, got denied: %s", v.Reason)
+	}
+	v := l.Allow("agent-abc123", "acme", "expensive_tool", now)
+	if v.Allowed {
+		t.Fatal("expected the tool bucket to deny the second call within the same window")
+	}
+	if !strings.Contains(v.Reason, "rate limit exceeded") {
+		t.Errorf("expected a rate-limit reason, got %q", v.Reason)
+	}
+}
+
+func TestPostgresLimiter_ToolLimitAppliesGloballyAcrossIdentities(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("alice", "acme", "expensive_tool", now); !v.Allowed {
+		t.Fatalf("alice's call: expected Allowed, got denied: %s", v.Reason)
+	}
+	// A DIFFERENT identity calling the SAME tool must be denied too --
+	// the tool bucket is shared across every identity/tenant calling
+	// that tool, not per-identity, mirroring InMemoryLimiter's own
+	// toolLimits/toolBuckets semantics exactly.
+	v := l.Allow("bob", "widgets-inc", "expensive_tool", now)
+	if v.Allowed {
+		t.Fatal("expected a different identity's call to the same rate-limited tool to also be denied (tool buckets are global, not per-identity)")
+	}
+}
+
+func TestPostgresLimiter_TenantLimitDeniesBeforeIdentityCheck(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetTenantLimit("acme", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("alice", "acme", "read_file", now); !v.Allowed {
+		t.Fatalf("first call: expected Allowed, got denied: %s", v.Reason)
+	}
+	// A DIFFERENT identity in the SAME tenant must be denied by the
+	// shared tenant bucket, even with a generous per-identity limit.
+	v := l.Allow("bob", "acme", "read_file", now)
+	if v.Allowed {
+		t.Fatal("expected a different identity in the same rate-limited tenant to also be denied")
+	}
+}
+
+func TestPostgresLimiter_TenantWithNoOverrideIsNeverChecked(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetTenantLimit("acme", 1, time.Minute)
+	// widgets-inc has NO override configured.
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		v := l.Allow("alice", "widgets-inc", "read_file", now)
+		if !v.Allowed && i == 0 {
+			t.Fatalf("call %d: widgets-inc has no tenant override, expected it to fall through to the (generous) identity check, got denied: %s", i+1, v.Reason)
+		}
+	}
+}
+
+func TestPostgresLimiter_AllThreeTiersMustAllAdmit(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetTenantLimit("acme", 100, time.Minute)
+	l.SetToolLimit("read_file", 100, time.Minute)
+
+	now := time.Now()
+	v := l.Allow("agent-abc123", "acme", "read_file", now)
+	if !v.Allowed {
+		t.Fatalf("expected all three generous tiers to admit, got denied: %s", v.Reason)
+	}
+}
+
+func TestPostgresLimiter_ToolDenialDoesNotConsumeTenantOrIdentityBudget(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+	l.SetTenantLimit("acme", 2, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("agent-abc123", "acme", "expensive_tool", now); !v.Allowed {
+		t.Fatalf("first call: expected Allowed, got denied: %s", v.Reason)
+	}
+	// Second call denied by the (now-exhausted) tool bucket -- must not
+	// have touched the tenant bucket at all.
+	if v := l.Allow("agent-abc123", "acme", "expensive_tool", now); v.Allowed {
+		t.Fatal("expected the tool bucket to deny this call")
+	}
+	// A DIFFERENT tool, same tenant: if the prior denied call had wrongly
+	// consumed tenant budget, the tenant bucket would now be at 2/2 and
+	// deny this call too. It must still admit, proving the tool-tier
+	// denial short-circuited before touching the tenant bucket.
+	if v := l.Allow("agent-abc123", "acme", "read_file", now); !v.Allowed {
+		t.Fatalf("expected the tenant bucket to still have budget (a denied tool-tier call must not consume tenant budget), got denied: %s", v.Reason)
+	}
+}
