@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -11,6 +11,7 @@ const state = {
   lastPollOK: null,
   anomalies: [],
   lastAnomalyID: 0,
+  blocked: [],
 };
 
 function escapeHTML(s) {
@@ -127,6 +128,62 @@ async function pollAnomalies() {
   }
 }
 
+function formatExpiry(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const diffMs = d.getTime() - Date.now();
+  if (diffMs <= 0) return 'expired';
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  return `in ${Math.round(mins / 60)}h`;
+}
+
+async function renderBlocked() {
+  const tbody = document.getElementById('blocked-rows');
+  const empty = document.getElementById('blocked-empty');
+  let entries;
+  try {
+    entries = await fetchBlocked();
+  } catch (err) {
+    console.error('blocked fetch failed:', err);
+    entries = [];
+  }
+  state.blocked = entries;
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = entries.map((b) => `
+    <tr>
+      <td>${escapeHTML(b.identity)}</td>
+      <td>${escapeHTML(b.tenant)}</td>
+      <td class="reason-cell" title="${escapeHTML(b.reason)}">${escapeHTML(b.reason)}</td>
+      <td>${escapeHTML(formatExpiry(b.blocked_until))}</td>
+      <td><button class="btn-unblock" data-identity="${escapeHTML(b.identity)}" data-tenant="${escapeHTML(b.tenant)}">Unblock</button></td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('.btn-unblock').forEach((btn) => {
+    btn.addEventListener('click', () => confirmUnblock(btn.dataset.identity, btn.dataset.tenant));
+  });
+}
+
+async function confirmUnblock(identity, tenant) {
+  if (!window.confirm(`Unblock "${identity}" in tenant "${tenant}"? This clears the automated block before it expires.`)) {
+    return;
+  }
+  const result = await unblockIdentity(identity, tenant);
+  if (!result.ok) {
+    window.alert(`Could not unblock: ${result.message}`);
+    return;
+  }
+  renderBlocked();
+}
+
 function setLive(ok) {
   state.lastPollOK = ok;
   const dot = document.getElementById('live-dot');
@@ -196,6 +253,7 @@ function switchView(name) {
     if (active) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
+  if (name === 'blocked') renderBlocked();
   if (name === 'policy') loadPolicy();
   if (name === 'status') loadStatus();
 }
