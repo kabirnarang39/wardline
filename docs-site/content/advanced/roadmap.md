@@ -68,10 +68,20 @@ policy-pack marketplace, HA deployment.
   [Budget Enforcement](/features/budget-enforcement/) for what's
   deliberately out of scope (a different rate-limiting algorithm,
   cross-database sharding, bucket-row cleanup).
+- **Persistent anomaly-detection baseline state + dashboard panel** — a
+  Postgres-backed `PostgresBaselineStore`, enabled by
+  `features.postgres_storage` alongside `features.anomaly_detection`,
+  checkpoints every identity's behavioral baseline on the same interval
+  as GC (`anomaly.gc_interval_seconds`) and reloads it at startup, so a
+  restart no longer wipes every identity's history at once. A new
+  read-only Anomalies panel in the web dashboard surfaces
+  `/dashboard/api/anomalies` (previously API-only) in the UI. See
+  [Anomaly Detection](/features/anomaly-detection/) for what's
+  deliberately out of scope (cross-replica baseline sharing, blob-format
+  migration).
 
 ## v2.0 (planned, not yet shipped)
 
-- **Persistent anomaly-detection baseline state + dashboard panel** — storing detection baselines and surfacing anomalies in a UI panel.
 - **Compliance-evidence-export hardening** — cryptographic signing, live query API, redacted credential inclusion, scheduled export, and log retention.
 - **Policy-pack marketplace expansion** — OPA/Cedar pack variants, a live registry, versioning, and pack composition.
 - **HA distributed budget/anomaly state + signing-key rotation/KMS** — distributing state across HA instances with key rotation support.

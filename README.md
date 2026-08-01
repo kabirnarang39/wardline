@@ -493,6 +493,23 @@ original one. When `web_ui` is also on, currently-blocked identities
 /dashboard/api/anomalies/blocked` (same RBAC gate as the rest of the
 dashboard).
 
+Every identity's baseline (the rate/novel-tool/`ml_score` history above)
+is in-memory and per-process by default — reset on every restart —
+UNLESS `features.postgres_storage` is also on: baselines are then
+persisted to a shared Postgres table and reloaded once at startup,
+checkpointed on the same interval as GC (`anomaly.gc_interval_seconds`)
+rather than on every call or at shutdown, so a baseline can be up to one
+GC interval stale relative to the most recent traffic regardless of
+whether the process crashed or stopped cleanly. This is per-instance
+persistence, not cross-replica sharing — each replica still checkpoints
+and reloads only the traffic it itself has seen; see
+[Credential issuance](#credential-issuance) for the same
+`postgres_storage`-gated pattern applied to revocation state, and the
+"Still per-replica" list in [HA deployment](#ha-deployment) for what
+this does not change. When `web_ui` is also on, `GET
+/dashboard/api/anomalies` also has a live view in the dashboard's
+**Anomalies** panel — see [Dashboard](#dashboard).
+
 ## Federation
 
 Off by default. Opt in with `features.federation: true`, which requires
@@ -762,6 +779,14 @@ Then visit `http://<listen-addr>/dashboard/`.
   restart. The JSONL file (or wherever `audit.output` points) remains
   the durable, complete record; the dashboard is a live convenience view
   on top of it, not a replacement.
+- **Anomalies** — a live-updating table of detected anomalies (same
+  after-ID polling pattern as Activity), backed by `GET
+  /dashboard/api/anomalies` — see [Anomaly detection](#anomaly-detection).
+  Empty when `anomaly_detection` is off (the underlying API answers
+  `404`, the same "not wired" posture as every other feature-gated
+  dashboard route). Read-only: it does not surface a way to clear an
+  `auto_block` early — that's still `DELETE
+  /dashboard/api/anomalies/blocked/{identity}`, API-only.
 - **Policy** — the active policy backend and raw policy file content, as
   loaded at startup (not hot-reloaded — restart Wardline after editing
   the policy file to see the update here).
