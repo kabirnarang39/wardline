@@ -44,8 +44,7 @@ func (c *fakeClock) now() time.Time {
 func TestDetector_RateSpike_AboveMultiplierAndFloorFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
 	// Baseline window: 10 calls.
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
@@ -72,8 +71,7 @@ func TestDetector_RateSpike_AboveMultiplierAndFloorFlags(t *testing.T) {
 func TestDetector_RateSpike_BelowMultiplierNeverFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	}
@@ -95,8 +93,7 @@ func TestDetector_RateSpike_BelowMinCallsFloorNeverFlagsRegardlessOfMultiplier(t
 	writer := &recordingWriter{}
 	cfg := baseCfg()
 	cfg.RateMinCalls = 10
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	// Baseline: 1 call.
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	clock.t = clock.t.Add(61 * time.Second)
@@ -118,8 +115,7 @@ func TestDetector_RateSpike_DisabledNeverFlags(t *testing.T) {
 	writer := &recordingWriter{}
 	cfg := baseCfg()
 	cfg.RateSpikeEnabled = false
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	}
@@ -138,8 +134,7 @@ func TestDetector_RateSpike_DisabledNeverFlags(t *testing.T) {
 func TestDetector_RateSpike_SustainedSpikeFlagsOnlyOnce(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	}
@@ -166,8 +161,7 @@ func TestDetector_NovelTool_FirstCallFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: true}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
 	found := false
@@ -185,8 +179,7 @@ func TestDetector_NovelTool_SecondCallSameToolDoesNotFlag(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: true}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
@@ -205,8 +198,7 @@ func TestDetector_NovelTool_SameToolDifferentIdentityFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: true}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	d.Publish(auditdomain.Entry{Identity: "bob", Tool: "read_file", Decision: "allow"})
 
@@ -225,8 +217,7 @@ func TestDetector_NovelTool_DisabledNeverFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: false}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
 	for _, a := range writer.anomalies {
@@ -248,8 +239,7 @@ func denyRateCfg() domain.HeuristicConfig {
 func TestDetector_DenyRateSpike_AboveThresholdAndFloorFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now, nil)
 	// 3 deny out of 5 = 0.6 -- above the 0.5 threshold, at the min-calls floor.
 	for i := 0; i < 3; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
@@ -272,8 +262,7 @@ func TestDetector_DenyRateSpike_AboveThresholdAndFloorFlags(t *testing.T) {
 func TestDetector_DenyRateSpike_BelowThresholdNeverFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now, nil)
 	// 2 deny out of 5 = 0.4 -- below the 0.5 threshold.
 	for i := 0; i < 2; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
@@ -292,8 +281,7 @@ func TestDetector_DenyRateSpike_BelowThresholdNeverFlags(t *testing.T) {
 func TestDetector_DenyRateSpike_BelowMinCallsFloorNeverFlags(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now, nil)
 	// 1 deny out of 1 call = 1.0 ratio, but far below DenyRateMinCalls (5).
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
 
@@ -309,8 +297,7 @@ func TestDetector_DenyRateSpike_DisabledNeverFlags(t *testing.T) {
 	writer := &recordingWriter{}
 	cfg := denyRateCfg()
 	cfg.DenyRateSpikeEnabled = false
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 5; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "deny"})
 	}
@@ -325,8 +312,7 @@ func TestDetector_DenyRateSpike_DisabledNeverFlags(t *testing.T) {
 func TestDetector_DenyRateSpike_SustainedSpikeFlagsOnlyOnce(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now, nil)
 	// A sustained deny spike: 20 deny calls in a row, every call from the
 	// 5th onward (min-calls floor) is individually above threshold -- must
 	// still flag exactly once per window, not once per call.
@@ -348,8 +334,7 @@ func TestDetector_DenyRateSpike_SustainedSpikeFlagsOnlyOnce(t *testing.T) {
 func TestDetector_RateSpike_IsolatedPerIdentity(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	}
@@ -378,8 +363,7 @@ func TestDetector_NovelTool_IgnoresProtocolPassthroughAndToollessEntries(t *test
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	cfg := domain.HeuristicConfig{WindowSeconds: 60, NovelToolEnabled: true}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "initialize", Decision: "passthrough"})
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "notifications/initialized", Decision: "passthrough"})
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
@@ -404,8 +388,7 @@ func TestDetector_NovelTool_IgnoresProtocolPassthroughAndToollessEntries(t *test
 func TestDetector_DenyRateSpike_ProtocolPassthroughDoesNotDiluteRatio(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(denyRateCfg(), writer, nil, nil, nil, clock.now, nil)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "initialize", Decision: "passthrough"})
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "notifications/initialized", Decision: "passthrough"})
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
@@ -431,8 +414,7 @@ func TestDetector_DenyRateSpike_ProtocolPassthroughDoesNotDiluteRatio(t *testing
 func TestDetector_RateSpike_CountsProtocolPassthroughInWindowTotals(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "tools/list", Decision: "passthrough"})
 	}
@@ -462,8 +444,7 @@ func TestDetector_RateAndDenySpikeLatchesDoNotCrossContaminate(t *testing.T) {
 	cfg.DenyRateSpikeEnabled = true
 	cfg.DenyRateThreshold = 0.5
 	cfg.DenyRateMinCalls = 5
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	// Baseline window: 10 allows.
 	for i := 0; i < 10; i++ {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
@@ -550,8 +531,7 @@ func establishMLBaseline(d *usecase.Detector, clock *fakeClock, identity string,
 func TestDetector_MLScore_FlagsWildOutlierAfterBaselineEstablished(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now, nil)
 	// 8 baseline windows -- minSamplesForZScore, the floor below which a
 	// sample stddev is noise rather than signal (see C1).
 	establishMLBaseline(d, clock, "alice", 8)
@@ -586,8 +566,7 @@ func TestDetector_MLScore_NoAnomalyBeforeBaselineEstablished(t *testing.T) {
 		WindowSeconds: 60,
 		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 0},
 	}
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	// alice's very first window ever, made as extreme as possible.
 	publishWindow(d, clock, "alice", manyToolNames(20), "allow", 200, time.Millisecond)
 
@@ -607,8 +586,7 @@ func TestDetector_MLScore_NoAnomalyBeforeBaselineEstablished(t *testing.T) {
 func TestDetector_MLScore_OnePerWindow_NotOnePerCall(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now, nil)
 	establishMLBaseline(d, clock, "alice", 8)
 	publishWindow(d, clock, "alice", manyToolNames(20), "allow", 200, time.Millisecond)
 	clock.t = clock.t.Add(61 * time.Second)
@@ -639,8 +617,7 @@ func TestDetector_MLScore_DisabledFlag_NeverFires(t *testing.T) {
 	writer := &recordingWriter{}
 	cfg := mlScoreBaseCfg()
 	cfg.MLScore.Enabled = false
-	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, nil, nil, clock.now, nil)
 	publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 5, time.Second)
 	clock.t = clock.t.Add(61 * time.Second)
 	publishWindow(d, clock, "alice", []string{"read_file", "list_dir"}, "allow", 6, 1200*time.Millisecond)
@@ -676,8 +653,7 @@ func TestDetector_MLScore_DisabledFlag_NeverFires(t *testing.T) {
 func TestDetector_MLScore_OrdinaryVaryingTraffic_NeverFalsePositives(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
-	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now)
-
+	d := usecase.NewDetector(mlScoreBaseCfg(), writer, nil, nil, nil, clock.now, nil)
 	rates := []int{10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11}
 	for _, n := range rates {
 		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
@@ -717,8 +693,7 @@ func TestDetector_MLScore_RepeatIdenticalAttacks_AllFlagged(t *testing.T) {
 		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
 		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
 	}
-	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now, nil)
 	for _, n := range []int{10, 11, 10, 11, 10, 11, 10, 11} {
 		publishWindow(d, clock, "alice", manyToolNames(n), "allow", n, time.Second)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -766,8 +741,7 @@ func TestDetector_MLScore_OrdinaryGrowth_NeverFlags(t *testing.T) {
 		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
 		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
 	}
-	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now, nil)
 	// A fixed 1s spacing holds mean inter-arrival at a constant 1s, so that
 	// feature has zero variance and, its relative floor being the only
 	// divisor left, scores 0. tool_diversity does NOT sit still here:
@@ -821,8 +795,7 @@ func (b *recordingBlocker) Block(identity, tenantName, reason string) {
 func TestDetector_CrossTenantSameIdentityNameDoesNotShareBaseline(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	blocker := usecase.NewBlockChecker(domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 60}, clock.now)
-	d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now, nil)
 	feedAcmeAlice := func(tools []string, n int, spacing time.Duration) {
 		for i := 0; i < n; i++ {
 			d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: tools[i%len(tools)], Decision: "allow"})
@@ -867,8 +840,7 @@ func TestDetector_BlockRecordsCorrectTenant(t *testing.T) {
 		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0, MinCalls: 5},
 		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 4.0, BlockDurationSeconds: 300},
 	}
-	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now, nil)
 	// Helper to publish windows for a specific (identity, tenant) pair
 	feedTenantIdentity := func(identity, tenant string, tools []string, n int, spacing time.Duration) {
 		for i := 0; i < n; i++ {
@@ -916,8 +888,7 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 		MLScore:       domain.MLScoreConfig{Enabled: true, ScoreThreshold: 3.0},
 		AutoBlock:     domain.AutoBlockConfig{Enabled: true, ScoreThreshold: 8.0, BlockDurationSeconds: 300},
 	}
-	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now, nil)
 	// 8 baseline windows alternating rate 10/12 (mean 11, m2 = 8, so
 	// sample stddev sqrt(8/7) = 1.069, under zCount's sqrt(11) = 3.3166
 	// count floor); deny-ratio and inter-arrival held
@@ -1008,8 +979,7 @@ func TestDetector_MLScore_TrafficDecline_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	// 11 published windows leave 10 folded; the decline window's own first
 	// call folds the 11th, so the decline is scored against exactly the
 	// 11-sample baseline traced above (sum 1105 / 11 = 100.4545). A fixed
@@ -1080,8 +1050,7 @@ func TestDetector_MLScore_DenyRatioDropsToZero_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	for i := 0; i < 11; i++ {
 		publishMixedWindow(d, clock, "alice", 20, 6+i%2, time.Second)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -1146,8 +1115,7 @@ func TestDetector_MLScore_DenyRatioLowVolumeNoise_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishHighVolumeDenyBaseline(d, clock, "alice")
 
 	publishMixedWindow(d, clock, "alice", 10, 1, 200*time.Millisecond)
@@ -1204,8 +1172,7 @@ func TestDetector_MLScore_DenyRatioPassthroughInflatedTotal_NeverBlocks(t *testi
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishHighVolumeDenyBaseline(d, clock, "alice")
 
 	for _, e := range []auditdomain.Entry{
@@ -1273,8 +1240,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		for i := 0; i < 11; i++ {
 			publishMixedWindow(d, clock, "alice", 20, 6+i%2, time.Second)
 			clock.t = clock.t.Add(61 * time.Second)
@@ -1330,8 +1296,7 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		establishHighVolumeDenyBaseline(d, clock, "alice")
 
 		publishMixedWindow(d, clock, "alice", 10, 5, 200*time.Millisecond)
@@ -1408,8 +1373,7 @@ func TestDetector_MLScore_DenySpikeFromCleanHistory_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	for i := 0; i < 11; i++ {
 		publishMixedWindow(d, clock, "alice", 20, 0, time.Second)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -1501,8 +1465,7 @@ func TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks(t *tes
 		t.Run(fmt.Sprintf("%d clean windows of history", baselineWindows), func(t *testing.T) {
 			clock := &fakeClock{t: time.Unix(0, 0)}
 			blocker := &recordingBlocker{}
-			d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now)
-
+			d := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, blocker, nil, clock.now, nil)
 			establishCleanDenyBaseline(d, clock, baselineWindows)
 			publishMixedWindow(d, clock, "alice", 20, 1, time.Second)
 			rollWindow(d, clock)
@@ -1515,8 +1478,7 @@ func TestDetector_MLScore_DenyRatioCleanHistoryOrdinaryDenial_NeverBlocks(t *tes
 			// still block, and at the same score regardless of fold count.
 			spikeClock := &fakeClock{t: time.Unix(0, 0)}
 			spikeBlocker := &recordingBlocker{}
-			spikeD := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, spikeBlocker, nil, spikeClock.now)
-
+			spikeD := usecase.NewDetector(declineCfg(), &recordingWriter{}, nil, spikeBlocker, nil, spikeClock.now, nil)
 			establishCleanDenyBaseline(spikeD, spikeClock, baselineWindows)
 			publishMixedWindow(spikeD, spikeClock, "alice", 20, 20, time.Second)
 			rollWindow(spikeD, spikeClock)
@@ -1556,8 +1518,7 @@ func TestDetector_MLScore_DenyRatioVolumeDecline_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishHighVolumeDenyBaseline(d, clock, "alice")
 
 	publishMixedWindow(d, clock, "alice", 20, 4, 200*time.Millisecond)
@@ -1623,8 +1584,7 @@ func TestDetector_MLScore_DenyRatioToolCallShareCollapse_NeverBlocks(t *testing.
 			clock := &fakeClock{t: time.Unix(0, 0)}
 			writer := &recordingWriter{}
 			blocker := &recordingBlocker{}
-			d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+			d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 			establishHighVolumeDenyBaseline(d, clock, "alice")
 
 			// The habitual 4 denials, unchanged -- only the denominator moved.
@@ -1682,8 +1642,7 @@ func TestDetector_MLScore_InterArrivalSlowdown_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	for i := 0; i < 11; i++ {
 		spacing := time.Second
 		if i%2 == 1 {
@@ -1747,8 +1706,7 @@ func TestDetector_MLScore_FastPaceLowVolume_NeverBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishSlowPacedBaseline(d, clock, "alice")
 
 	publishWindow(d, clock, "alice", fixedTools, "allow", 10, 300*time.Millisecond)
@@ -1780,8 +1738,7 @@ func TestDetector_MLScore_FastPaceSameVolume_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishSlowPacedBaseline(d, clock, "alice")
 
 	publishWindow(d, clock, "alice", fixedTools, "allow", 20, 300*time.Millisecond)
@@ -1852,8 +1809,7 @@ func TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks(t *testing.T) {
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		establishFixedToolSetBaseline(d, clock, "alice")
 		publishWindow(d, clock, "alice", fixedTools, "allow", 60, 200*time.Millisecond)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -1876,8 +1832,7 @@ func TestDetector_MLScore_VolumeDeclineFixedToolSet_NeverBlocks(t *testing.T) {
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		establishFixedToolSetBaseline(d, clock, "alice")
 		publishWindow(d, clock, "alice", fixedTools, "allow", 20, 200*time.Millisecond)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -1917,8 +1872,7 @@ func TestDetector_MLScore_ToolEnumeration_StillBlocks(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	for _, distinct := range []int{4, 5, 6, 4, 5, 6, 4, 5, 6, 4, 5} {
 		publishWindow(d, clock, "alice", manyToolNames(distinct), "allow", 100, 200*time.Millisecond)
 		clock.t = clock.t.Add(61 * time.Second)
@@ -1973,8 +1927,7 @@ func TestDetector_MLScore_ToolEnumeration_ZeroVarianceBaseline_StillBlocks(t *te
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writer := &recordingWriter{}
 	blocker := &recordingBlocker{}
-	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+	d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 	establishFixedToolSetBaseline(d, clock, "alice")
 
 	publishWindow(d, clock, "alice", manyToolNames(60), "allow", 100, 200*time.Millisecond)
@@ -2067,8 +2020,7 @@ func TestDetector_MLScore_DiversitySmallIntegerChange_NeverBlocks(t *testing.T) 
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		establishSingleToolBaseline(d, clock)
 
 		publishWindow(d, clock, "alice", []string{"read_file"}, "allow", 19, time.Second)
@@ -2094,8 +2046,7 @@ func TestDetector_MLScore_DiversitySmallIntegerChange_NeverBlocks(t *testing.T) 
 		clock := &fakeClock{t: time.Unix(0, 0)}
 		writer := &recordingWriter{}
 		blocker := &recordingBlocker{}
-		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now)
-
+		d := usecase.NewDetector(declineCfg(), writer, nil, blocker, nil, clock.now, nil)
 		establishSingleToolBaseline(d, clock)
 
 		publishWindow(d, clock, "alice", manyToolNames(12), "allow", 20, time.Second)

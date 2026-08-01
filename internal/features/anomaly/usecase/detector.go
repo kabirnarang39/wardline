@@ -27,6 +27,18 @@ type blocker interface {
 	Block(identity, tenantName, reason string)
 }
 
+// baselineStore is the subset of adapter.PostgresBaselineStore's
+// behavior Detector depends on -- narrow local interface (matching
+// alertSink/blocker's established pattern in this same file) so this
+// package never imports internal/features/anomaly/adapter directly.
+// nil-able: when nil, Detector behaves exactly as it did before this
+// plan (in-memory only, LoadBaselines is a no-op, gc never calls
+// SaveAll).
+type baselineStore interface {
+	LoadAll() (map[string]IdentityStateSnapshot, error)
+	SaveAll(map[string]IdentityStateSnapshot) error
+}
+
 // Detector implements audit/domain.LiveSink: every published audit entry
 // is run through all enabled heuristics. Publish must never block or
 // error outward -- the same contract every other LiveSink already
@@ -39,6 +51,7 @@ type Detector struct {
 	blocker blocker
 	onError func(error)
 	now     func() time.Time
+	store   baselineStore
 
 	mu sync.Mutex
 	// state is keyed by tenantIdentityKey(tenant, identity), not by raw
@@ -49,7 +62,7 @@ type Detector struct {
 	state map[string]*identityState
 }
 
-func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time) *Detector {
+func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore) *Detector {
 	return &Detector{
 		cfg:     cfg,
 		writer:  writer,
@@ -57,8 +70,32 @@ func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertS
 		blocker: blocker,
 		onError: onError,
 		now:     now,
+		store:   store,
 		state:   make(map[string]*identityState),
 	}
+}
+
+// LoadBaselines populates d.state from the configured baseline store, if
+// any -- a no-op returning nil when store is nil. Intended to be called
+// once, synchronously, by the composition root (cmd/wardline/main.go)
+// immediately after NewDetector and before StartGC begins -- this IS
+// allowed to block briefly (see this plan's Global Constraints), unlike
+// Publish. Not called from NewDetector itself, so NewDetector stays a
+// pure, non-blocking constructor.
+func (d *Detector) LoadBaselines() error {
+	if d.store == nil {
+		return nil
+	}
+	snapshots, err := d.store.LoadAll()
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for key, snap := range snapshots {
+		d.state[key] = snap.toIdentityState()
+	}
+	return nil
 }
 
 var _ auditdomain.LiveSink = (*Detector)(nil)
