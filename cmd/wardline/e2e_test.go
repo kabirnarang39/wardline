@@ -654,6 +654,65 @@ default: deny
 	}
 }
 
+// TestServeEndToEnd_PostgresStorageWithoutBudgetEnforcement proves that
+// postgres_storage alone does NOT stand up the Postgres budget limiter:
+// budget_enforcement is its own feature flag, and an operator who never
+// turned it on must not pay for the budget_buckets table, the extra
+// connection pool, or a possible os.Exit(1) on limiter init failure.
+// Asserted two ways — no Postgres-specific budget log lines, and the
+// budget_buckets relation genuinely absent from the database after a
+// real proxied call — so this fails loudly if the flag gate regresses.
+func TestServeEndToEnd_PostgresStorageWithoutBudgetEnforcement(t *testing.T) {
+	dsn := testDSN(t)
+	dropBudgetBucketsTableE2E(t, dsn)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db for verification: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`,
+		"features:\n  postgres_storage: true\nbudget:\n  requests_per_window: 1\n  window_seconds: 60\naudit:\n  postgres_dsn: \""+dsn+"\"\n")
+
+	// Two calls with a requests_per_window of 1: with budget_enforcement
+	// off, the Checker no-ops and both must be admitted regardless of
+	// which Limiter happens to back it.
+	for i := 0; i < 2; i++ {
+		resp := postToolCall(t, addr, "agent-1", "read_file")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: expected 200 with budget_enforcement off, got %d (stderr: %s)", i+1, resp.StatusCode, stderr.String())
+		}
+	}
+
+	if strings.Contains(stderr.String(), "budget enforcement backed by postgres") {
+		t.Errorf("expected no postgres budget limiter with budget_enforcement off; stderr: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "budget enforcement is in-process only") {
+		t.Errorf("expected no single-replica warning for a disabled feature; stderr: %s", stderr.String())
+	}
+
+	var relation sql.NullString
+	if err := db.QueryRow(`SELECT to_regclass($1)::text`, testSchema+".budget_buckets").Scan(&relation); err != nil {
+		t.Fatalf("check for budget_buckets table: %v", err)
+	}
+	if relation.Valid {
+		t.Errorf("expected budget_buckets NOT to be created when budget_enforcement is off, but found relation %q", relation.String)
+	}
+}
+
+func dropBudgetBucketsTableE2E(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS budget_buckets`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+}
+
 // postCredentialsToken calls POST /credentials/token directly (not
 // through postToolCall, which always sets X-Wardline-Identity — the
 // header this feature's bearer-mode intentionally stops trusting).
