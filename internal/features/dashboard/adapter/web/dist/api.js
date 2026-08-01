@@ -34,6 +34,15 @@ export async function fetchStatus() {
   return res.json();
 }
 
+export async function fetchFederationCorrelated(afterID, limit) {
+  const url = `api/federation/correlated?after=${afterID}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`federation fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchBlocked() {
   const res = await fetch('api/anomalies/blocked');
   if (!res.ok) {
