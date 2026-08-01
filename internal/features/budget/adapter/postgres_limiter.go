@@ -78,6 +78,32 @@ ON CONFLICT (key) DO UPDATE SET
 	END
 RETURNING window_start, count, allowed`
 
+// budgetReapInterval is how many Allow calls pass between opportunistic
+// sweeps of expired budget_buckets rows. 1000 matches
+// evictionSweepInterval exactly -- this is the SQL mirror of
+// InMemoryLimiter's own sweep, and for the same reason its doc comment
+// gives: identity is trusted as-is, so every distinct identity a caller
+// ever sends gets a row, and without a sweep the table grows forever.
+// One bounded DELETE every 1000 requests is negligible next to the three
+// round trips a single multi-tier Allow can already cost.
+const budgetReapInterval = 1000
+
+// reapExpiredBucketsSQL deletes rows whose window provably cannot still
+// be live. A row does not record its own window length (the three tiers
+// each carry their own configured window, and tenant/tool windows differ
+// per name), so the sweep uses the LONGEST window configured on this
+// limiter: any row untouched for longer than that is expired no matter
+// which tier it belongs to. That is deliberately conservative in the
+// safe direction -- a short-window row lingers a little past its expiry
+// (costing only storage, since checkAndAdvance resets an expired row on
+// next touch anyway), and a live row is never deleted, which would
+// silently hand a caller a fresh budget.
+//
+// ponytail: sequential scan, no index on window_start -- the table is
+// bounded by live identity cardinality once this sweep exists. Add an
+// index if the sweep ever shows up in query timings.
+const reapExpiredBucketsSQL = `DELETE FROM budget_buckets WHERE window_start + ($1 * INTERVAL '1 microsecond') <= $2`
+
 // PostgresLimiter is a budget/domain.Limiter backed by a real Postgres
 // database -- the HA-safe alternative to InMemoryLimiter, wired in when
 // both budget_enforcement and postgres_storage are on. Every Allow call
@@ -95,6 +121,7 @@ type PostgresLimiter struct {
 	logger            *slog.Logger
 
 	mu           sync.Mutex
+	calls        uint64
 	tenantLimits map[string]tenantLimit
 	toolLimits   map[string]tenantLimit
 }
@@ -207,7 +234,16 @@ func (l *PostgresLimiter) Allow(identity, tenantName, toolName string, now time.
 	l.mu.Lock()
 	toolLimit, hasToolLimit := l.toolLimits[toolName]
 	tenantLimitVal, hasTenantLimit := l.tenantLimits[tenantName]
+	l.calls++
+	var reapWindow time.Duration
+	if l.calls%budgetReapInterval == 0 {
+		reapWindow = l.longestWindowLocked()
+	}
 	l.mu.Unlock()
+
+	if reapWindow > 0 {
+		l.reapExpired(reapWindow, now)
+	}
 
 	if hasToolLimit {
 		v, err := l.checkAndAdvance("tool:"+toolName, toolLimit.requestsPerWindow, toolLimit.window, now)
@@ -245,6 +281,37 @@ func (l *PostgresLimiter) failOpen(identity, tenantName, toolName string, err er
 		l.logger.Warn("budget check failed open: treating as within budget", "identity", identity, "tenant", tenantName, "tool", toolName, "error", err)
 	}
 	return domain.Verdict{Allowed: true, FailedOpen: true, Reason: fmt.Sprintf("budget check failed open: %v", err)}
+}
+
+// longestWindowLocked returns the longest window configured across every
+// tier — the safe expiry threshold for the sweep (see
+// reapExpiredBucketsSQL). Called with l.mu already held, and only on a
+// sweep boundary, so the map walks cost nothing on the ordinary path.
+func (l *PostgresLimiter) longestWindowLocked() time.Duration {
+	longest := l.window
+	for _, limit := range l.tenantLimits {
+		if limit.window > longest {
+			longest = limit.window
+		}
+	}
+	for _, limit := range l.toolLimits {
+		if limit.window > longest {
+			longest = limit.window
+		}
+	}
+	return longest
+}
+
+// reapExpired deletes budget_buckets rows older than window. A failure
+// here is logged and swallowed: the sweep is housekeeping, and failing
+// the caller's request over it would turn a storage-growth concern into
+// an availability one. The next sweep retries.
+func (l *PostgresLimiter) reapExpired(window time.Duration, now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), budgetLimiterTimeout)
+	defer cancel()
+	if _, err := l.db.ExecContext(ctx, reapExpiredBucketsSQL, int64(window/time.Microsecond), now); err != nil && l.logger != nil {
+		l.logger.Warn("budget bucket sweep failed; expired rows will be retried on the next sweep", "error", err)
+	}
 }
 
 // Close releases the underlying connection pool, draining in-flight
