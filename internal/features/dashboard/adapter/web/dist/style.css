@@ -1,32 +1,35 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Design tokens (light/green "Donezo"-style system, Cycle 9a) */
-  --color-background: #F8FAFC;
-  --color-surface: #F8FAFC;
-  --color-card: #FFFFFF;
-  --color-border: #E2E8F0;
-  --color-foreground: #0F172A;
-  --color-muted-foreground: #64748B;
+  /* Design tokens (light/green "Donezo"-style system, Cycle 9a) — exact
+     values from the plan's Global "Design tokens" section, verified for
+     WCAG contrast in Step 7 (task-1-report.md); none needed adjusting. */
   --color-primary: #15803D;
   --color-primary-soft: #DCFCE7;
   --color-on-primary: #FFFFFF;
+  --color-accent: #D97706;
+  --color-background: #FFFFFF;
+  --color-surface: #F8FAFC;
+  --color-card: #FFFFFF;
+  --color-foreground: #0F172A;
+  --color-muted-foreground: #64748B;
+  --color-border: #E4ECFC;
   --color-destructive: #DC2626;
-
-  --radius-card: 16px;
+  --color-ring: #15803D;
+  --radius-card: 20px;
   --radius-control: 10px;
-
-  --font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;
-  --font-body: 'Inter', system-ui, sans-serif;
-
-  /* Decision-state accents — names kept from the previous theme (still
-     reused by .decision-cell rules below; Task 2 restyles those), values
-     darkened for 3:1 non-text contrast against --color-card (see task-1
-     WCAG verification in the task report). */
-  --allow: #16A34A;
-  --deny: #EF4444;
-  --throttled: #D97706;
+  --font-heading: 'Poppins', system-ui, sans-serif;
+  --font-body: 'Open Sans', system-ui, sans-serif;
+  --font-data: 'Fira Code', ui-monospace, monospace;
+  /* decision colors — kept under their previous names (still reused by
+     .decision-cell rules below; Task 2 restyles those), verified against
+     --color-card (#FFFFFF) for contrast; all passed at the plan's own
+     starting values, no adjustment needed. */
+  --allow: #15803D;
+  --deny: #DC2626;
+  --throttled: #B45309;
   --passthrough: #64748B;
+  --blocked: #DC2626;
 
   /* Legacy dark-theme tokens — still referenced by the not-yet-restyled
      .audit-table/.status-grid/.chip/.badge/etc. rules below (Task 2 scope).
@@ -38,10 +41,8 @@
   --border: #334155;
   --fg: #F8FAFC;
   --fg-muted: #94A3B8;
-  --focus-ring: #60A5FA;
   --radius: 6px;
   --font-ui: 'Fira Sans', system-ui, sans-serif;
-  --font-data: 'Fira Code', ui-monospace, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -71,7 +72,7 @@ button, input {
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
