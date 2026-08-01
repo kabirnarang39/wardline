@@ -76,4 +76,21 @@ func TestGC_SavesRemainingEntriesEvenAfterEvictingExpiredOnes(t *testing.T) {
 	if len(store.saved) != 1 {
 		t.Fatalf("expected exactly the surviving identity saved, got %d entries: %v", len(store.saved), store.saved)
 	}
+	staleKey := tenantIdentityKey("acme", "stale")
+	if len(store.deletedKeys) != 1 || store.deletedKeys[0] != staleKey {
+		t.Errorf("expected the evicted identity's key %q passed through to SaveAll's deletedKeys, got %v", staleKey, store.deletedKeys)
+	}
+}
+
+func TestGC_SkipsDeletedKeysWhenNothingEvicted(t *testing.T) {
+	store := &fakeBaselineStore{}
+	cfg := domain.HeuristicConfig{WindowSeconds: 60}
+	d := NewDetector(cfg, noopWriter{}, nil, nil, nil, time.Now, store)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
+
+	d.gc(time.Now(), time.Minute)
+
+	if len(store.deletedKeys) != 0 {
+		t.Errorf("expected no deletedKeys when nothing was evicted, got %v", store.deletedKeys)
+	}
 }

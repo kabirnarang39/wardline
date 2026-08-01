@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"bytes"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -16,6 +17,12 @@ import (
 )
 
 const baselineTestSchema = "wardline_test_anomaly_baseline"
+
+// testInstanceID is the fixed instance ID passed to NewPostgresBaselineStore
+// by every test in this file that doesn't specifically need a different
+// one (see the cross-replica isolation test below, which uses two
+// distinct instance IDs on purpose).
+const testInstanceID = "test-instance"
 
 func baselineTestDSN(t *testing.T) string {
 	t.Helper()
@@ -69,7 +76,7 @@ func TestPostgresBaselineStore_SaveThenLoadRoundTrips(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, nil)
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
@@ -77,7 +84,7 @@ func TestPostgresBaselineStore_SaveThenLoadRoundTrips(t *testing.T) {
 
 	snap := sampleSnapshot()
 	key := "4:acme:alice"
-	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: snap}); err != nil {
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: snap}, nil); err != nil {
 		t.Fatalf("SaveAll: %v", err)
 	}
 
@@ -104,7 +111,7 @@ func TestPostgresBaselineStore_SaveAllOverwritesExistingKey(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, nil)
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
@@ -113,12 +120,12 @@ func TestPostgresBaselineStore_SaveAllOverwritesExistingKey(t *testing.T) {
 	key := "5:acme2:alice"
 	first := sampleSnapshot()
 	first.Cur.Total = 1
-	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: first}); err != nil {
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: first}, nil); err != nil {
 		t.Fatalf("first SaveAll: %v", err)
 	}
 	second := sampleSnapshot()
 	second.Cur.Total = 99
-	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: second}); err != nil {
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: second}, nil); err != nil {
 		t.Fatalf("second SaveAll: %v", err)
 	}
 
@@ -138,14 +145,14 @@ func TestPostgresBaselineStore_LoadAllSkipsCorruptRowsAndLogsWarn(t *testing.T) 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, logger)
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
 	goodKey := "4:acme:bob"
-	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{goodKey: sampleSnapshot()}); err != nil {
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{goodKey: sampleSnapshot()}, nil); err != nil {
 		t.Fatalf("SaveAll (good row): %v", err)
 	}
 
@@ -156,8 +163,8 @@ func TestPostgresBaselineStore_LoadAllSkipsCorruptRowsAndLogsWarn(t *testing.T) 
 	}
 	defer func() { _ = rawDB.Close() }()
 	if _, err := rawDB.Exec(
-		`INSERT INTO anomaly_baselines (key, state, updated_at) VALUES ($1, $2, now())`,
-		"corrupt-key", []byte(`{not valid json`),
+		`INSERT INTO anomaly_baselines (instance_id, key, state, updated_at) VALUES ($1, $2, $3, now())`,
+		testInstanceID, "corrupt-key", []byte(`{not valid json`),
 	); err != nil {
 		t.Fatalf("insert corrupt row: %v", err)
 	}
@@ -181,7 +188,7 @@ func TestPostgresBaselineStore_LoadAllOnEmptyTableReturnsEmptyMap(t *testing.T) 
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, nil)
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
@@ -200,13 +207,13 @@ func TestPostgresBaselineStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s1, err := adapter.NewPostgresBaselineStore(dsn, nil)
+	s1, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresBaselineStore: %v", err)
 	}
 	defer func() { _ = s1.Close() }()
 
-	s2, err := adapter.NewPostgresBaselineStore(dsn, nil)
+	s2, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresBaselineStore (should be idempotent): %v", err)
 	}
@@ -214,8 +221,150 @@ func TestPostgresBaselineStore_TableCreationIsIdempotent(t *testing.T) {
 }
 
 func TestNewPostgresBaselineStore_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresBaselineStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", nil)
+	_, err := adapter.NewPostgresBaselineStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", testInstanceID, nil)
 	if err == nil {
 		t.Fatal("expected an error constructing a store against an unreachable database")
+	}
+}
+
+// TestPostgresBaselineStore_CrossReplicaIsolation codifies I1's final-review
+// finding: two replicas sharing one Postgres DSN must never clobber each
+// other's checkpoint for the same (tenant, identity). Two stores with
+// different instance IDs each save a different value for the exact same
+// key, and each must reload only its own value back.
+func TestPostgresBaselineStore_CrossReplicaIsolation(t *testing.T) {
+	dsn := baselineTestDSN(t)
+	dropBaselinesTable(t, dsn)
+
+	s1, err := adapter.NewPostgresBaselineStore(dsn, "replica-1", nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore (replica-1): %v", err)
+	}
+	defer func() { _ = s1.Close() }()
+
+	s2, err := adapter.NewPostgresBaselineStore(dsn, "replica-2", nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore (replica-2): %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	key := "4:acme:alice"
+	snap1 := sampleSnapshot()
+	snap1.Cur.Total = 111
+	snap2 := sampleSnapshot()
+	snap2.Cur.Total = 222
+
+	if err := s1.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: snap1}, nil); err != nil {
+		t.Fatalf("replica-1 SaveAll: %v", err)
+	}
+	if err := s2.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{key: snap2}, nil); err != nil {
+		t.Fatalf("replica-2 SaveAll: %v", err)
+	}
+
+	loaded1, err := s1.LoadAll()
+	if err != nil {
+		t.Fatalf("replica-1 LoadAll: %v", err)
+	}
+	loaded2, err := s2.LoadAll()
+	if err != nil {
+		t.Fatalf("replica-2 LoadAll: %v", err)
+	}
+
+	if got, ok := loaded1[key]; !ok || got.Cur.Total != 111 {
+		t.Errorf("expected replica-1 to reload its own Cur.Total=111 for %q, got ok=%v got=%+v", key, ok, got)
+	}
+	if got, ok := loaded2[key]; !ok || got.Cur.Total != 222 {
+		t.Errorf("expected replica-2 to reload its own Cur.Total=222 for %q, got ok=%v got=%+v", key, ok, got)
+	}
+}
+
+// TestPostgresBaselineStore_SaveAllDeletesEvictedRows codifies I2's final
+// review finding ("FINDING A CONFIRMED"): save two identities, evict one
+// (as Detector's gc() would after a cutoff), confirm its Postgres row is
+// gone via a fresh LoadAll while the other identity's row remains.
+func TestPostgresBaselineStore_SaveAllDeletesEvictedRows(t *testing.T) {
+	dsn := baselineTestDSN(t)
+	dropBaselinesTable(t, dsn)
+
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	keepKey := "4:acme:alice"
+	evictKey := "4:acme:bob"
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{
+		keepKey:  sampleSnapshot(),
+		evictKey: sampleSnapshot(),
+	}, nil); err != nil {
+		t.Fatalf("initial SaveAll: %v", err)
+	}
+
+	// Simulate the next GC tick: evictKey has aged out of d.state, so it's
+	// no longer in snapshots, and is instead passed as a deletedKey.
+	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{
+		keepKey: sampleSnapshot(),
+	}, []string{evictKey}); err != nil {
+		t.Fatalf("SaveAll with deletedKeys: %v", err)
+	}
+
+	loaded, err := s.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if _, ok := loaded[evictKey]; ok {
+		t.Errorf("expected the evicted identity's row to be deleted, but it reloaded: %v", loaded[evictKey])
+	}
+	if _, ok := loaded[keepKey]; !ok {
+		t.Errorf("expected the surviving identity's row to remain, got %v", loaded)
+	}
+}
+
+// TestPostgresBaselineStore_SaveAllBatchesLargeMaps codifies I3's final
+// review finding: SaveAll must not hit a single unchunked transaction's
+// deadline at scale. 1200 keys is comfortably past one
+// baselineSaveBatchSize-sized batch (3 batches at 500/batch), so this
+// exercises the multi-batch path; a correctness round-trip is the
+// right-sized regression here, not a reproduction of the reviewer's
+// 34k/50k-row timing numbers (slow, environment-sensitive, and not what
+// this test needs to prove).
+func TestPostgresBaselineStore_SaveAllBatchesLargeMaps(t *testing.T) {
+	dsn := baselineTestDSN(t)
+	dropBaselinesTable(t, dsn)
+
+	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	const n = 1200
+	snapshots := make(map[string]anomalyusecase.IdentityStateSnapshot, n)
+	for i := 0; i < n; i++ {
+		snap := sampleSnapshot()
+		snap.Cur.Total = i
+		snapshots[fmt.Sprintf("4:acme:user-%d", i)] = snap
+	}
+
+	if err := s.SaveAll(snapshots, nil); err != nil {
+		t.Fatalf("SaveAll of %d keys: %v", n, err)
+	}
+
+	loaded, err := s.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != n {
+		t.Fatalf("expected all %d keys to round-trip, got %d", n, len(loaded))
+	}
+	for key, want := range snapshots {
+		got, ok := loaded[key]
+		if !ok {
+			t.Fatalf("expected key %q in loaded map", key)
+		}
+		if got.Cur.Total != want.Cur.Total {
+			t.Errorf("key %q: expected Cur.Total=%d, got %d", key, want.Cur.Total, got.Cur.Total)
+		}
 	}
 }

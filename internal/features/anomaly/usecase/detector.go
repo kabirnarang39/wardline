@@ -36,7 +36,7 @@ type blocker interface {
 // SaveAll).
 type baselineStore interface {
 	LoadAll() (map[string]IdentityStateSnapshot, error)
-	SaveAll(map[string]IdentityStateSnapshot) error
+	SaveAll(snapshots map[string]IdentityStateSnapshot, deletedKeys []string) error
 }
 
 // Detector implements audit/domain.LiveSink: every published audit entry

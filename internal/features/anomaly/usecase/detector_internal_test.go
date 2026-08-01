@@ -522,12 +522,13 @@ func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
 // assert Publish never reaches the store at all -- the load-bearing
 // constraint this task exists to prove.
 type fakeBaselineStore struct {
-	loadResult map[string]IdentityStateSnapshot
-	loadErr    error
-	saved      map[string]IdentityStateSnapshot
-	saveErr    error
-	loadCalls  int
-	saveCalls  int
+	loadResult  map[string]IdentityStateSnapshot
+	loadErr     error
+	saved       map[string]IdentityStateSnapshot
+	deletedKeys []string
+	saveErr     error
+	loadCalls   int
+	saveCalls   int
 }
 
 func (f *fakeBaselineStore) LoadAll() (map[string]IdentityStateSnapshot, error) {
@@ -535,9 +536,10 @@ func (f *fakeBaselineStore) LoadAll() (map[string]IdentityStateSnapshot, error) 
 	return f.loadResult, f.loadErr
 }
 
-func (f *fakeBaselineStore) SaveAll(m map[string]IdentityStateSnapshot) error {
+func (f *fakeBaselineStore) SaveAll(m map[string]IdentityStateSnapshot, deletedKeys []string) error {
 	f.saveCalls++
 	f.saved = m
+	f.deletedKeys = deletedKeys
 	return f.saveErr
 }
 
