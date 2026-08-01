@@ -26,6 +26,10 @@
         <span class="nav-icon" data-icon="federation"></span>
         <span>Federation</span>
       </button>
+      <button class="nav-item" data-view="credentials">
+        <span class="nav-icon" data-icon="credentials"></span>
+        <span>Credentials</span>
+      </button>
       <button class="nav-item" data-view="policy">
         <span class="nav-icon" data-icon="policy"></span>
         <span>Policy</span>
@@ -154,6 +158,21 @@
             <tbody id="federation-rows"></tbody>
           </table>
           <p id="federation-empty" class="empty-state" hidden>No cross-instance correlated alerts yet.</p>
+        </div>
+      </section>
+
+      <section id="view-credentials" class="view" aria-labelledby="view-credentials-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-credentials-heading">Credentials</h1>
+        </div>
+        <div class="card" style="max-width: 480px;">
+          <p style="margin-top: 0; color: var(--muted); font-size: 14px;">
+            Revoking an identity immediately invalidates every outstanding and future-until-expiry access token, and any outstanding refresh token, for that identity.
+          </p>
+          <label for="revoke-identity-input" style="display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px;">Identity to revoke</label>
+          <input type="text" id="revoke-identity-input" placeholder="e.g. acme-alice" aria-label="Identity to revoke" style="width: 100%; min-height: 44px; padding: 0 14px; background: var(--mist); border: 1px solid var(--border); border-radius: var(--radius-control); margin-bottom: 12px;">
+          <button id="revoke-btn" class="btn-primary">Revoke credential</button>
+          <p id="revoke-result" role="status" aria-live="polite" style="margin-top: 12px; font-size: 14px;" hidden></p>
         </div>
       </section>
 

@@ -473,6 +473,29 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   .btn-unblock:active { transform: none; }
 }
 
+.btn-primary {
+  min-height: 44px;
+  padding: 0 20px;
+  background: var(--brand);
+  color: var(--paper);
+  border: none;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color var(--duration-standard) var(--ease-hover);
+}
+.btn-primary:hover { background: #14732F; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary:active { transform: none; }
+}
+
 .badge {
   font-family: var(--font-body);
   font-weight: 600;
