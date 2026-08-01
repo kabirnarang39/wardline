@@ -47,10 +47,20 @@ policy-pack marketplace, HA deployment.
   trust-boundary requirements and what's deliberately out of scope (a
   SPIFFE Workload API client inside Wardline itself, dynamic
   SPIFFE-ID-to-tenant mapping).
+- **Refresh tokens + configurable JWT TTL** — `credential.access_token_ttl_seconds`
+  replaces a hardcoded 15-minute constant (defaults to 900s,
+  unchanged); `POST /credentials/refresh` exchanges a single-use,
+  rotating refresh token (`credential.refresh_token_ttl_seconds`,
+  default 86400s / 24h) for a new access+refresh pair without
+  re-presenting the original bootstrap credential. Revoking an
+  identity invalidates its outstanding refresh tokens immediately, not
+  just its access tokens. See [Credential
+  Issuance](/features/credential-issuance/) for what's deliberately out
+  of scope (refresh-token-reuse detection / cascading family
+  revocation).
 
 ## v2.0 (planned, not yet shipped)
 
-- **Refresh tokens + configurable JWT TTL** — issuing short-lived access tokens with refresh token rotation and tunable expiration.
 - **Distributed/shared budget-enforcement counters** — sharing budget state across replicas for consistent enforcement.
 - **Persistent anomaly-detection baseline state + dashboard panel** — storing detection baselines and surfacing anomalies in a UI panel.
 - **Compliance-evidence-export hardening** — cryptographic signing, live query API, redacted credential inclusion, scheduled export, and log retention.

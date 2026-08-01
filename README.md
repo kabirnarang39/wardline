@@ -187,7 +187,8 @@ mapping identity names to preshared registration secrets — see
 `credentials.yaml.example`).
 
 When on, `X-Wardline-Identity` is no longer read. Agents exchange their
-registration secret for a short-lived (15-minute) RS256 JWT via
+registration secret for a short-lived RS256 JWT
+(`credential.access_token_ttl_seconds`, default 900s / 15m) via
 `POST /credentials/token {"secret": "..."}`, then present it as
 `Authorization: Bearer <jwt>` on every proxied call. A missing, malformed,
 expired, tampered, or revoked token gets HTTP 401 before the request
@@ -201,6 +202,16 @@ cuts off every outstanding and future token for that identity until the
 revocation itself expires (worst case, one token TTL later); to prevent
 that identity from bootstrapping a fresh token afterward, also remove or
 rotate its entry in `credentials.yaml`.
+
+Bootstrapping now also returns a refresh token alongside the access
+token; `POST /credentials/refresh {"refresh_token": "..."}` exchanges it
+for a new access+refresh pair without re-presenting the original
+secret/ID-token/SPIFFE-ID, until the refresh token expires
+(`credential.refresh_token_ttl_seconds`, default 86400s / 24h) or its
+identity is revoked. Refresh tokens rotate on every use (single-use --
+an already-redeemed one is rejected the same as an unknown one) and are
+invalidated immediately, for every outstanding refresh token an identity
+holds, the moment that identity is revoked.
 
 The signing keypair is generated fresh in-process at `wardline serve`
 startup — not persisted, not shared across replicas. Restarting the

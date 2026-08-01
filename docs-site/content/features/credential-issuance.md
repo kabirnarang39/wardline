@@ -13,10 +13,20 @@ features:
   credential_issuance: true
 credential:
   identities_file: "identities.yaml"
-  signing_key_file: ""   # optional; see HA deployment for why this matters with >1 replica
+  signing_key_file: ""              # optional; see HA deployment for why this matters with >1 replica
+  access_token_ttl_seconds: 900     # optional, default 900 (15m)
+  refresh_token_ttl_seconds: 86400  # optional, default 86400 (24h)
 ```
 
 Tokens can be revoked; revocation is checked on every request.
+
+`POST /credentials/token` returns both an access token and a refresh
+token. `POST /credentials/refresh {"refresh_token": "..."}` exchanges a
+still-valid, not-yet-used refresh token for a new pair of both --
+without re-presenting the original bootstrap credential -- until the
+refresh token itself expires or its identity is revoked. Refresh tokens
+are single-use: each successful refresh rotates to a brand-new refresh
+token, and the one just redeemed can never be used again.
 
 ## Known limitations
 
@@ -27,11 +37,13 @@ Tokens can be revoked; revocation is checked on every request.
   mtls`) trusts a single static header — see [mTLS/SPIFFE
   Bootstrap](/features/mtls-bootstrap/) for its trust-boundary
   requirements before enabling it.
-- No refresh tokens — rotation model is re-bootstrap with the same
-  registration secret before expiry.
+- Refresh-token reuse is rejected the same as any other invalid token,
+  but there's no reuse-DETECTION signal or cascading family revocation
+  (a real theft-response mechanism some OAuth2 implementations add) --
+  a stolen-and-already-used refresh token simply fails the same generic
+  way an expired or never-issued one does, with no extra alert.
 - Revocation state is per-process unless `postgres_storage` is also on
   (see [HA deployment](/features/ha-deployment/)).
-- JWT TTL is a single fixed constant, not yet operator-configurable.
 - **Revocation is keyed by `(tenant, identity)`, with one residual
   wildcard gap.** Identity names are per-tenant-unique (two different
   IdPs or two `credentials.yaml` entries can legitimately both provision
