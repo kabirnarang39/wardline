@@ -671,6 +671,20 @@ func postCredentialsToken(t *testing.T, listenAddr, secret string) *http.Respons
 	return resp
 }
 
+// postCredentialsRefresh posts refreshToken to /credentials/refresh --
+// the real-binary counterpart to postCredentialsToken, exchanging a
+// refresh token for a new (access, refresh) pair instead of the
+// original bootstrap secret.
+func postCredentialsRefresh(t *testing.T, listenAddr, refreshToken string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"refresh_token":%q}`, refreshToken)
+	resp, err := http.Post("http://"+listenAddr+"/credentials/refresh", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 // postCredentialsTokenWithHeader posts an empty-bodied
 // /credentials/token request carrying headerValue in headerName --
 // simulates a terminating mTLS proxy/mesh forwarding an already-verified
@@ -824,6 +838,134 @@ credential:
 	revokedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
 	if revokedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a revoked identity's still-otherwise-valid token, got %d", revokedResp.StatusCode)
+	}
+}
+
+// TestServeEndToEnd_RefreshTokenLifecycle proves the full refresh-token
+// lifecycle over a real HTTP request through the real binary: bootstrap
+// returns both an access and a refresh token; a short, test-configured
+// access_token_ttl_seconds makes expiry actually observable within the
+// test's own runtime; the refresh token exchanges for a new working
+// access token; the OLD refresh token is rejected afterward (single-use
+// rotation); and revoking the identity invalidates the NEW refresh token
+// too (RevokeAllForIdentity), not just the access token.
+func TestServeEndToEnd_RefreshTokenLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: agent-abc123
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// access_token_ttl_seconds is 2, not the brief's originally suggested
+	// 1 -- lestrrat-go/jwx/v3's NumericDate marshals exp with whole-second
+	// (floored) precision (see JWTIssuerVerifier.Issue), so a freshly
+	// issued token's REAL remaining lifetime is only (ttl-1, ttl] seconds,
+	// not a full ttl seconds. With ttl=1 that range is (0,1] -- the
+	// "access token works immediately" assertion below could race a
+	// token that's already expired by the time the request lands. ttl=2
+	// guarantees at least 1 full second of real headroom for that
+	// assertion. This is the same fix already applied to this project's
+	// own JWTIssuerVerifier TTL tests (see jwt_test.go and its commit
+	// "fix(credential): use whole-second TTLs in JWTIssuerVerifier's TTL
+	// tests"), which uses the identical 2s TTL / 2100ms sleep pairing.
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+  access_token_ttl_seconds: 2
+  refresh_token_ttl_seconds: 3600`, credentialsPath))
+
+	// Bootstrap: expect BOTH an access token and a refresh token.
+	tokenResp := postCredentialsToken(t, listenAddr, "a-long-random-registration-secret")
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var bootstrapBody struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&bootstrapBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if bootstrapBody.Token == "" || bootstrapBody.RefreshToken == "" {
+		t.Fatal("expected non-empty access and refresh tokens from bootstrap")
+	}
+
+	// The access token works immediately.
+	allowedResp := postToolCallWithBearer(t, listenAddr, bootstrapBody.Token, "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with a fresh access token, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// Wait past the configured 2-second access-token TTL.
+	time.Sleep(2100 * time.Millisecond)
+	expiredResp := postToolCallWithBearer(t, listenAddr, bootstrapBody.Token, "read_file")
+	if expiredResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an access token past its configured 2s TTL, got %d", expiredResp.StatusCode)
+	}
+
+	// Refresh: exchange the refresh token for a NEW working access token.
+	refreshResp := postCredentialsRefresh(t, listenAddr, bootstrapBody.RefreshToken)
+	if refreshResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 refreshing, got %d (stderr: %s)", refreshResp.StatusCode, stderr.String())
+	}
+	var refreshedBody struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(refreshResp.Body).Decode(&refreshedBody); err != nil {
+		t.Fatalf("invalid refresh response: %v", err)
+	}
+	_ = refreshResp.Body.Close()
+	if refreshedBody.Token == "" || refreshedBody.RefreshToken == "" {
+		t.Fatal("expected non-empty NEW access and refresh tokens from refresh")
+	}
+	if refreshedBody.RefreshToken == bootstrapBody.RefreshToken {
+		t.Fatal("expected refresh to rotate to a DIFFERENT refresh token")
+	}
+
+	newAccessResp := postToolCallWithBearer(t, listenAddr, refreshedBody.Token, "read_file")
+	if newAccessResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with the new access token, got %d (stderr: %s)", newAccessResp.StatusCode, stderr.String())
+	}
+
+	// The OLD refresh token is now rejected (single-use rotation).
+	reusedOldResp := postCredentialsRefresh(t, listenAddr, bootstrapBody.RefreshToken)
+	if reusedOldResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 reusing the already-rotated-away refresh token, got %d", reusedOldResp.StatusCode)
+	}
+
+	// Revoke the identity from loopback.
+	revokeReq, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/credentials/revoke", strings.NewReader(`{"identity":"agent-abc123"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeResp, err := http.DefaultClient.Do(revokeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 revoking from loopback, got %d (stderr: %s)", revokeResp.StatusCode, stderr.String())
+	}
+
+	// The NEW refresh token (still within its 1-hour TTL, never used
+	// again yet) is now ALSO rejected -- proves RevocationService's
+	// RevokeAllForIdentity call actually reaches the live refresh store,
+	// not just the access-token Revoker.
+	revokedRefreshResp := postCredentialsRefresh(t, listenAddr, refreshedBody.RefreshToken)
+	if revokedRefreshResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 refreshing with a since-revoked identity's still-otherwise-valid refresh token, got %d", revokedRefreshResp.StatusCode)
 	}
 }
 
