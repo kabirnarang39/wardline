@@ -195,7 +195,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// model is scoped to tool calls, and every real MCP client performs
 		// this handshake before its first tool call. See
 		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
-		h.forward(w, r, span, identity, tenant, parsed.Method, parsed.ID, start, "passthrough")
+		h.forward(w, r, span, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "")
 		return
 	}
 
@@ -225,15 +225,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.forward(w, r, span, identity, tenant, call.Tool, parsed.ID, start, "allow")
+	// A fail-open verdict is an allow that skipped enforcement entirely.
+	// Carry its reason into the audit entry so the skip leaves a durable
+	// trace — the Warn log line the limiter emits is one line per request,
+	// easy to lose under load, and /readyz stays green through the
+	// query-level failures that trigger this. An ordinary allow keeps its
+	// empty reason: only a genuine fail-open populates this.
+	successReason := ""
+	if budgetVerdict.FailedOpen {
+		successReason = budgetVerdict.Reason
+	}
+
+	h.forward(w, r, span, identity, tenant, call.Tool, parsed.ID, start, "allow", successReason)
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
 // depending on whether the upstream call succeeded or failed. successDecision
 // is the decision recorded on a successful upstream response — "allow" for a
 // policy-evaluated tool call, "passthrough" for a protocol-lifecycle method
-// that skipped policy/budget evaluation entirely.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision string) {
+// that skipped policy/budget evaluation entirely. successReason is the
+// reason recorded alongside it — empty for an ordinary allow (and always
+// empty for passthrough, which never reaches a budget check), non-empty
+// only when the budget check failed open and that needs a durable trace.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision, successReason string) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -244,7 +258,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.finish(span, identity, tenant, tool, successDecision, "", start)
+			h.finish(span, identity, tenant, tool, successDecision, successReason, start)
 		}
 		return nil
 	}

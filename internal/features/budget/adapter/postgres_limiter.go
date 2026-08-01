@@ -244,7 +244,7 @@ func (l *PostgresLimiter) failOpen(identity, tenantName, toolName string, err er
 	if l.logger != nil {
 		l.logger.Warn("budget check failed open: treating as within budget", "identity", identity, "tenant", tenantName, "tool", toolName, "error", err)
 	}
-	return domain.Verdict{Allowed: true, Reason: fmt.Sprintf("budget check failed open: %v", err)}
+	return domain.Verdict{Allowed: true, FailedOpen: true, Reason: fmt.Sprintf("budget check failed open: %v", err)}
 }
 
 // Close releases the underlying connection pool, draining in-flight
