@@ -464,6 +464,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
 .btn-unblock:hover { background: var(--deny); color: var(--paper); }
 
+.btn-unblock:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover), background-color var(--duration-standard) var(--ease-hover), color var(--duration-standard) var(--ease-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-unblock:active { transform: none; }
+}
+
 .badge {
   font-family: var(--font-body);
   font-weight: 600;
