@@ -1,13 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+
 :root {
+  /* Design tokens (light/green "Donezo"-style system, Cycle 9a) */
+  --color-background: #F8FAFC;
+  --color-surface: #F8FAFC;
+  --color-card: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-foreground: #0F172A;
+  --color-muted-foreground: #64748B;
+  --color-primary: #15803D;
+  --color-primary-soft: #DCFCE7;
+  --color-on-primary: #FFFFFF;
+  --color-destructive: #DC2626;
+
+  --radius-card: 16px;
+  --radius-control: 10px;
+
+  --font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+
+  /* Decision-state accents — names kept from the previous theme (still
+     reused by .decision-cell rules below; Task 2 restyles those), values
+     darkened for 3:1 non-text contrast against --color-card (see task-1
+     WCAG verification in the task report). */
+  --allow: #16A34A;
+  --deny: #EF4444;
+  --throttled: #D97706;
+  --passthrough: #64748B;
+
+  /* Legacy dark-theme tokens — still referenced by the not-yet-restyled
+     .audit-table/.status-grid/.chip/.badge/etc. rules below (Task 2 scope).
+     Kept at their original values so those views keep rendering with their
+     old look until Task 2 migrates them onto the tokens above; remove once
+     nothing references them. */
   --bg: #020617;
   --surface: #1A1E2F;
   --border: #334155;
   --fg: #F8FAFC;
   --fg-muted: #94A3B8;
-  --allow: #22C55E;
-  --deny: #EF4444;
-  --throttled: #F59E0B;
-  --passthrough: #64748B;
   --focus-ring: #60A5FA;
   --radius: 6px;
   --font-ui: 'Fira Sans', system-ui, sans-serif;
@@ -22,11 +52,16 @@ html, body {
 }
 
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font-family: var(--font-ui);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
 }
 
 button, input {
@@ -45,86 +80,197 @@ button, input {
   min-height: 100dvh;
 }
 
-/* Rail nav (desktop) / top bar (mobile) */
-.rail {
+/* Sidebar nav (desktop) / top bar (mobile) */
+.sidebar {
   display: flex;
   flex-direction: column;
-  width: 220px;
+  width: 240px;
   flex-shrink: 0;
-  padding: 20px 12px;
-  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  background: var(--color-card);
+  border-right: 1px solid var(--color-border);
   gap: 4px;
 }
 
 .brand {
-  font-family: var(--font-data);
-  font-weight: 600;
-  font-size: 18px;
-  padding: 8px 12px 20px;
-  letter-spacing: 0.02em;
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--color-primary);
+  padding: 8px 12px 24px;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: transparent;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   text-align: left;
   cursor: pointer;
-  transition: background-color 150ms ease-out;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 15px;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
 }
 
-.nav-item:hover { background: var(--surface); }
-.nav-item.is-active { background: var(--surface); font-weight: 600; }
+.nav-item:hover { background: var(--color-surface); color: var(--color-foreground); }
+.nav-item.is-active { background: var(--color-primary-soft); color: var(--color-primary); font-weight: 600; }
 
-.nav-icon {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
+.nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
 
 .live-indicator {
   margin-top: auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   font-size: 13px;
-  color: var(--fg-muted);
+  color: var(--color-muted-foreground);
 }
 
 .live-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--allow);
+  background: var(--color-primary);
   animation: pulse 2s ease-in-out infinite;
 }
 
-.live-dot.is-stale {
-  background: var(--throttled);
-  animation: none;
+.live-dot.is-stale { background: var(--throttled); animation: none; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+
+/* Sticky top bar shell (Task 1 builds the shell only; Task 6 wires it up) */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0 20px;
+  background: var(--color-surface);
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+.topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 360px;
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .live-dot { animation: none; }
+.topbar-search-icon { width: 16px; height: 16px; color: var(--color-muted-foreground); flex-shrink: 0; }
+
+.topbar-search input {
+  border: none;
+  background: transparent;
+  width: 100%;
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.topbar-icon-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  color: var(--color-muted-foreground);
+}
+
+.topbar-icon-btn:hover { color: var(--color-foreground); background: var(--color-surface); }
+.topbar-icon-btn svg { width: 18px; height: 18px; }
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--color-destructive);
+  color: var(--color-on-primary);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notification-badge[hidden],
+.identity-tenant-badge[hidden] { display: none; }
+
+.topbar-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+.identity-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  padding: 4px;
+}
+
+.identity-tenant-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* Generic card system — later tasks build Overview's KPI tiles, Blocked's
+   list, Federation's list, Credentials' form from these. */
+.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  padding: 24px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
 }
 
 .content {
   flex: 1;
   min-width: 0;
-  padding: 32px 40px;
-  overflow-x: auto;
+  padding: 0 40px 40px;
 }
 
 .view[hidden] { display: none; }
@@ -332,11 +478,11 @@ h1 {
 
 @media (max-width: 1023px) {
   #app { flex-direction: column; }
-  .rail {
+  .sidebar {
     flex-direction: row;
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--color-border);
     padding: 8px 12px;
     align-items: center;
   }
@@ -346,6 +492,6 @@ h1 {
 }
 
 @media (max-width: 480px) {
-  .rail .nav-item span:last-child { display: none; }
+  .sidebar .nav-item span:last-child { display: none; }
   .view-header { flex-direction: column; align-items: flex-start; }
 }

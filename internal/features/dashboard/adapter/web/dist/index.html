@@ -8,7 +8,7 @@
 </head>
 <body>
   <div id="app">
-    <nav class="rail" aria-label="Dashboard sections">
+    <nav class="sidebar" aria-label="Dashboard sections">
       <div class="brand">Wardline</div>
       <button class="nav-item is-active" data-view="activity" aria-current="page">
         <span class="nav-icon" data-icon="activity"></span>
@@ -33,6 +33,23 @@
     </nav>
 
     <main class="content">
+      <header class="topbar">
+        <div class="topbar-search">
+          <span class="topbar-search-icon" data-icon="search" aria-hidden="true"></span>
+          <input type="search" id="global-search" placeholder="Search..." aria-label="Search current view">
+        </div>
+        <div class="topbar-right">
+          <button class="topbar-icon-btn" id="notifications-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
+            <span data-icon="bell" aria-hidden="true"></span>
+            <span class="notification-badge" id="notification-badge" hidden>0</span>
+          </button>
+          <div class="topbar-identity" id="topbar-identity">
+            <span class="identity-avatar" data-icon="user" aria-hidden="true"></span>
+            <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+          </div>
+        </div>
+      </header>
+
       <section id="view-activity" class="view is-active" aria-labelledby="view-activity-heading">
         <div class="view-header">
           <h1 id="view-activity-heading">Activity</h1>
