@@ -4,6 +4,8 @@ import { mountIcons } from './icons.js';
 const POLL_INTERVAL_MS = 2000;
 const MAX_CLIENT_ROWS = 500;
 
+let lastSeenNotificationCount = 0;
+
 const state = {
   entries: [],
   lastID: 0,
@@ -87,6 +89,7 @@ function renderAnomalies() {
   if (state.anomalies.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
+    updateNotificationBadge();
     return;
   }
   empty.hidden = true;
@@ -102,6 +105,7 @@ function renderAnomalies() {
     </tr>
   `).join('');
   tbody.innerHTML = rows;
+  updateNotificationBadge();
 }
 
 async function pollAnomalies() {
@@ -200,6 +204,7 @@ async function renderBlocked() {
   if (entries.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
+    updateNotificationBadge();
     return;
   }
   empty.hidden = true;
@@ -217,6 +222,7 @@ async function renderBlocked() {
   tbody.querySelectorAll('.btn-unblock').forEach((btn) => {
     btn.addEventListener('click', () => confirmUnblock(btn.dataset.identity, btn.dataset.tenant));
   });
+  updateNotificationBadge();
 }
 
 async function confirmUnblock(identity, tenant) {
@@ -265,6 +271,18 @@ function wireCredentials() {
   });
 }
 
+function updateNotificationBadge() {
+  const total = state.anomalies.length + state.blocked.length;
+  const unseen = total - lastSeenNotificationCount;
+  const badge = document.getElementById('notification-badge');
+  if (unseen > 0) {
+    badge.hidden = false;
+    badge.textContent = unseen > 99 ? '99+' : String(unseen);
+  } else {
+    badge.hidden = true;
+  }
+}
+
 function setLive(ok) {
   state.lastPollOK = ok;
   const dot = document.getElementById('live-dot');
@@ -311,6 +329,14 @@ async function loadStatus() {
           </li>
         `).join('')
       : '<li>No optional features configured.</li>';
+
+    const tenantBadge = document.getElementById('identity-tenant-badge');
+    if (status.CallerTenant) {
+      tenantBadge.hidden = false;
+      tenantBadge.textContent = status.CallerTenant;
+    } else {
+      tenantBadge.hidden = true;
+    }
   } catch {
     document.getElementById('status-grid').textContent = 'Failed to load status — try refreshing.';
   }
@@ -371,11 +397,33 @@ function wireFilters() {
   });
 }
 
+function wireTopbar() {
+  document.getElementById('notifications-btn').addEventListener('click', () => {
+    lastSeenNotificationCount = state.anomalies.length + state.blocked.length;
+    updateNotificationBadge();
+  });
+
+  document.getElementById('global-search').addEventListener('input', (e) => {
+    const activeView = document.querySelector('.view:not([hidden])');
+    if (!activeView) return;
+    const value = e.target.value;
+    if (activeView.id === 'view-activity') {
+      state.filters.identity = value;
+      document.getElementById('filter-identity').value = value;
+      renderActivity();
+    }
+    // Other views have no client-side filter state to subsume -- YAGNI,
+    // matches the design spec's own scope.
+  });
+}
+
 function init() {
   mountIcons(document);
   wireNav();
   wireFilters();
   wireCredentials();
+  wireTopbar();
+  loadStatus();
   pollAudit();
   pollAnomalies();
   pollFederation();

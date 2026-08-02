@@ -340,11 +340,22 @@ func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, h.policy)
 }
 
+// statusResponse wraps domain.StatusInfo with one per-request field
+// (CallerTenant) StatusInfo itself cannot carry -- StatusInfo is a
+// process-wide value cached by StatusProvider, computed once, identical
+// for every caller; CallerTenant is derived fresh per request from
+// h.tenantFilter, the same RBAC-resolved scoping every other route in
+// this file already uses.
+type statusResponse struct {
+	domain.StatusInfo
+	CallerTenant string
+}
+
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowed(w, r) {
 		return
 	}
-	writeJSON(w, h.status.Status())
+	writeJSON(w, statusResponse{StatusInfo: h.status.Status(), CallerTenant: h.tenantFilter(r)})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
