@@ -17,13 +17,6 @@
 @font-face {
   font-family: 'IBM Plex Mono';
   font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('fonts/ibm-plex-mono-500.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  font-style: normal;
   font-weight: 600;
   font-display: swap;
   src: url('fonts/ibm-plex-mono-600.woff2') format('woff2');
@@ -81,6 +74,7 @@
 
   --brand: #15803D;
   --brand-soft: #DCFCE7;
+  --brand-hover: #14732F;
 
   --allow: var(--brand);
   --deny: #DC2626;
@@ -89,6 +83,13 @@
   --blocked: #991B1B;
 
   --federation: #4F46E5;
+
+  --attention-soft: #FEF3E2;
+  --action-soft: #FEE2E2;
+
+  --dark-border: #1E293B;
+  --dark-foreground: #F8FAFC;
+  --muted-on-dark: #94A3B8;
 
   --radius-card: 12px;
   --radius-control: 8px;
@@ -197,7 +198,7 @@ button, input {
   font-family: var(--font-body);
   font-weight: 500;
   font-size: 15px;
-  transition: background-color 150ms ease-out, color 150ms ease-out;
+  transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
 .nav-item:hover { background: var(--mist); color: var(--ink); }
@@ -215,18 +216,19 @@ button, input {
   color: var(--muted);
 }
 
+/* Calm/static by design (M1): this cycle's own design spec rules out a
+   perpetually-pulsing element on a console an operator stares at for
+   hours. A solid dot communicates "live" fine on its own -- no infinite
+   loop needed, unlike the status-band pulse below, which is correctly
+   bounded to real state transitions (status-pulse, 3 iterations). */
 .live-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--brand);
-  animation: pulse 2s ease-in-out infinite;
 }
 
-.live-dot.is-stale { background: var(--throttled); animation: none; }
-
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.live-dot.is-stale { background: var(--throttled); }
 
 /* Sticky top bar shell (Task 1 builds the shell only; Task 6 wires it up) */
 .topbar {
@@ -290,7 +292,7 @@ button, input {
   min-width: 16px;
   height: 16px;
   padding: 0 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--deny);
   color: var(--paper);
   font-size: 10px;
@@ -329,7 +331,7 @@ button, input {
   color: var(--brand);
   background: var(--brand-soft);
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 /* Generic card system — later tasks build Overview's KPI tiles, Blocked's
@@ -340,12 +342,6 @@ button, input {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-resting);
   padding: 24px;
-}
-
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 16px;
 }
 
 .content {
@@ -393,7 +389,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   font-size: 13px;
   font-weight: 500;
   color: var(--muted);
-  transition: border-color 150ms ease-out, background-color 150ms ease-out, color 150ms ease-out;
+  transition: border-color var(--duration-standard) var(--ease-out), background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
 .chip:hover { border-color: var(--brand); }
@@ -454,6 +450,16 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 .decision-cell[data-decision="passthrough"]::before { background: var(--passthrough); }
 .decision-cell[data-decision="blocked"]::before { background: var(--blocked); }
 
+/* Federation accent (M3): a --federation-colored left-border accent on
+   each Federation row's first cell, mirroring .decision-cell's own
+   per-row semantic-color convention just above -- the design spec's
+   federation accent, "used sparingly... so an operator can tell 'this is
+   about other instances' at a glance", previously had no real use
+   anywhere in the Federation view. Scoped by ID since these rows have no
+   dedicated cell class of their own (unlike decision-cell). */
+#federation-rows tr td:first-child { position: relative; padding-left: 20px; }
+#federation-rows tr td:first-child::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--federation); }
+
 .empty-state { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 14px; }
 
 /* Destructive row action (Blocked view's Unblock; Task 5's credential-revoke
@@ -472,7 +478,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: background-color 150ms ease-out, color 150ms ease-out;
+  transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
 .btn-unblock:hover { background: var(--deny); color: var(--paper); }
@@ -499,7 +505,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   cursor: pointer;
   transition: background-color var(--duration-standard) var(--ease-hover);
 }
-.btn-primary:hover { background: #14732F; }
+.btn-primary:hover { background: var(--brand-hover); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary:active {
   transform: scale(0.97);
@@ -556,14 +562,24 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
 .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin: 0 0 32px; }
 
+/* M8: reconciled onto .kpi-tile's container/label convention (the newer,
+   Overview-specific "small metric tile" language) instead of keeping a
+   second, visually different one here -- same border-radius/padding as
+   .kpi-tile below, same label size/weight/color/margin as .kpi-label.
+   dd's own font-family/size deliberately stays monospace rather than
+   adopting .kpi-value's 24px Space Grotesk: these values are long free
+   text (upstream URLs, listen addresses), not short numbers, and the
+   overflow-wrap fix just below exists specifically because of that --
+   the larger heading font would make long values worse, not more
+   consistent, so this one axis is a disclosed, deliberate exception. */
 .status-grid div {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  padding: 20px;
+  border-radius: var(--radius-control);
+  padding: 16px;
 }
 
-.status-grid dt { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.status-grid dt { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
 /* overflow-wrap: long values (upstream URLs, listen addresses) have no
    natural break points, so without this they silently spill out of their
    status-grid cell at tablet/laptop widths where multiple columns leave
@@ -606,8 +622,8 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 }
 
 .status-band[data-state="nominal"] { background: var(--brand-soft); color: var(--brand); }
-.status-band[data-state="attention"] { background: #FEF3E2; color: var(--throttled); }
-.status-band[data-state="action-needed"] { background: #FEE2E2; color: var(--blocked); }
+.status-band[data-state="attention"] { background: var(--attention-soft); color: var(--throttled); }
+.status-band[data-state="action-needed"] { background: var(--action-soft); color: var(--blocked); }
 
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 
@@ -656,13 +672,13 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
 .card-dark {
   background: var(--ink);
-  border-color: #1E293B;
-  color: #F8FAFC;
+  border-color: var(--dark-border);
+  color: var(--dark-foreground);
 }
-.card-dark .card-title { color: #F8FAFC; }
+.card-dark .card-title { color: var(--dark-foreground); }
 
 .pulse-value { font-family: var(--font-heading); font-size: 28px; font-weight: 700; margin-bottom: 16px; }
-.pulse-unit { font-size: 14px; font-weight: 400; color: #94A3B8; }
+.pulse-unit { font-size: 14px; font-weight: 400; color: var(--muted-on-dark); }
 
 .pulse-toggle {
   width: 44px;
