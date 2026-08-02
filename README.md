@@ -772,18 +772,44 @@ backend, not just evade rate limiting.
 
 ## Dashboard
 
-A read-only, in-browser view of what Wardline is doing right now:
-recent audit activity, the active policy, and basic server status.
-Off by default — enable with:
+An in-browser view of what Wardline is doing right now — eight views,
+reached from the sidebar: Overview, Activity, Anomalies, Blocked,
+Federation, Credentials, Policy, and Status. Almost entirely read-only
+(two narrow, explicitly-gated exceptions below); a live convenience
+view over data that lives elsewhere, not a system of record. Off by
+default — enable with:
 
 ```yaml
 features:
   web_ui: true
 ```
 
-Then visit `http://<listen-addr>/dashboard/`.
+Then visit `http://<listen-addr>/dashboard/`. Full design/token
+documentation lives at the [docs site's Web Dashboard
+page](https://kabirnarang39.github.io/wardline/docs/features/web-dashboard/);
+this section is the quick reference.
 
 **What it shows:**
+- **Overview** — the first view you land on, and the one worth reading
+  before any other. A status band at the top reduces everything to one
+  of three states, checked in this order (a real block always outranks
+  a real anomaly): **action-needed** (red) when at least one identity is
+  currently auto-blocked; **attention** (amber) when there are no active
+  blocks but at least one recorded anomaly; **nominal** (green,
+  "All systems nominal") otherwise. Below that: a KPI row (request
+  count, deny rate, anomaly count, blocked count, all computed from the
+  same buffers Activity/Anomalies/Blocked poll — nothing here is a
+  separately-tracked number that can drift from what those views show),
+  a recent-activity bar chart bucketed by day **from the last N buffered
+  audit events only** (the same bounded, resets-on-restart buffer
+  Activity reads — not a query over the durable JSONL/Postgres audit
+  trail, so a busy instance's chart reflects recent traffic, not full
+  history), a "needs review" summary with a CTA that jumps straight to
+  Anomalies, and a live pulse (requests/sec over the trailing 10
+  seconds, with a pause/resume toggle). None of Overview's own elements
+  animate on every poll tick — only genuine state transitions (e.g. the
+  status band flipping color) trigger motion, and every such transition
+  respects `prefers-reduced-motion`.
 - **Activity** — a live-updating (polls every 2 seconds) table of the
   most recent proxied calls: identity, tool, decision, latency, trace ID,
   and reason (for denied/throttled/errored calls). Backed by a bounded
@@ -799,34 +825,95 @@ Then visit `http://<listen-addr>/dashboard/`.
   posture as every other feature-gated dashboard route) — the panel
   itself renders its own "No anomalies detected yet." empty state in
   that case rather than a permanently-blank table, and logs the poll
-  failure to the browser console. Read-only: it does not surface a way
-  to clear an `auto_block` early — that's still `DELETE
-  /dashboard/api/anomalies/blocked/{identity}`, API-only.
+  failure to the browser console.
+- **Blocked** — a live-updating table of identities currently under a
+  time-bounded `anomaly.auto_block` (identity, tenant, reason, expiry),
+  backed by `GET /dashboard/api/anomalies/blocked`. The nav item is
+  always shown, 404s the same "not wired" way when `anomaly.auto_block.enabled`
+  is off (which includes `anomaly_detection` being off entirely — a
+  sub-feature can't be on without its parent). **This is the first of
+  the dashboard's two mutations**: each
+  row has an **Unblock** button (`DELETE
+  /dashboard/api/anomalies/blocked/{identity}`) that clears the block
+  before its TTL expires, after a confirm prompt. Gated separately from
+  ordinary read access — see the auth note below.
+- **Federation** — a live-updating table of alerts correlated across
+  multiple Wardline instances (first/last seen, kind, contributing
+  instance IDs, fingerprint), backed by `GET
+  /dashboard/api/federation/correlated`. 404s the same "not wired" way
+  when `features.federation` is off. Correctly, and expectedly, empty
+  ("No cross-instance correlated alerts yet.") on a single-instance
+  deployment — correlation needs at least
+  `federation.min_instances_for_correlation` peers reporting the same
+  fingerprint; see [Federation](#federation).
+- **Credentials** — **the dashboard's second and only other mutation:
+  revoke a credential, and nothing else.** Deliberately not symmetric
+  with issuance/refresh: `POST /credentials/revoke` is the one genuine
+  admin action a dashboard operator has legitimate reason to trigger
+  from a browser; `POST /credentials/refresh` performs machine-to-machine
+  token rotation on a caller-supplied `refresh_token` value, and an
+  operator has no legitimate reason to hold or exercise another
+  identity's refresh token from a UI, so this view never exposes it, and
+  there is no issuance UI either (bootstrapping requires the identity's
+  own registration secret, not something to route through an
+  operator-facing screen). Enter an identity, confirm, and every
+  outstanding and future-until-expiry access token plus any outstanding
+  refresh token for that identity is invalidated immediately. **Auth
+  requirement — read this before wondering why the button 403s:**
+  `/credentials/revoke` reuses the exact same loopback-or-RBAC gate the
+  API already has (see [Credential issuance](#credential-issuance) and
+  [RBAC](#rbac) above) — it is allowed from `127.0.0.1`/`::1` unconditionally;
+  from anywhere else, only when `features.rbac` is on **and** the
+  resolved caller holds `credential:revoke` (the `admin` built-in role,
+  or a custom role naming that permission). A caller with only
+  `dashboard:view` (e.g. the `viewer` role) can load the rest of the
+  dashboard fine and will still get `403` here — that is correct, not a
+  bug. One sharp edge worth knowing up front: the button's own fetch
+  does **not** attach any credential of its own — it relies entirely on
+  whatever the browser already sends automatically. That is enough when
+  you're loopback, or when identity is resolved from a raw
+  `X-Wardline-Identity` header a trusted intermediary injects. It is
+  **not** enough when `features.credential_issuance` is on and you're
+  not loopback: identity there is a bearer token (`Authorization: Bearer
+  <jwt>`), and a plain browser tab has no built-in mechanism to attach
+  that header to its own requests (unlike a cookie, which browsers do
+  send automatically). In that combination, reach the dashboard through
+  something that can attach the header for you (a reverse proxy/mesh
+  sidecar, a browser extension that injects the header, or API tooling
+  hitting `/dashboard/api/*` and `/credentials/revoke` directly) rather
+  than expecting a bare browser tab to work.
 - **Policy** — the active policy backend and raw policy file content, as
   loaded at startup (not hot-reloaded — restart Wardline after editing
   the policy file to see the update here).
 - **Status** — version, uptime, listen/upstream addresses, and which
   feature flags are on.
 
-**Security note:** the dashboard has no authentication and is read-only
-by design (unless `features.rbac` is on — see the [RBAC](#rbac) section
-above; with it on, every dashboard request must resolve an identity
-holding `dashboard:view`, else `403`). It does not accept writes and
-cannot influence policy, budget, or proxy decisions. It does, however,
-display audit *reasons*
-(which can include internal policy-engine diagnostics normally kept out
-of proxy responses) and raw policy file content, both of which may
-carry information you don't want a stranger to see. The dashboard
-shares the exact same listener/port as the proxy itself, so anyone who
-can reach Wardline's proxy port — **including every agent Wardline
-proxies calls for** — can already `GET /dashboard/api/audit` and
-`GET /dashboard/api/policy` on that identical socket. Binding the
-listen address to `localhost` does **not** protect against this: the
-proxy's own legitimate callers are, by definition, already on that
-same port. This is precisely why `web_ui` defaults to off — only
-enable it when you're comfortable with every caller the proxy already
-accepts also being able to read full audit reasons and the complete
-policy source.
+**Security note:** the dashboard requires no authentication and every
+non-mutating route is read-only **by default** (unless `features.rbac`
+is on — see the [RBAC](#rbac) section above; with it on, every dashboard
+request must resolve an identity holding `dashboard:view`, else `403`).
+**Two narrow exceptions accept writes: Blocked's Unblock button and
+Credentials' Revoke button**, both described above — each is a real,
+security-relevant mutation (undoing an automated enforcement decision;
+invalidating a credential), and each is independently gated by
+`credential:revoke` rather than the weaker `dashboard:view` a plain
+reader might hold. Neither can influence policy evaluation, budget
+accounting, or how a proxied call is decided going forward except
+through that one narrow, audited, explicitly-permissioned action. Every
+other route remains genuinely read-only. The dashboard does, however,
+display audit *reasons* (which can include internal policy-engine
+diagnostics normally kept out of proxy responses) and raw policy file
+content, both of which may carry information you don't want a stranger
+to see. The dashboard shares the exact same listener/port as the proxy
+itself, so anyone who can reach Wardline's proxy port — **including
+every agent Wardline proxies calls for** — can already `GET
+/dashboard/api/audit` and `GET /dashboard/api/policy` on that identical
+socket. Binding the listen address to `localhost` does **not** protect
+against this: the proxy's own legitimate callers are, by definition,
+already on that same port. This is precisely why `web_ui` defaults to
+off — only enable it when you're comfortable with every caller the
+proxy already accepts also being able to read full audit reasons and
+the complete policy source.
 
 ## Postgres storage
 
