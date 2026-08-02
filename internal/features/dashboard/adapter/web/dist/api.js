@@ -66,6 +66,14 @@ export async function revokeCredential(identity) {
   if (res.status === 204) {
     return { ok: true };
   }
+  // 404 here means credential_issuance is off -- the route is registered
+  // unconditionally (see main.go's credentialsRouteOrNotFound) but returns
+  // a plain-text "not found" 404 instead of a JSON body in that case, so
+  // it's called out explicitly rather than falling into the generic
+  // `revoke failed: 404` message below.
+  if (res.status === 404) {
+    return { ok: false, status: res.status, message: 'credential issuance is not enabled on this server' };
+  }
   let message = `revoke failed: ${res.status}`;
   try {
     const body = await res.json();
