@@ -351,6 +351,8 @@ button, input {
 .content {
   flex: 1;
   min-width: 0;
+  max-width: 1440px;
+  margin: 0 auto;
   padding: 0 40px 40px;
 }
 
@@ -507,6 +509,28 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   .btn-primary:active { transform: none; }
 }
 
+/* Credentials view: these were inline style="" attributes in index.html,
+   which this dashboard's own CSP (default-src 'self', no style-src
+   unsafe-inline exemption) silently discards at runtime -- confirmed via
+   a `securitypolicyviolation` listener during the task-8 audit, which
+   caught 5 `style-src-attr` violations, one per attribute below. The
+   practical effect was #revoke-identity-input rendering at the browser's
+   unstyled ~26px default height, under the 44px touch-target minimum.
+   Moved here as real rules so the CSP actually allows them to apply. */
+.credentials-card { max-width: 480px; }
+.credentials-hint { margin-top: 0; color: var(--muted); font-size: 14px; }
+#view-credentials label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+#revoke-identity-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--mist);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  margin-bottom: 12px;
+}
+#revoke-result { margin-top: 12px; font-size: 14px; }
+
 .badge {
   font-family: var(--font-body);
   font-weight: 600;
@@ -540,7 +564,12 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 }
 
 .status-grid dt { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-.status-grid dd { margin: 0; font-family: var(--font-data); font-size: 16px; font-weight: 600; color: var(--ink); }
+/* overflow-wrap: long values (upstream URLs, listen addresses) have no
+   natural break points, so without this they silently spill out of their
+   status-grid cell at tablet/laptop widths where multiple columns leave
+   less room per cell than the single-column mobile layout does (task-8
+   responsive audit). */
+.status-grid dd { margin: 0; font-family: var(--font-data); font-size: 16px; font-weight: 600; color: var(--ink); overflow-wrap: break-word; }
 
 .status-subheading { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--ink); }
 
@@ -681,10 +710,31 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
     border-bottom: 1px solid var(--border);
     padding: 8px 12px;
     align-items: center;
+    /* Row layout's 8 nav items + brand + live-indicator don't fit any
+       viewport in this range at their natural (min-content) width even
+       with nav labels hidden at <=480px -- without this the PAGE itself
+       scrolled horizontally (task-8 responsive audit). Scoped to the
+       sidebar's own strip, same convention as .table-wrap's internal
+       scroll: the page stays fixed-width, only this row scrolls. */
+    overflow-x: auto;
   }
+  /* .nav-item's desktop width: 100% is a flex-basis of "100% of a row
+     container" here, which the row's default flex-shrink can't undo
+     enough to actually fit -- reset to content width so items scroll
+     instead of blowing out the row. */
+  .nav-item { width: auto; flex-shrink: 0; }
+  .brand, .live-indicator { flex-shrink: 0; }
   .brand { padding: 8px 12px; }
   .live-indicator { margin-top: 0; margin-left: auto; }
-  .content { padding: 20px; }
+  /* #app is a column flex container at this width, so .content's
+     left/right margin is now a CROSS-axis margin -- an auto value there
+     opts the item out of the default cross-axis stretch and back to
+     content-based (shrink-to-fit) sizing, which let the audit table's
+     full unwrapped width leak through as page-level horizontal scroll
+     (task-8 audit). max-width above is still fine to keep; only the
+     auto margin needs resetting here so .content keeps stretching to
+     the viewport's width like before that rule was added. */
+  .content { padding: 20px; margin: 0; }
 }
 
 @media (max-width: 480px) {
