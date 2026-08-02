@@ -407,7 +407,18 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 }
 
 .table-wrap {
-  overflow-x: auto;
+  /* overflow-x: auto here forces overflow-y's computed value to auto too
+     (CSS Overflow spec: declaring one axis non-visible converts the other
+     from its visible default), making this the audit-table thead's
+     nearest scrolling ancestor for `position: sticky`. Left unbounded
+     (no max-height), that computed-auto container never scrolls on its
+     own -- it just grows with its content and scrolls away with the
+     page, so the sticky header silently never sticks. Only visible past
+     ~1-2 screens of rows, which is why realistic-volume testing (task 7)
+     is what caught it. max-height turns this into a real, bounded scroll
+     region so the header has something to stick against. */
+  overflow: auto;
+  max-height: 65vh;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
