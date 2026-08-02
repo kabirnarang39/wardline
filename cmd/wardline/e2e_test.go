@@ -2995,13 +2995,15 @@ federation:
 
 // TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI proves the
 // federation feature flag actually gates both its inbound HTTP surfaces
-// when off: /federation/summaries isn't mounted at all (an unmatched
-// path falls through to the proxy, which rejects the non-JSON-RPC body
-// with 400 -- the same "not mounted" pattern as
-// TestServeEndToEnd_DashboardNotMountedWhenDisabled), and
-// /dashboard/api/federation/correlated answers 404 (the same documented
-// nil-FederationSource posture already covered for anomalies by
-// TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput).
+// when off: /federation/summaries answers a clean 404 (registered
+// unconditionally via routeOrNotFound -- see main.go and I1 in the final
+// whole-branch review fix wave -- rather than falling through to the "/"
+// proxy catch-all, which used to reject the non-JSON-RPC body with 400
+// and, worse, write a spurious audit-log "error" entry for every request;
+// this test used to assert that old, buggy fallthrough-to-proxy behavior
+// directly), and /dashboard/api/federation/correlated answers 404 (the
+// same documented nil-FederationSource posture already covered for
+// anomalies by TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput).
 func TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI(t *testing.T) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "wardline")
@@ -3071,8 +3073,8 @@ features:
 			t.Fatalf("GET /federation/summaries at %s: %v", addr, err)
 		}
 		_ = summariesResp.Body.Close()
-		if summariesResp.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected 400 (unmatched path routed to the proxy, which rejects the bodyless GET) for /federation/summaries at %s when federation is off, got %d (stderr A: %s, stderr B: %s)", addr, summariesResp.StatusCode, stderrA.String(), stderrB.String())
+		if summariesResp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected a clean 404 (routed to routeOrNotFound, never reaching the proxy) for /federation/summaries at %s when federation is off, got %d (stderr A: %s, stderr B: %s)", addr, summariesResp.StatusCode, stderrA.String(), stderrB.String())
 		}
 
 		correlatedResp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated")
