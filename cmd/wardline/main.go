@@ -747,11 +747,17 @@ func runServe(logger *slog.Logger, args []string) {
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
 	}
-	if credentialIssuanceEnabled {
-		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
-		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
-		extraRoutes["/credentials/refresh"] = http.HandlerFunc(credentialHandler.HandleRefresh)
-	}
+	// Registered unconditionally, unlike /dashboard/ above -- mirrors
+	// handleAnomalies/handleFederationCorrelated/handleBlocked's nil-source
+	// pattern in dashboard/adapter/handler.go: the route always exists, but
+	// returns a clean 404 when credential_issuance is off, instead of an
+	// unregistered path falling through to the "/" catch-all proxy handler
+	// (same bug class /favicon.ico had -- see below). credentialHandler is
+	// nil here when the flag is off; taking its methods as values is safe
+	// since credentialsRouteOrNotFound never invokes them in that case.
+	extraRoutes["/credentials/token"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleToken)
+	extraRoutes["/credentials/revoke"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRevoke)
+	extraRoutes["/credentials/refresh"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRefresh)
 	if federationEnabled {
 		// Unconditional on web_ui, unlike the dashboard route above -- a
 		// peer must be able to reach this even when the local dashboard UI
@@ -1176,6 +1182,22 @@ func faviconHandler(logger *slog.Logger) http.Handler {
 // ones with dashboard/credential/rbac routes on as before this cycle —
 // an accepted, necessary trade-off of giving health/readiness checks real
 // routes rather than special-casing them inside the proxy handler itself.
+
+// credentialsRouteOrNotFound returns fn unchanged when enabled, otherwise a
+// handler that responds 404 -- so /credentials/* routes stay registered on
+// the mux (never reaching the "/" proxy catch-all) whether or not
+// credential_issuance is on, matching dashboard's handleAnomalies-style
+// nil-source-returns-404 convention instead of that package's real MCP
+// JSON-RPC error shape leaking out on an unregistered path.
+func credentialsRouteOrNotFound(enabled bool, fn http.HandlerFunc) http.HandlerFunc {
+	if enabled {
+		return fn
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}
+}
+
 func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) http.Handler {
 	if len(extraRoutes) == 0 {
 		return proxy
