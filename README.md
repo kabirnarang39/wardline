@@ -950,11 +950,15 @@ three states.
   not loopback: identity there is a bearer token (`Authorization: Bearer
   <jwt>`), and a plain browser tab has no built-in mechanism to attach
   that header to its own requests (unlike a cookie, which browsers do
-  send automatically). In that combination, reach the dashboard through
+  send automatically). In that combination, reach this button through
   something that can attach the header for you (a reverse proxy/mesh
   sidecar, a browser extension that injects the header, or API tooling
-  hitting `/dashboard/api/*` and `/credentials/revoke` directly) rather
-  than expecting a bare browser tab to work.
+  hitting `/credentials/revoke` directly) rather than expecting a bare
+  browser tab to work. Note this button's loopback exception is its own —
+  `/dashboard/` itself has **no** loopback exception once `features.rbac`
+  is on (see [RBAC](#rbac) above), so a bare browser tab may still be
+  unable to load the rest of the dashboard even from loopback; see the
+  security note below.
 - **Policy** — the active policy backend and raw policy file content, as
   loaded at startup (not hot-reloaded — restart Wardline after editing
   the policy file to see the update here).
