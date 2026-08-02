@@ -10,7 +10,11 @@
   <div id="app">
     <nav class="sidebar" aria-label="Dashboard sections">
       <div class="brand"><span class="brand-mark" aria-hidden="true">│</span>Wardline</div>
-      <button class="nav-item is-active" data-view="activity" aria-current="page">
+      <button class="nav-item is-active" data-view="overview" aria-current="page">
+        <span class="nav-icon" data-icon="overview"></span>
+        <span>Overview</span>
+      </button>
+      <button class="nav-item" data-view="activity">
         <span class="nav-icon" data-icon="activity"></span>
         <span>Activity</span>
       </button>
@@ -62,7 +66,59 @@
         </div>
       </header>
 
-      <section id="view-activity" class="view is-active" aria-labelledby="view-activity-heading">
+      <section id="view-overview" class="view is-active" aria-labelledby="view-overview-heading">
+        <div class="view-header">
+          <h1 id="view-overview-heading">Overview</h1>
+        </div>
+
+        <div class="status-band" id="status-band" data-state="nominal">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">All systems nominal</span>
+        </div>
+
+        <div class="kpi-row">
+          <div class="kpi-tile">
+            <div class="kpi-label">Requests</div>
+            <div class="kpi-value" id="kpi-total-requests">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Deny rate</div>
+            <div class="kpi-value" id="kpi-deny-rate">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Anomalies</div>
+            <div class="kpi-value" id="kpi-anomalies">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Blocked</div>
+            <div class="kpi-value" id="kpi-blocked">—</div>
+          </div>
+        </div>
+
+        <div class="card-grid">
+          <div class="card" id="chart-card">
+            <h2 class="card-title">Recent activity</h2>
+            <svg id="activity-chart" viewBox="0 0 400 180" role="img" aria-label="Bar chart of recent request volume by day"></svg>
+            <p class="card-caption" id="chart-caption"></p>
+          </div>
+
+          <div class="card" id="needs-review-card">
+            <h2 class="card-title">Needs review</h2>
+            <p id="needs-review-summary"></p>
+            <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
+          </div>
+
+          <div class="card card-dark" id="live-pulse-card">
+            <h2 class="card-title">Live pulse</h2>
+            <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
+            <button class="pulse-toggle" id="pulse-toggle" aria-label="Pause live updates">
+              <span data-icon="pause" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-activity" class="view" aria-labelledby="view-activity-heading" hidden>
         <div class="view-header">
           <h1 id="view-activity-heading">Activity</h1>
           <div class="filters">
