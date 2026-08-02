@@ -250,6 +250,57 @@ func TestHandler_StatusEndpoint_ReturnsJSON(t *testing.T) {
 	}
 }
 
+// TestHandler_HandleStatus_IncludesCallerTenant proves handleStatus's
+// widened response (Task 5) carries a per-request CallerTenant derived
+// from h.tenantFilter, alongside the still-embedded domain.StatusInfo
+// fields.
+func TestHandler_HandleStatus_IncludesCallerTenant(t *testing.T) {
+	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
+	scope := fakeTenantScopeResolver{tenant: "acme"}
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, scope, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got struct {
+		domain.StatusInfo
+		CallerTenant string
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CallerTenant != "acme" {
+		t.Errorf("CallerTenant = %q, want %q", got.CallerTenant, "acme")
+	}
+	if got.Version != "test" {
+		t.Errorf("Version = %q, want %q (StatusInfo fields must still be embedded)", got.Version, "test")
+	}
+}
+
+// TestHandler_HandleStatus_CallerTenantEmptyWhenScopeNil proves the
+// "rbac off" half of the contract: CallerTenant is empty when h.scope is
+// nil, matching h.tenantFilter's own nil-scope behavior.
+func TestHandler_HandleStatus_CallerTenantEmptyWhenScopeNil(t *testing.T) {
+	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got struct {
+		domain.StatusInfo
+		CallerTenant string
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CallerTenant != "" {
+		t.Errorf("CallerTenant = %q, want empty when rbac is off (scope nil)", got.CallerTenant)
+	}
+}
+
 func TestHandler_ServesKnownStaticAsset(t *testing.T) {
 	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
 
