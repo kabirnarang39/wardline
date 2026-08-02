@@ -149,18 +149,22 @@ to its own requests the way it automatically attaches cookies. This
 applies to *every* dashboard route when `features.rbac` is also on
 (the entire `/dashboard/` mount, not just these two buttons, requires a
 resolvable identity holding `dashboard:view` in that case — see
-[RBAC](/features/rbac/)), so in the `rbac` + `credential_issuance`
-combination, a first-time operator opening a bare browser tab to
-`/dashboard/` from anywhere other than loopback should expect the whole
-dashboard to be unreachable, not just these two buttons. Reach it
-instead through something that can attach the bearer token for you (a
-reverse proxy/mesh sidecar that injects it, a browser extension that
-adds the header, or API tooling calling `/dashboard/api/*` and
-`/credentials/revoke` directly) rather than a bare browser session. This
-is an accurate description of how `rbac`'s dashboard gate has always
-worked (predates this redesign's visual changes entirely — see
-[RBAC](/features/rbac/)'s own "every dashboard request must resolve an
-identity" language); it is not new behavior, but is easy to miss the
+[RBAC](/features/rbac/)) — and unlike `/credentials/revoke` above,
+**`/dashboard/` itself has no loopback exception at all**:
+`rbacadapter.RequirePermission` denies an unresolved identity identically
+whether the request comes from `127.0.0.1`/`::1` or a LAN address. So in
+the `rbac` + `credential_issuance` combination, a first-time operator
+opening a bare browser tab to `/dashboard/` should expect the whole
+dashboard to be unreachable — **loopback included**, not just non-loopback
+access — not just these two buttons. Reach it instead through something
+that can attach the bearer token for you (a reverse proxy/mesh sidecar
+that injects it, a browser extension that adds the header, or API tooling
+calling `/dashboard/api/*` and `/credentials/revoke` directly) rather
+than a bare browser session. This is an accurate description of how
+`rbac`'s dashboard gate has always worked (predates this redesign's
+visual changes entirely — see [RBAC](/features/rbac/)'s own "every
+dashboard request must resolve an identity" language, which likewise has
+no loopback exception); it is not new behavior, but is easy to miss the
 first time you turn both flags on together, so it's called out here
 explicitly.
 
@@ -194,10 +198,14 @@ does not change this. This is why `web_ui` defaults to off.
 - The recent-activity chart on Overview reflects the bounded audit ring
   buffer, not the durable audit trail — see the chart caveat above.
 - There is no browser-native way to deliver a bearer token
-  (`features.credential_issuance` + non-loopback access) to the
-  dashboard or its two mutation buttons — see "Auth requirement for
-  mutations" above. A dedicated token-entry/login flow would close this
-  gap; none exists today.
+  (`features.credential_issuance` on) to `/dashboard/` itself, or to
+  Blocked's Unblock, or to Credentials' Revoke from non-loopback — see
+  "Auth requirement for mutations" above. Credentials' Revoke is the one
+  exception with a loopback path around this; `/dashboard/` (once
+  `features.rbac` is also on) and Blocked's Unblock have no loopback
+  exception at all, so for those two the gap applies from loopback too, not
+  just non-loopback access. A dedicated token-entry/login flow would close
+  this gap; none exists today.
 - Federation's correlated-alerts view is not tenant-scoped (see
   [RBAC](/features/rbac/)'s known limitations) — it correlates on an
   identity fingerprint computed locally, independent of tenant.
