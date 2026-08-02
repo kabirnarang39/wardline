@@ -76,6 +76,7 @@ async function pollAudit() {
       state.lastID = fresh[fresh.length - 1].ID;
     }
     renderActivity();
+    renderOverview();
     setLive(true);
   } catch {
     setLive(false);
@@ -119,6 +120,7 @@ async function pollAnomalies() {
       state.lastAnomalyID = fresh[fresh.length - 1].id;
     }
     renderAnomalies();
+    renderOverview();
   } catch (err) {
     // Anomalies polling failure doesn't affect the shared live-dot
     // indicator -- that's pollAudit's own job; a failed anomalies poll
@@ -189,22 +191,14 @@ function formatExpiry(iso) {
   return `in ${Math.round(mins / 60)}h`;
 }
 
-async function renderBlocked() {
+function renderBlockedTable() {
   const tbody = document.getElementById('blocked-rows');
   const empty = document.getElementById('blocked-empty');
-  let entries;
-  try {
-    entries = await fetchBlocked();
-  } catch (err) {
-    console.error('blocked fetch failed:', err);
-    entries = [];
-  }
-  state.blocked = entries;
+  const entries = state.blocked;
 
   if (entries.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
-    updateNotificationBadge();
     return;
   }
   empty.hidden = true;
@@ -222,7 +216,17 @@ async function renderBlocked() {
   tbody.querySelectorAll('.btn-unblock').forEach((btn) => {
     btn.addEventListener('click', () => confirmUnblock(btn.dataset.identity, btn.dataset.tenant));
   });
+}
+
+async function pollBlocked() {
+  try {
+    state.blocked = await fetchBlocked();
+  } catch (err) {
+    console.error('blocked fetch failed:', err);
+  }
+  renderBlockedTable();
   updateNotificationBadge();
+  renderOverview();
 }
 
 async function confirmUnblock(identity, tenant) {
@@ -234,7 +238,126 @@ async function confirmUnblock(identity, tenant) {
     window.alert(`Could not unblock: ${result.message}`);
     return;
   }
-  renderBlocked();
+  pollBlocked();
+}
+
+function renderStatusBand() {
+  const band = document.getElementById('status-band');
+  const text = document.getElementById('status-text');
+  const previousState = band.dataset.state;
+
+  let newState, newText;
+  if (state.blocked.length > 0) {
+    newState = 'action-needed';
+    newText = `${state.blocked.length} identit${state.blocked.length === 1 ? 'y' : 'ies'} blocked`;
+  } else if (state.anomalies.length > 0) {
+    newState = 'attention';
+    newText = `${state.anomalies.length} anomal${state.anomalies.length === 1 ? 'y' : 'ies'} need review`;
+  } else {
+    newState = 'nominal';
+    newText = 'All systems nominal';
+  }
+
+  text.textContent = newText;
+  band.dataset.state = newState;
+
+  if (previousState && previousState !== newState) {
+    band.classList.remove('is-transitioning');
+    // Force reflow so re-adding the class restarts the animation even if
+    // the state flips back and forth quickly between poll ticks.
+    void band.offsetWidth;
+    band.classList.add('is-transitioning');
+  }
+}
+
+function renderKPIs() {
+  document.getElementById('kpi-total-requests').textContent = String(state.entries.length);
+  const denies = state.entries.filter((e) => e.Decision === 'deny' || e.Decision === 'error').length;
+  const denyRate = state.entries.length > 0 ? Math.round((denies / state.entries.length) * 100) : 0;
+  document.getElementById('kpi-deny-rate').textContent = `${denyRate}%`;
+  document.getElementById('kpi-anomalies').textContent = String(state.anomalies.length);
+  document.getElementById('kpi-blocked').textContent = String(state.blocked.length);
+}
+
+function bucketByDay(entries) {
+  const buckets = new Map();
+  for (const e of entries) {
+    const d = new Date(e.Timestamp);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = d.toISOString().slice(0, 10);
+    buckets.set(key, (buckets.get(key) || 0) + 1);
+  }
+  return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).slice(-7);
+}
+
+function renderActivityChart() {
+  const buckets = bucketByDay(state.entries);
+  const svg = document.getElementById('activity-chart');
+  const caption = document.getElementById('chart-caption');
+  caption.textContent = `Based on the last ${state.entries.length} buffered events — not a full historical view.`;
+
+  if (buckets.length === 0) {
+    svg.innerHTML = '';
+    return;
+  }
+
+  const maxCount = Math.max(...buckets.map(([, count]) => count));
+  const barWidth = 400 / buckets.length;
+  const chartHeight = 140;
+
+  svg.innerHTML = buckets.map(([day, count], i) => {
+    const barHeight = maxCount > 0 ? (count / maxCount) * chartHeight : 0;
+    const x = i * barWidth + barWidth * 0.15;
+    const w = barWidth * 0.7;
+    const y = chartHeight - barHeight + 10;
+    const label = day.slice(5);
+    return `
+      <rect class="chart-bar" x="${x}" y="${y}" width="${w}" height="${barHeight}" rx="4"></rect>
+      <text class="chart-value-label" x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${count}</text>
+      <text class="chart-bar-label" x="${x + w / 2}" y="${chartHeight + 24}" text-anchor="middle">${escapeHTML(label)}</text>
+    `;
+  }).join('');
+}
+
+function renderNeedsReview() {
+  const summary = document.getElementById('needs-review-summary');
+  const count = state.anomalies.length + state.blocked.length;
+  summary.textContent = count === 0
+    ? 'Nothing needs review right now.'
+    : `${state.anomalies.length} anomal${state.anomalies.length === 1 ? 'y' : 'ies'} and ${state.blocked.length} blocked identit${state.blocked.length === 1 ? 'y' : 'ies'} on record.`;
+}
+
+let pulsePaused = false;
+
+function updateLivePulse() {
+  if (pulsePaused) return;
+  const now = Date.now();
+  const windowEntries = state.entries.filter((e) => new Date(e.Timestamp).getTime() >= now - 10000);
+  const rate = windowEntries.length / 10;
+  document.getElementById('pulse-rate').innerHTML = `${rate.toFixed(1)} <span class="pulse-unit">req/s</span>`;
+}
+
+function wireLivePulseToggle() {
+  const btn = document.getElementById('pulse-toggle');
+  btn.addEventListener('click', () => {
+    pulsePaused = !pulsePaused;
+    btn.innerHTML = pulsePaused ? '<span data-icon="play" aria-hidden="true"></span>' : '<span data-icon="pause" aria-hidden="true"></span>';
+    btn.setAttribute('aria-label', pulsePaused ? 'Resume live updates' : 'Pause live updates');
+    mountIcons(btn);
+    if (pulsePaused) {
+      document.getElementById('pulse-rate').innerHTML = 'Paused';
+    } else {
+      updateLivePulse();
+    }
+  });
+}
+
+function renderOverview() {
+  renderStatusBand();
+  renderKPIs();
+  renderActivityChart();
+  renderNeedsReview();
+  updateLivePulse();
 }
 
 function wireCredentials() {
@@ -365,7 +488,8 @@ function switchView(name) {
     if (active) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
-  if (name === 'blocked') renderBlocked();
+  if (name === 'overview') renderOverview();
+  if (name === 'blocked') renderBlockedTable();
   if (name === 'policy') loadPolicy();
   if (name === 'status') loadStatus();
 }
@@ -424,17 +548,28 @@ function wireTopbar() {
 
 function init() {
   mountIcons(document);
+
+  document.querySelectorAll('#view-overview .kpi-tile, #view-overview .card').forEach((el, i) => {
+    el.classList.add('stagger-in');
+    el.style.animationDelay = `${i * 40}ms`;
+  });
+
   wireNav();
   wireFilters();
   wireCredentials();
   wireTopbar();
+  wireLivePulseToggle();
+  document.getElementById('needs-review-cta').addEventListener('click', () => switchView('anomalies'));
   loadStatus();
   pollAudit();
   pollAnomalies();
   pollFederation();
+  pollBlocked();
+  renderOverview();
   setInterval(pollAudit, POLL_INTERVAL_MS);
   setInterval(pollAnomalies, POLL_INTERVAL_MS);
   setInterval(pollFederation, POLL_INTERVAL_MS);
+  setInterval(pollBlocked, POLL_INTERVAL_MS);
 }
 
 init();
