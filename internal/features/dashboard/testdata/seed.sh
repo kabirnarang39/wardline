@@ -25,6 +25,16 @@
 # identity/tool combos, and seeing any "throttled" decisions requires
 # budget_enforcement on with a tight-ish window -- a default: allow policy
 # with no budget just means every ordinary call below shows up as "allow".
+# seed-policy.yaml.example and seed-wardline.yaml.example (this directory)
+# are a ready-made pair that reproduces all five decision types plus a real
+# anomaly/auto-block out of the box -- see the usage comment at the top of
+# seed-wardline.yaml.example.
+#
+# This script lives outside internal/features/dashboard/adapter/web/dist
+# (the //go:embed'd SPA tree, see adapter/static.go) deliberately: anything
+# under web/dist ships inside the wardline binary and is served over HTTP
+# by spaHandler whenever features.web_ui is on -- test/dev tooling like
+# this does not belong there.
 #
 # Usage: ./seed.sh http://localhost:8080
 set -euo pipefail

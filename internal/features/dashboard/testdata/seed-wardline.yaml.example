@@ -1,0 +1,49 @@
+# Example wardline.yaml for use with seed.sh -- reproduces the full
+# "at least one real anomaly, at least one real auto-block, all five
+# decision types" claim in seed.sh's own comments, out of the box.
+#
+# Usage:
+#   cp internal/features/dashboard/testdata/seed-policy.yaml.example ./seed-policy.yaml
+#   cp internal/features/dashboard/testdata/seed-wardline.yaml.example ./seed-wardline.yaml
+#   # edit upstream: below to point at a real (or mock) MCP server
+#   go run ./cmd/wardline serve --config ./seed-wardline.yaml
+#   ./internal/features/dashboard/testdata/seed.sh http://localhost:8080
+#
+# federation is deliberately left off here -- it's not part of what
+# seed.sh exercises (single-instance federation correlation needs a
+# second instance; see cmd/wardline/e2e_test.go's
+# TestE2E_FederationCorrelatesAcrossInstances for that path), and it adds
+# setup (signing key, shared secret, peers file) this example doesn't need.
+listen: "127.0.0.1:8080"
+upstream: "http://127.0.0.1:9000" # point this at a real or mock MCP server
+policy_file: "./seed-policy.yaml"
+audit:
+  output: stdout
+features:
+  web_ui: true
+  anomaly_detection: true
+  budget_enforcement: true
+budget:
+  requests_per_window: 25
+  window_seconds: 60
+anomaly:
+  output: "./seed-anomaly.jsonl"
+  window_seconds: 5 # seed.sh's own baseline/burst timing assumes this
+  rate_spike:
+    enabled: true
+    rate_multiplier: 2.0
+    min_calls: 5
+  novel_tool:
+    enabled: true
+  deny_rate_spike:
+    enabled: true
+    threshold: 0.5
+    min_calls: 5
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 2
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 180
