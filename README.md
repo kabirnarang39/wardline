@@ -12,6 +12,65 @@ v0.1 scope: a reverse proxy in front of one MCP server, a policy backend
 (a static YAML allow/deny rule list, or an embedded OPA/Rego evaluator) per
 identity+tool, and a structured JSON audit log.
 
+## Why Wardline
+
+Wardline is a single, statically-built Go binary: `go build`, point it at an
+MCP upstream, and every capability described in this README — policy,
+budget, anomaly detection, RBAC, audit — lives in that one process, gated by
+config flags. No database, identity provider, or second service is required
+to start; Postgres, an IdP, and Kubernetes are all optional, opt-in scaling
+paths (see [Postgres storage](#postgres-storage), [SSO](#sso), and
+[Kubernetes / Helm](#kubernetes--helm)), not day-one requirements.
+
+A few capabilities that are real and shipped, not aspirational — verify
+directly against `internal/features/`:
+
+- **Three interchangeable policy backends in one binary** — a static YAML
+  allow/deny list, an embedded OPA/Rego evaluator, and an embedded AWS Cedar
+  evaluator (`policy_backend: yaml|opa|cedar`), switchable per-deployment
+  with no external `opa` process or network hop. See [Policy
+  backends](#policy-backends).
+- **Two-tier budget enforcement** — a per-identity bucket AND an optional
+  per-tenant bucket, both of which must clear for a call to proceed. See
+  [Budget enforcement](#budget-enforcement).
+- **Statistical anomaly detection with a real enforcement action, not just
+  an alert** — four independently-toggleable heuristics (rate spike, novel
+  tool, deny-rate spike, and a combined z-score `ml_score` across four
+  self-baselining features via Welford's algorithm — no training data, no
+  external model), plus `auto_block`, which actually rejects a flagged
+  identity's calls for a bounded TTL rather than only logging. See [Anomaly
+  detection](#anomaly-detection) and [Auto-block](#auto-block).
+- **Cross-instance correlation over federation** — peers exchange signed,
+  pseudonymized anomaly summaries (never raw identities or audit content),
+  and a `Correlator` raises an alert once the same fingerprint is seen by
+  multiple instances. See [Federation](#federation).
+- **A compliance evidence bundle command** — `wardline export-evidence`
+  assembles a checksummed `.tar.gz` of the audit trail, anomaly log, and
+  policy snapshot for an auditor, in one offline CLI invocation. See
+  [Compliance evidence export](#compliance-evidence-export).
+
+None of this is claimed as "the best" of anything — see the comparison
+below for what a claim like that would actually need to survive.
+
+### How Wardline compares to other open-source AI-agent gateways
+
+Researched 2026-08-02 by reading each project's own current README and
+GitHub star count (a number that will have moved by the time you read
+this) — this is a note about projects actually looked at, not a claim
+about ones that weren't:
+
+| Project | Stars (2026-08-02) | What its own README says |
+|---|---|---|
+| [agentgateway/agentgateway](https://github.com/agentgateway/agentgateway) | 4,182 | A Rust proxy billed as "the first complete connectivity solution for Agentic AI" — an LLM+MCP+A2A gateway with RBAC via a CEL policy engine, rate limiting, and OpenTelemetry. Its README lists no statistical/ML-based anomaly detection, no auto-block enforcement action, and no compliance-evidence export. |
+| [aipotheosis-labs/gate22](https://github.com/aipotheosis-labs/gate22) | 175 | Ships function allow-list permissioning and audit today. Its own README lists "Policy enforcement (P0)" under **Near-Term Roadmap**, and "Quotas & budgets" plus "Policy-as-code v2 (OPA/Cedar-style ABAC)" under **Future (design RFCs)** — not yet shipped as of the README read for this comparison. |
+| [agentic-community/mcp-gateway-registry](https://github.com/agentic-community/mcp-gateway-registry) | 839 | Scope-based OAuth access control, per-caller/per-target rate limiting, and a quarantine kill-switch — a genuinely capable registry and gateway, but it requires standing up MongoDB/DocumentDB, an nginx data plane, and an external IdP (Keycloak/Entra/Okta/etc.) before the first request. Its README does not mention a policy-as-code evaluator (OPA/Cedar) or statistical anomaly detection. |
+| [TheLunarCompany/lunar](https://github.com/TheLunarCompany/lunar) | 477 | An API/MCP gateway with policy enforcement and traffic shaping. Its own README states it is "free for non-production/personal use. For production environments, we offer advanced features through guided onboarding and platform tiers" — production capability is explicitly gated behind a commercial tier, not in the open-source repo. |
+
+Wardline's entire feature set — RBAC, SCIM, SSO, HA/Postgres storage, and
+everything else in this README, including the items above — ships under
+Apache-2.0 in this repository; there is no separate paid tier gating any
+capability described here.
+
 ## Quickstart
 
 ```bash
@@ -788,6 +847,20 @@ Then visit `http://<listen-addr>/dashboard/`. Full design/token
 documentation lives at the [docs site's Web Dashboard
 page](https://kabirnarang39.github.io/wardline/docs/features/web-dashboard/);
 this section is the quick reference.
+
+**Screenshots** (captured 2026-08-02 against a locally built binary seeded
+with `internal/features/dashboard/testdata/seed.sh` — real data, not a
+mockup):
+
+| Overview — action-needed state | Anomalies | Blocked |
+|---|---|---|
+| ![Wardline dashboard Overview view, red action-needed status band, one identity blocked](docs/images/dashboard/overview.png) | ![Wardline dashboard Anomalies view listing detected novel_tool and ml_score anomalies](docs/images/dashboard/anomalies.png) | ![Wardline dashboard Blocked view showing an identity under a time-bounded auto-block with an Unblock button](docs/images/dashboard/blocked.png) |
+
+The status band above is red ("action-needed") because the seeded traffic
+includes a genuine rate-spike/enumeration burst that tripped `ml_score` and
+a real `auto_block` — see [Anomaly detection](#anomaly-detection) and
+[Auto-block](#auto-block) for exactly what puts the band in each of its
+three states.
 
 **What it shows:**
 - **Overview** — the first view you land on, and the one worth reading
