@@ -136,6 +136,57 @@ func TestBuildTopHandler_WebUIAndCredentialIssuanceOn_AllRoutesReachCorrectHandl
 	}
 }
 
+// TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll guards the actual
+// bug this route exists to fix: browsers auto-request GET /favicon.ico on
+// every page load, and without a more-specific mux entry it used to fall
+// through to the "/" catch-all proxy handler, which audited it as a
+// malformed JSON-RPC "error" -- a stray reading on a dashboard that has
+// seen zero real traffic. Mirrors TestBuildTopHandler_WebUIOn_OtherPathsStillGoToProxy's
+// shape exactly, just for /favicon.ico instead of /dashboard/.
+func TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("proxy handler should not be reached for /favicon.ico when the route is registered")
+	})
+	faviconHit := false
+	favicon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { faviconHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{"/favicon.ico": favicon})
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+
+	if !faviconHit {
+		t.Error("expected the favicon handler to receive /favicon.ico requests, not the proxy catch-all")
+	}
+}
+
+// TestFaviconHandler_ServesEmbeddedIconWithImageContentType exercises the
+// real handler (not a stub), proving it serves actual, non-empty bytes
+// read from the dashboard's embedded web/dist/favicon.ico with an
+// explicit image content type -- not relying on the host's mime.types
+// having an .ico entry.
+func TestFaviconHandler_ServesEmbeddedIconWithImageContentType(t *testing.T) {
+	h := faviconHandler(testLogger())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/x-icon" {
+		t.Errorf("expected Content-Type image/x-icon, got %q", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("expected a non-empty favicon body")
+	}
+	// ICO files start with a 2-byte reserved field (0x0000) followed by a
+	// 2-byte type field (0x0001 for icon) -- a cheap sanity check that
+	// this is a real .ico, not a placeholder blob.
+	body := rec.Body.Bytes()
+	if len(body) < 4 || body[0] != 0 || body[1] != 0 || body[2] != 1 || body[3] != 0 {
+		t.Errorf("expected ICO magic header 00 00 01 00, got % x", body[:min(4, len(body))])
+	}
+}
+
 // fakeRevokeIdentityAuth is a minimal proxyadapter.IdentityAuthenticator
 // fake for newRevokeAuthorizer's tests.
 type fakeRevokeIdentityAuth struct {
