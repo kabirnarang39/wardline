@@ -37,6 +37,38 @@ function passesFilters(entry) {
   return true;
 }
 
+// withScrollAnchor (M10): newest-first row insertion + wholesale
+// tbody.innerHTML replacement keeps a table's scrollTop pinned at the same
+// PIXEL offset, but the CONTENT under that offset shifts every time new
+// rows arrive at the top -- e.g. 40 new rows arriving with scrollTop
+// pinned at 3000 slides whatever row the operator was actually reading by
+// ~1800px. Re-anchors to whichever row ID was nearest the top of the
+// visible viewport before renderRows() runs, instead of a raw pixel
+// offset. Shared by every newest-first live-tail table (Activity,
+// Anomalies, Federation) since they all hit the same underlying pattern --
+// Blocked isn't included: it's a full snapshot of currently-blocked
+// identities each poll, not a growing newest-first timeline.
+function withScrollAnchor(tbody, renderRows) {
+  const container = tbody.closest('.table-wrap');
+  if (!container) {
+    renderRows();
+    return;
+  }
+
+  const containerTop = container.getBoundingClientRect().top;
+  const anchorRow = Array.from(tbody.querySelectorAll('tr[data-row-id]'))
+    .find((tr) => tr.getBoundingClientRect().bottom > containerTop);
+  const anchorID = anchorRow?.dataset.rowId;
+  const anchorOffset = anchorRow ? anchorRow.getBoundingClientRect().top - containerTop : 0;
+
+  renderRows();
+
+  if (anchorID == null) return;
+  const newAnchorRow = tbody.querySelector(`tr[data-row-id="${CSS.escape(anchorID)}"]`);
+  if (!newAnchorRow) return;
+  container.scrollTop += (newAnchorRow.getBoundingClientRect().top - containerTop) - anchorOffset;
+}
+
 function renderActivity() {
   const tbody = document.getElementById('audit-rows');
   const empty = document.getElementById('audit-empty');
@@ -50,19 +82,21 @@ function renderActivity() {
   empty.hidden = true;
 
   // Newest first for scanning.
-  const rows = visible.slice().reverse().map((e) => `
-    <tr>
-      <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"></td>
-      <td>${escapeHTML(formatTime(e.Timestamp))}</td>
-      <td>${escapeHTML(e.Identity)}</td>
-      <td>${escapeHTML(e.Tool)}</td>
-      <td>${escapeHTML(e.Decision)}</td>
-      <td>${e.LatencyMS}ms</td>
-      <td title="${escapeHTML(e.TraceID)}">${escapeHTML(e.TraceID ? e.TraceID.slice(0, 8) : '')}</td>
-      <td class="reason-cell" title="${escapeHTML(e.Reason)}">${escapeHTML(e.Reason)}</td>
-    </tr>
-  `).join('');
-  tbody.innerHTML = rows;
+  withScrollAnchor(tbody, () => {
+    const rows = visible.slice().reverse().map((e) => `
+      <tr data-row-id="${escapeHTML(String(e.ID))}">
+        <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"></td>
+        <td>${escapeHTML(formatTime(e.Timestamp))}</td>
+        <td>${escapeHTML(e.Identity)}</td>
+        <td>${escapeHTML(e.Tool)}</td>
+        <td>${escapeHTML(e.Decision)}</td>
+        <td>${e.LatencyMS}ms</td>
+        <td title="${escapeHTML(e.TraceID)}">${escapeHTML(e.TraceID ? e.TraceID.slice(0, 8) : '')}</td>
+        <td class="reason-cell" title="${escapeHTML(e.Reason)}">${escapeHTML(e.Reason)}</td>
+      </tr>
+    `).join('');
+    tbody.innerHTML = rows;
+  });
 }
 
 async function pollAudit() {
@@ -96,16 +130,18 @@ function renderAnomalies() {
   empty.hidden = true;
 
   // Newest first for scanning.
-  const rows = state.anomalies.slice().reverse().map((a) => `
-    <tr>
-      <td>${escapeHTML(formatTime(a.timestamp))}</td>
-      <td>${escapeHTML(a.identity)}</td>
-      <td>${escapeHTML(a.tenant)}</td>
-      <td>${escapeHTML(a.kind)}</td>
-      <td title="${escapeHTML(a.detail)}">${escapeHTML(a.detail)}</td>
-    </tr>
-  `).join('');
-  tbody.innerHTML = rows;
+  withScrollAnchor(tbody, () => {
+    const rows = state.anomalies.slice().reverse().map((a) => `
+      <tr data-row-id="${escapeHTML(String(a.id))}">
+        <td>${escapeHTML(formatTime(a.timestamp))}</td>
+        <td>${escapeHTML(a.identity)}</td>
+        <td>${escapeHTML(a.tenant)}</td>
+        <td>${escapeHTML(a.kind)}</td>
+        <td title="${escapeHTML(a.detail)}">${escapeHTML(a.detail)}</td>
+      </tr>
+    `).join('');
+    tbody.innerHTML = rows;
+  });
   updateNotificationBadge();
 }
 
@@ -147,16 +183,18 @@ function renderFederation() {
   }
   empty.hidden = true;
 
-  const rows = state.federationAlerts.slice().reverse().map((a) => `
-    <tr>
-      <td>${escapeHTML(formatTime(a.first_seen))}</td>
-      <td>${escapeHTML(formatTime(a.last_seen))}</td>
-      <td>${escapeHTML(a.kind)}</td>
-      <td>${escapeHTML(a.instance_ids.join(', '))}</td>
-      <td title="${escapeHTML(a.fingerprint)}">${escapeHTML(a.fingerprint.slice(0, 12))}</td>
-    </tr>
-  `).join('');
-  tbody.innerHTML = rows;
+  withScrollAnchor(tbody, () => {
+    const rows = state.federationAlerts.slice().reverse().map((a) => `
+      <tr data-row-id="${escapeHTML(String(a.id))}">
+        <td>${escapeHTML(formatTime(a.first_seen))}</td>
+        <td>${escapeHTML(formatTime(a.last_seen))}</td>
+        <td>${escapeHTML(a.kind)}</td>
+        <td>${escapeHTML(a.instance_ids.join(', '))}</td>
+        <td title="${escapeHTML(a.fingerprint)}">${escapeHTML(a.fingerprint.slice(0, 12))}</td>
+      </tr>
+    `).join('');
+    tbody.innerHTML = rows;
+  });
 }
 
 async function pollFederation() {
@@ -279,19 +317,53 @@ function renderKPIs() {
   document.getElementById('kpi-blocked').textContent = String(state.blocked.length);
 }
 
-function bucketByDay(entries) {
-  const buckets = new Map();
-  for (const e of entries) {
-    const d = new Date(e.Timestamp);
-    if (Number.isNaN(d.getTime())) continue;
-    const key = d.toISOString().slice(0, 10);
-    buckets.set(key, (buckets.get(key) || 0) + 1);
+// BUCKET_MINUTES are candidate bucket widths, smallest first. bucketEntries
+// (M7) picks the smallest one that still keeps the observed span at or
+// under MAX_BUCKETS bars -- calendar-day bucketing (the old behavior)
+// degenerated to a single solid bar on any realistic instance, since the
+// actual data source (the 500-entry client-side ring buffer) spans
+// minutes to low hours, not days. "Round" minute counts keep bucket
+// boundaries and their axis labels legible instead of an arbitrary
+// span/7 division.
+const BUCKET_MINUTES = [1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440];
+const MAX_BUCKETS = 12;
+
+function chooseBucketMs(spanMs) {
+  for (const minutes of BUCKET_MINUTES) {
+    const ms = minutes * 60000;
+    if (spanMs / ms <= MAX_BUCKETS) return ms;
   }
-  return Array.from(buckets.entries()).sort(([a], [b]) => a.localeCompare(b)).slice(-7);
+  return BUCKET_MINUTES[BUCKET_MINUTES.length - 1] * 60000;
+}
+
+function bucketEntries(entries) {
+  const times = entries.map((e) => new Date(e.Timestamp).getTime()).filter((t) => !Number.isNaN(t));
+  if (times.length === 0) return { buckets: [], bucketMs: 0 };
+
+  const spanMs = Math.max(...times) - Math.min(...times);
+  const bucketMs = chooseBucketMs(spanMs || 1);
+
+  const counts = new Map();
+  for (const t of times) {
+    const key = Math.floor(t / bucketMs) * bucketMs;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const buckets = Array.from(counts.entries()).sort(([a], [b]) => a - b);
+  return { buckets, bucketMs };
+}
+
+function formatBucketLabel(bucketStartMs, bucketMs) {
+  const d = new Date(bucketStartMs);
+  // Honest about the real granularity (M7): once the buffer's span pushes
+  // bucketing out to whole-day buckets, a date reads better than a
+  // time-of-day that would otherwise silently span multiple days.
+  return bucketMs >= 24 * 60 * 60 * 1000
+    ? d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
+    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function renderActivityChart() {
-  const buckets = bucketByDay(state.entries);
+  const { buckets, bucketMs } = bucketEntries(state.entries);
   const svg = document.getElementById('activity-chart');
   const caption = document.getElementById('chart-caption');
   caption.textContent = `Based on the last ${state.entries.length} buffered events — not a full historical view.`;
@@ -305,12 +377,12 @@ function renderActivityChart() {
   const barWidth = 400 / buckets.length;
   const chartHeight = 140;
 
-  svg.innerHTML = buckets.map(([day, count], i) => {
+  svg.innerHTML = buckets.map(([bucketStart, count], i) => {
     const barHeight = maxCount > 0 ? (count / maxCount) * chartHeight : 0;
     const x = i * barWidth + barWidth * 0.15;
     const w = barWidth * 0.7;
     const y = chartHeight - barHeight + 10;
-    const label = day.slice(5);
+    const label = formatBucketLabel(bucketStart, bucketMs);
     return `
       <rect class="chart-bar" x="${x}" y="${y}" width="${w}" height="${barHeight}" rx="4"></rect>
       <text class="chart-value-label" x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${count}</text>
@@ -549,9 +621,24 @@ function wireTopbar() {
 function init() {
   mountIcons(document);
 
+  const overview = document.getElementById('view-overview');
   document.querySelectorAll('#view-overview .kpi-tile, #view-overview .card').forEach((el, i) => {
     el.classList.add('stagger-in');
     el.style.animationDelay = `${i * 40}ms`;
+  });
+  // .stagger-in uses fill-mode: forwards so each tile holds its entrance
+  // end-state -- but that end-state lives in the CSS Animations cascade
+  // origin, which outranks a normal author `:hover` rule, so leaving the
+  // class on permanently would silently block the Overview card hover-lift
+  // forever after the one-time entrance completes (I2). The stagger only
+  // ever needs to exist for its own ~400ms entrance; strip it on
+  // `animationend` (delegated on the view, since animationDelay staggers
+  // when each tile's own event actually fires) so normal `:hover` rules
+  // apply again once the entrance is done.
+  overview.addEventListener('animationend', (e) => {
+    if (e.animationName === 'stagger-in') {
+      e.target.classList.remove('stagger-in');
+    }
   });
 
   wireNav();
