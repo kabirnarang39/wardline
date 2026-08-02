@@ -273,6 +273,11 @@ function wireCredentials() {
 
 function updateNotificationBadge() {
   const total = state.anomalies.length + state.blocked.length;
+  // state.blocked.length can shrink (auto-block TTL expiry, manual
+  // unblock), unlike state.anomalies.length which only grows -- clamp the
+  // baseline down whenever total drops below it, so a stale higher
+  // baseline can never swallow a later genuine increase.
+  lastSeenNotificationCount = Math.min(lastSeenNotificationCount, total);
   const unseen = total - lastSeenNotificationCount;
   const badge = document.getElementById('notification-badge');
   if (unseen > 0) {
