@@ -16,8 +16,11 @@ import (
 	"testing"
 
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
+	proxydomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
+	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
 // TestBuildTopHandler_EmptyMap_ProxyHandlesEverythingUnchanged exercises
@@ -943,6 +946,125 @@ func TestDeriveInstanceID_EmptyHostname_FallsBackToRandomSuffix(t *testing.T) {
 	})
 	if !strings.HasPrefix(got, "wardline-") {
 		t.Errorf("expected a random wardline-<suffix> fallback for an empty hostname, got %q", got)
+	}
+}
+
+// TestPolicyReload_ValidNewPolicyFileTakesEffectOnNextRequest exercises the
+// real newPolicyReloadFn (the exact closure runServe wires up, and a later
+// task registers with the ReloadCoordinator) against a real temp config +
+// policy.yaml, using the real loadPolicyEngine/config.Load construction
+// path -- no fakes. It proves the positive half of the hot-reload
+// contract: overwriting the on-disk policy file with a genuinely
+// different, valid policy and calling the reload closure takes effect on
+// the SAME Decider instance's very next Decide call, with zero restart.
+func TestPolicyReload_ValidNewPolicyFileTakesEffectOnNextRequest(t *testing.T) {
+	dir := t.TempDir()
+
+	policyPath := filepath.Join(dir, "policy.yaml")
+	initialPolicy := "rules:\n  - identity: alice\n    tool: read\n    effect: deny\ndefault: allow\n"
+	if err := os.WriteFile(policyPath, []byte(initialPolicy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine, err := loadPolicyEngine("yaml", policyPath)
+	if err != nil {
+		t.Fatalf("initial loadPolicyEngine: %v", err)
+	}
+	policyHolder := reload.NewReloadableEngine(&engine)
+	d := proxyusecase.NewDeciderWithHolder(policyHolder)
+
+	call := proxydomain.ToolCall{Identity: "alice", Tool: "read"}
+
+	before := d.Decide(call)
+	if before.Allow {
+		t.Fatalf("expected alice/read denied before reload, got %+v", before)
+	}
+
+	// Overwrite with a genuinely different, VALID policy: alice/read now
+	// allowed.
+	newPolicy := "rules:\n  - identity: alice\n    tool: read\n    effect: allow\ndefault: deny\n"
+	if err := os.WriteFile(policyPath, []byte(newPolicy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadFn := newPolicyReloadFn(policyHolder, configPath)
+	if err := reloadFn(); err != nil {
+		t.Fatalf("expected reload with a valid new policy file to succeed, got: %v", err)
+	}
+
+	// Same Decider instance, very next call, no restart.
+	after := d.Decide(call)
+	if !after.Allow {
+		t.Fatalf("expected alice/read allowed after reload, got %+v -- reload did not take effect on the next request", after)
+	}
+}
+
+// TestPolicyReload_InvalidNewPolicyFileLeavesOldEngineServing is the
+// security-critical negative case: a malformed on-disk policy file must
+// never reach policyHolder.Swap. The reload closure must return an error,
+// and the SAME Decider instance -- backed by the untouched old engine --
+// must keep deciding every subsequent request exactly as before it was
+// ever asked to reload. No crash, no silent partial state.
+func TestPolicyReload_InvalidNewPolicyFileLeavesOldEngineServing(t *testing.T) {
+	dir := t.TempDir()
+
+	policyPath := filepath.Join(dir, "policy.yaml")
+	validPolicy := "rules:\n  - identity: alice\n    tool: read\n    effect: deny\ndefault: allow\n"
+	if err := os.WriteFile(policyPath, []byte(validPolicy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine, err := loadPolicyEngine("yaml", policyPath)
+	if err != nil {
+		t.Fatalf("initial loadPolicyEngine: %v", err)
+	}
+	policyHolder := reload.NewReloadableEngine(&engine)
+	d := proxyusecase.NewDeciderWithHolder(policyHolder)
+
+	call := proxydomain.ToolCall{Identity: "alice", Tool: "read"}
+
+	before := d.Decide(call)
+	if before.Allow {
+		t.Fatalf("expected alice/read denied before reload, got %+v", before)
+	}
+
+	// Overwrite with genuinely malformed YAML (unterminated flow sequence).
+	malformed := "rules: [identity: alice, tool: read, effect: allow\ndefault: allow\n"
+	if err := os.WriteFile(policyPath, []byte(malformed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadFn := newPolicyReloadFn(policyHolder, configPath)
+	if err := reloadFn(); err == nil {
+		t.Fatal("expected reload with malformed policy YAML to return an error")
+	}
+
+	// Old engine, untouched: identical decision, every subsequent request.
+	for i := 0; i < 3; i++ {
+		after := d.Decide(call)
+		if after.Allow != before.Allow || after.Reason != before.Reason {
+			t.Fatalf("call %d: old engine's decision changed after a rejected reload: before=%+v after=%+v", i, before, after)
+		}
 	}
 }
 
