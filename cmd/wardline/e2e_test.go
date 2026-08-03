@@ -2118,6 +2118,37 @@ anomaly:
 	}
 }
 
+// TestServeEndToEnd_DefaultConfigNoiseAndDisabledCredentialsRoutesReturn404
+// closes a gap the I1/I4 unit tests (main_test.go) left open: those tests
+// hand-build their own extraRoutes map and call buildTopHandler directly,
+// which proves routeOrNotFound/noiseRouteHandler work as a MECHANISM but
+// never confirms runServe actually wires them into a real startup path.
+// This starts a real "wardline serve" subprocess with a bare-default
+// config (no web_ui, no credential_issuance, no special flags) and
+// confirms both wiring points survive real startup: a generic-noise path
+// returns a clean 404 instead of falling through to the proxy catch-all,
+// and so does a disabled /credentials/* route.
+func TestServeEndToEnd_DefaultConfigNoiseAndDisabledCredentialsRoutesReturn404(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, "")
+
+	robotsResp, err := http.Get("http://" + listenAddr + "/robots.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = robotsResp.Body.Close()
+	if robotsResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a clean 404 (routed to noiseRouteHandler, never reaching the proxy) for GET /robots.txt on a default-config real instance, got %d (stderr: %s)", robotsResp.StatusCode, stderr.String())
+	}
+
+	tokenResp := postCredentialsToken(t, listenAddr, "any-secret")
+	_ = tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a clean 404 (routed to routeOrNotFound, never reaching the proxy) for POST /credentials/token with credential_issuance off on a default-config real instance, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+}
+
 // TestValidateConfigEndToEnd_AnomalyOutputNotCreated proves
 // `wardline validate-config` has no filesystem side effects: it must
 // report a valid anomaly block without creating anomaly.output, which an
@@ -2995,13 +3026,15 @@ federation:
 
 // TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI proves the
 // federation feature flag actually gates both its inbound HTTP surfaces
-// when off: /federation/summaries isn't mounted at all (an unmatched
-// path falls through to the proxy, which rejects the non-JSON-RPC body
-// with 400 -- the same "not mounted" pattern as
-// TestServeEndToEnd_DashboardNotMountedWhenDisabled), and
-// /dashboard/api/federation/correlated answers 404 (the same documented
-// nil-FederationSource posture already covered for anomalies by
-// TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput).
+// when off: /federation/summaries answers a clean 404 (registered
+// unconditionally via routeOrNotFound -- see main.go and I1 in the final
+// whole-branch review fix wave -- rather than falling through to the "/"
+// proxy catch-all, which used to reject the non-JSON-RPC body with 400
+// and, worse, write a spurious audit-log "error" entry for every request;
+// this test used to assert that old, buggy fallthrough-to-proxy behavior
+// directly), and /dashboard/api/federation/correlated answers 404 (the
+// same documented nil-FederationSource posture already covered for
+// anomalies by TestServeEndToEnd_AnomalyDetectionOffProducesNoOutput).
 func TestE2E_FederationDisabledBlocksSummariesAndCorrelatedAPI(t *testing.T) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "wardline")
@@ -3071,8 +3104,8 @@ features:
 			t.Fatalf("GET /federation/summaries at %s: %v", addr, err)
 		}
 		_ = summariesResp.Body.Close()
-		if summariesResp.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected 400 (unmatched path routed to the proxy, which rejects the bodyless GET) for /federation/summaries at %s when federation is off, got %d (stderr A: %s, stderr B: %s)", addr, summariesResp.StatusCode, stderrA.String(), stderrB.String())
+		if summariesResp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected a clean 404 (routed to routeOrNotFound, never reaching the proxy) for /federation/summaries at %s when federation is off, got %d (stderr A: %s, stderr B: %s)", addr, summariesResp.StatusCode, stderrA.String(), stderrB.String())
 		}
 
 		correlatedResp, err := http.Get("http://" + addr + "/dashboard/api/federation/correlated")

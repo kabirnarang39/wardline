@@ -8,15 +8,31 @@
 </head>
 <body>
   <div id="app">
-    <nav class="rail" aria-label="Dashboard sections">
-      <div class="brand">Wardline</div>
-      <button class="nav-item is-active" data-view="activity" aria-current="page">
+    <nav class="sidebar" aria-label="Dashboard sections">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">│</span>Wardline</div>
+      <button class="nav-item is-active" data-view="overview" aria-current="page">
+        <span class="nav-icon" data-icon="overview"></span>
+        <span>Overview</span>
+      </button>
+      <button class="nav-item" data-view="activity">
         <span class="nav-icon" data-icon="activity"></span>
         <span>Activity</span>
       </button>
       <button class="nav-item" data-view="anomalies">
         <span class="nav-icon" data-icon="anomalies"></span>
         <span>Anomalies</span>
+      </button>
+      <button class="nav-item" data-view="blocked">
+        <span class="nav-icon" data-icon="blocked"></span>
+        <span>Blocked</span>
+      </button>
+      <button class="nav-item" data-view="federation">
+        <span class="nav-icon" data-icon="federation"></span>
+        <span>Federation</span>
+      </button>
+      <button class="nav-item" data-view="credentials">
+        <span class="nav-icon" data-icon="credentials"></span>
+        <span>Credentials</span>
       </button>
       <button class="nav-item" data-view="policy">
         <span class="nav-icon" data-icon="policy"></span>
@@ -33,7 +49,76 @@
     </nav>
 
     <main class="content">
-      <section id="view-activity" class="view is-active" aria-labelledby="view-activity-heading">
+      <header class="topbar">
+        <div class="topbar-search">
+          <span class="topbar-search-icon" data-icon="search" aria-hidden="true"></span>
+          <input type="search" id="global-search" placeholder="Search..." aria-label="Search current view">
+        </div>
+        <div class="topbar-right">
+          <button class="topbar-icon-btn" id="notifications-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
+            <span data-icon="bell" aria-hidden="true"></span>
+            <span class="notification-badge" id="notification-badge" hidden>0</span>
+          </button>
+          <div class="topbar-identity" id="topbar-identity">
+            <span class="identity-avatar" data-icon="user" aria-hidden="true"></span>
+            <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+          </div>
+        </div>
+      </header>
+
+      <section id="view-overview" class="view is-active" aria-labelledby="view-overview-heading">
+        <div class="view-header">
+          <h1 id="view-overview-heading">Overview</h1>
+        </div>
+
+        <div class="status-band" id="status-band" data-state="nominal">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">All systems nominal</span>
+        </div>
+
+        <div class="kpi-row">
+          <div class="kpi-tile">
+            <div class="kpi-label">Requests</div>
+            <div class="kpi-value" id="kpi-total-requests">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Deny rate</div>
+            <div class="kpi-value" id="kpi-deny-rate">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Anomalies</div>
+            <div class="kpi-value" id="kpi-anomalies">—</div>
+          </div>
+          <div class="kpi-tile">
+            <div class="kpi-label">Blocked</div>
+            <div class="kpi-value" id="kpi-blocked">—</div>
+          </div>
+        </div>
+
+        <div class="card-grid">
+          <div class="card" id="chart-card">
+            <h2 class="card-title">Recent activity</h2>
+            <svg id="activity-chart" viewBox="0 0 400 180" role="img" aria-label="Bar chart of recent request volume over time"></svg>
+            <p class="card-caption" id="chart-caption"></p>
+          </div>
+
+          <div class="card" id="needs-review-card">
+            <h2 class="card-title">Needs review</h2>
+            <p id="needs-review-summary"></p>
+            <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
+          </div>
+
+          <div class="card card-dark" id="live-pulse-card">
+            <h2 class="card-title">Live pulse</h2>
+            <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
+            <button class="pulse-toggle" id="pulse-toggle" aria-label="Pause live updates">
+              <span data-icon="pause" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-activity" class="view" aria-labelledby="view-activity-heading" hidden>
         <div class="view-header">
           <h1 id="view-activity-heading">Activity</h1>
           <div class="filters">
@@ -87,6 +172,63 @@
             <tbody id="anomaly-rows"></tbody>
           </table>
           <p id="anomaly-empty" class="empty-state" hidden>No anomalies detected yet.</p>
+        </div>
+      </section>
+
+      <section id="view-blocked" class="view" aria-labelledby="view-blocked-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-blocked-heading">Blocked</h1>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Identity</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Reason</th>
+                <th scope="col">Expires</th>
+                <th scope="col"></th>
+              </tr>
+            </thead>
+            <tbody id="blocked-rows"></tbody>
+          </table>
+          <p id="blocked-empty" class="empty-state" hidden>No identities are currently blocked.</p>
+        </div>
+      </section>
+
+      <section id="view-federation" class="view" aria-labelledby="view-federation-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-federation-heading">Federation</h1>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">First seen</th>
+                <th scope="col">Last seen</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Instances</th>
+                <th scope="col">Fingerprint</th>
+              </tr>
+            </thead>
+            <tbody id="federation-rows"></tbody>
+          </table>
+          <p id="federation-empty" class="empty-state" hidden>No cross-instance correlated alerts yet.</p>
+        </div>
+      </section>
+
+      <section id="view-credentials" class="view" aria-labelledby="view-credentials-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-credentials-heading">Credentials</h1>
+        </div>
+        <div class="card credentials-card">
+          <p class="credentials-hint">
+            Revoking an identity immediately invalidates every outstanding and future-until-expiry access token, and any outstanding refresh token, for that identity.
+          </p>
+          <label for="revoke-identity-input">Identity to revoke</label>
+          <input type="text" id="revoke-identity-input" placeholder="e.g. acme-alice" aria-label="Identity to revoke">
+          <button id="revoke-btn" class="btn-primary">Revoke credential</button>
+          <p id="revoke-result" role="status" aria-live="polite" hidden></p>
         </div>
       </section>
 
