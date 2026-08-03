@@ -18,8 +18,10 @@ import (
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxydomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+	rbacadapter "github.com/kabirnarang39/wardline/internal/features/rbac/adapter"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
+	scimusecase "github.com/kabirnarang39/wardline/internal/features/scim/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
@@ -1064,6 +1066,157 @@ func TestPolicyReload_InvalidNewPolicyFileLeavesOldEngineServing(t *testing.T) {
 		after := d.Decide(call)
 		if after.Allow != before.Allow || after.Reason != before.Reason {
 			t.Fatalf("call %d: old engine's decision changed after a rejected reload: before=%+v after=%+v", i, before, after)
+		}
+	}
+}
+
+// TestRBACReload_PreservesLiveSCIMBindings is the correctness-critical
+// case from the hot-reload plan: it proves that reloading RBAC via the
+// real newRBACReloadFn reconstructs only the static, YAML-sourced half
+// of the authorizer and re-wraps it around the SAME scimBindingStore
+// instance already running -- a SCIM-provisioned identity's permission
+// must survive an RBAC reload untouched. If a future edit accidentally
+// had newRBACReloadFn reconstruct scimBindingStore instead of reusing
+// it, this test fails: bob's group membership would vanish.
+func TestRBACReload_PreservesLiveSCIMBindings(t *testing.T) {
+	dir := t.TempDir()
+
+	// "editor" is a custom role granting dashboard:view -- deliberately
+	// distinct from bob's SCIM-granted "viewer" role, so the reload below
+	// (which changes rbac.yaml) is a genuinely different, valid file, not
+	// a no-op reload.
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	initialRBAC := "roles:\n  - name: editor\n    permissions: [\"dashboard:view\"]\n"
+	if err := os.WriteFile(rbacPath, []byte(initialRBAC), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\ndefault: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n" +
+		"rbac:\n  config_file: \"" + rbacPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Real construction path: LoadAuthorizer + a real, in-memory SCIM
+	// BindingStore, composited exactly as runServe does.
+	staticAuthorizer, err := rbacadapter.LoadAuthorizer(rbacPath)
+	if err != nil {
+		t.Fatalf("initial LoadAuthorizer: %v", err)
+	}
+	scimBindingStore := scimusecase.NewBindingStore()
+	// bob is provisioned into Wardline's builtin "viewer" role (grants
+	// dashboard:view) via a real SCIM group -- not present anywhere in
+	// rbac.yaml.
+	scimBindingStore.SetGroupMembers("wardline:role-viewer", []string{"bob"})
+
+	var authorizer rbacdomain.Authorizer = rbacusecase.NewCompositeAuthorizer(
+		staticAuthorizer,
+		scimBindingStore,
+		staticAuthorizer.RoleHasPermission,
+	)
+	rbacHolder := reload.NewReloadableEngine(&authorizer)
+	checker := rbacusecase.NewCheckerWithHolder(alwaysOnFlags{}, rbacHolder)
+
+	if !checker.Check("bob", "default", rbacdomain.PermissionDashboardView) {
+		t.Fatal("expected bob to hold dashboard:view via his live SCIM group binding, before any reload")
+	}
+
+	// Overwrite rbac.yaml with a genuinely different, VALID file -- an
+	// unrelated role change, nothing to do with bob or SCIM.
+	newRBAC := "roles:\n  - name: editor\n    permissions: [\"dashboard:view\", \"credential:revoke\"]\n"
+	if err := os.WriteFile(rbacPath, []byte(newRBAC), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadFn := newRBACReloadFn(rbacHolder, configPath, true, true, scimBindingStore)
+	if err := reloadFn(); err != nil {
+		t.Fatalf("expected rbac reload with a valid new file to succeed, got: %v", err)
+	}
+
+	// Same Checker instance, very next call: bob's SCIM-granted
+	// permission must still hold -- this is the assertion that fails if
+	// a future edit reconstructs scimBindingStore instead of reusing it.
+	if !checker.Check("bob", "default", rbacdomain.PermissionDashboardView) {
+		t.Fatal("expected bob to STILL hold dashboard:view via SCIM after rbac reload -- scimBindingStore was reconstructed or reset instead of reused")
+	}
+}
+
+// TestRBACReload_InvalidNewRBACFileLeavesOldAuthorizerServing is the
+// security-critical negative case, mirroring
+// TestPolicyReload_InvalidNewPolicyFileLeavesOldEngineServing: a
+// malformed on-disk rbac.yaml must never reach rbacHolder.Swap. The
+// reload closure must return an error, and the SAME Checker instance --
+// backed by the untouched old composite authorizer, SCIM binding
+// included -- must keep deciding every subsequent check exactly as
+// before it was ever asked to reload.
+func TestRBACReload_InvalidNewRBACFileLeavesOldAuthorizerServing(t *testing.T) {
+	dir := t.TempDir()
+
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	validRBAC := "roles:\n  - name: editor\n    permissions: [\"dashboard:view\"]\n"
+	if err := os.WriteFile(rbacPath, []byte(validRBAC), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\ndefault: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n" +
+		"rbac:\n  config_file: \"" + rbacPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	staticAuthorizer, err := rbacadapter.LoadAuthorizer(rbacPath)
+	if err != nil {
+		t.Fatalf("initial LoadAuthorizer: %v", err)
+	}
+	scimBindingStore := scimusecase.NewBindingStore()
+	scimBindingStore.SetGroupMembers("wardline:role-viewer", []string{"bob"})
+
+	var authorizer rbacdomain.Authorizer = rbacusecase.NewCompositeAuthorizer(
+		staticAuthorizer,
+		scimBindingStore,
+		staticAuthorizer.RoleHasPermission,
+	)
+	rbacHolder := reload.NewReloadableEngine(&authorizer)
+	checker := rbacusecase.NewCheckerWithHolder(alwaysOnFlags{}, rbacHolder)
+
+	if !checker.Check("bob", "default", rbacdomain.PermissionDashboardView) {
+		t.Fatal("expected bob to hold dashboard:view via SCIM before reload")
+	}
+
+	// Overwrite with genuinely malformed YAML (unknown field).
+	malformed := "roles:\n  - name: editor\n    bogus_field: true\n"
+	if err := os.WriteFile(rbacPath, []byte(malformed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadFn := newRBACReloadFn(rbacHolder, configPath, true, true, scimBindingStore)
+	if err := reloadFn(); err == nil {
+		t.Fatal("expected reload with malformed rbac YAML to return an error")
+	}
+
+	// Old composite authorizer, untouched: bob's SCIM binding and the
+	// editor role's grant both still hold, every subsequent call.
+	for i := 0; i < 3; i++ {
+		if !checker.Check("bob", "default", rbacdomain.PermissionDashboardView) {
+			t.Fatalf("call %d: expected bob to still hold dashboard:view after a rejected reload", i)
 		}
 	}
 }
