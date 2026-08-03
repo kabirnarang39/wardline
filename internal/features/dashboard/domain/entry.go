@@ -46,3 +46,24 @@ type CorrelatedAlertEntry struct {
 	FirstSeen   string   `json:"first_seen"`
 	LastSeen    string   `json:"last_seen"`
 }
+
+// RoleEntry is the dashboard's JSON view of one rbac.Role -- deliberately
+// its own type (not a reuse of rbac/domain.Role), same reasoning as
+// AnomalyEntry/CorrelatedAlertEntry above.
+type RoleEntry struct {
+	Name        string   `json:"name"`
+	Permissions []string `json:"permissions"`
+	// BindingCount is computed by the handler (not stored on Role
+	// itself) -- how many cluster+role bindings reference this role.
+	BindingCount int `json:"binding_count"`
+}
+
+// BindingEntry is the dashboard's JSON view of one binding -- either a
+// rbac/domain.ClusterRoleBinding (Tenant left empty) or a
+// rbac/domain.RoleBinding (Tenant set).
+type BindingEntry struct {
+	Subject string `json:"subject"`
+	Role    string `json:"role"`
+	// Tenant is empty for a cluster-scoped (global) binding.
+	Tenant string `json:"tenant"`
+}

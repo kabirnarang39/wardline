@@ -11,6 +11,7 @@ import (
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 )
 
 // AuditSource is the subset of RingBuffer's behavior Handler depends on —
@@ -52,6 +53,15 @@ type FederationSource interface {
 type BlockedSource interface {
 	List(tenantFilter string) []anomalydomain.BlockedEntry
 	Unblock(identity, tenantName string) bool
+}
+
+// RBACSource is the subset of rbacadapter.StaticAuthorizer's behavior
+// Handler depends on -- read-only, matching every other Source
+// interface's narrow-slice pattern in this file.
+type RBACSource interface {
+	Roles() []rbacdomain.Role
+	ClusterRoleBindings() []rbacdomain.ClusterRoleBinding
+	RoleBindings() []rbacdomain.RoleBinding
 }
 
 // UnblockAuthorizer decides whether a caller may clear an active
@@ -109,6 +119,7 @@ type Handler struct {
 	blocked    BlockedSource
 	scope      TenantScopeResolver
 	unblock    UnblockAuthorizer
+	rbac       RBACSource
 	mux        *http.ServeMux
 }
 
@@ -126,9 +137,11 @@ type Handler struct {
 // -- every view then answers unfiltered, identical to today's behavior;
 // see tenantFilter's doc comment. unblock may likewise be nil (rbac is
 // off) -- DELETE /dashboard/api/anomalies/blocked/{identity} then answers
-// 404 the same way as every other "not wired" route above.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock}
+// 404 the same way as every other "not wired" route above. rbac may
+// likewise be nil (rbac is off) -- GET /dashboard/api/rbac then answers
+// 404 the same way.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -138,6 +151,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
+	mux.HandleFunc("/dashboard/api/rbac", h.handleRBAC)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -331,6 +345,46 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRBAC serves GET /dashboard/api/rbac -- a read-only snapshot of
+// every role and binding h.rbac (the real *rbacadapter.StaticAuthorizer,
+// wired in main.go) currently holds. Gated only by the outer
+// dashboard:view RequirePermission wrap around the whole /dashboard/
+// tree in main.go -- never config:edit, since this is a read, not a
+// mutation, and no edit capability exists yet.
+func (h *Handler) handleRBAC(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.rbac == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	clusterBindings := h.rbac.ClusterRoleBindings()
+	roleBindings := h.rbac.RoleBindings()
+	bindingCounts := map[string]int{}
+	bindings := make([]domain.BindingEntry, 0, len(clusterBindings)+len(roleBindings))
+	for _, b := range clusterBindings {
+		bindingCounts[b.RoleName]++
+		bindings = append(bindings, domain.BindingEntry{Subject: b.Subject, Role: b.RoleName})
+	}
+	for _, b := range roleBindings {
+		bindingCounts[b.RoleName]++
+		bindings = append(bindings, domain.BindingEntry{Subject: b.Subject, Role: b.RoleName, Tenant: b.Tenant})
+	}
+	roles := make([]domain.RoleEntry, 0, len(h.rbac.Roles()))
+	for _, role := range h.rbac.Roles() {
+		perms := make([]string, len(role.Permissions))
+		for i, p := range role.Permissions {
+			perms[i] = string(p)
+		}
+		roles = append(roles, domain.RoleEntry{Name: role.Name, Permissions: perms, BindingCount: bindingCounts[role.Name]})
+	}
+	writeJSON(w, struct {
+		Roles    []domain.RoleEntry    `json:"roles"`
+		Bindings []domain.BindingEntry `json:"bindings"`
+	}{roles, bindings})
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
