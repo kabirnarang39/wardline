@@ -131,6 +131,16 @@
   --status-warn: #D29922;
   --status-critical: #F85149;
   --status-info: #58A6FF;
+  /* 5th token, deliberately NOT collapsed onto --status-critical: v2's own
+     final review found deny (#DC2626) and blocked (#991B1B) being
+     visually indistinguishable a real bug worth a dedicated fix. deny
+     maps to --status-critical above; blocked maps to this token instead
+     -- a darker/more muted red, same family, distinct enough to read as
+     two different severities at a glance. 3.32:1 against --surface
+     (#181D23), clears the 3:1 non-text floor (this token is only ever
+     used as a 4px left-border accent, never as text) -- see
+     task-3-report.md for the full WCAG computation. */
+  --status-critical-severe: #C93A26;
 
   --radius-panel: 6px;
   --radius-control: 4px;
@@ -166,6 +176,12 @@
   --status-warn: #9A6700;
   --status-critical: #CF222E;
   --status-info: #0969DA;
+  /* Distinct deny-vs-blocked red, light mode. 9.58:1 against --surface
+     (#FFFFFF) -- clears both the 3:1 non-text and 4.5:1 text floors with
+     a wide margin, in the same deep-maroon family v2's own --blocked
+     (#991B1B) used, so the "blocked is the darker, more settled red"
+     visual convention carries over from v2 into v4. */
+  --status-critical-severe: #8B1119;
 
   --shadow-resting: 0 1px 2px rgba(15, 20, 25, 0.08);
   --shadow-raised: 0 8px 24px rgba(15, 20, 25, 0.16);
@@ -440,17 +456,17 @@ button, input {
   margin-bottom: 20px;
 }
 
-h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
+h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 .filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 .filters input {
   min-height: 44px;
   padding: 0 14px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  color: var(--ink);
+  color: var(--text);
 }
 
 .chip-group { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -458,19 +474,23 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 .chip {
   min-height: 44px;
   padding: 0 14px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   cursor: pointer;
   font-family: var(--font-body);
   font-size: 13px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--text-muted);
   transition: border-color var(--duration-standard) var(--ease-out), background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
-.chip:hover { border-color: var(--brand); }
-.chip.is-active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+/* Active/selected state, not decision-color semantics (an is-active "deny"
+   chip doesn't turn red) -- matches Task 2's active-nav-item convention:
+   "selected/current" reads as info-blue everywhere, green stays reserved
+   for the allow/ok semantic specifically. */
+.chip:hover { border-color: var(--status-info); }
+.chip.is-active { border-color: var(--status-info); background: var(--surface-raised); color: var(--status-info); }
 
 .chip:active {
   transform: scale(0.97);
@@ -491,14 +511,14 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   gap: 6px;
   min-height: 44px;
   padding: 0 14px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   cursor: pointer;
   font-family: var(--font-body);
   font-size: 13px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .facet-toggle [data-icon="chevron"] {
@@ -523,15 +543,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   flex-wrap: wrap;
   padding: 16px;
   margin-top: 12px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-panel);
 }
 
 .facet-group h3 {
   font-size: 12px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-muted);
   margin: 0 0 8px;
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -561,23 +581,48 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   cursor: pointer;
   font-family: var(--font-body);
   font-size: 13px;
-  color: var(--ink);
+  color: var(--text);
   text-align: left;
 }
 
 .facet-group button:hover {
-  background: var(--mist);
+  background: var(--surface-raised);
 }
 
 .facet-group button.is-active {
-  background: var(--brand-soft);
-  color: var(--brand);
+  background: var(--surface-raised);
+  color: var(--status-info);
   font-weight: 600;
 }
 
 .facet-count {
-  color: var(--muted);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Shared Grafana-style panel treatment (dashboard-visual-v4 Task 3). Every
+   bordered-card view surface converges on this: --surface fill, --border
+   line, --radius-panel corners. .table-wrap and .policy-source below
+   inline these same three declarations directly rather than also carrying
+   the `panel` class in index.html -- same visual result, one less class
+   to keep in sync across two files. Later tasks (4, 5) apply the actual
+   `.panel` class to their own new markup. */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+}
+
+.panel-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .table-wrap {
@@ -593,9 +638,10 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
      region so the header has something to stick against. */
   overflow: auto;
   max-height: 65vh;
-  background: var(--card);
+  /* .panel treatment, inlined -- see comment above .panel */
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-panel);
 }
 
 .audit-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 13px; }
@@ -604,27 +650,34 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   text-align: left;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--text-muted);
   font-weight: 600;
   font-family: var(--font-body);
   position: sticky;
   top: 0;
-  background: var(--card);
+  background: var(--surface);
 }
 
-.audit-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink); }
+.audit-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
 .audit-table tr:last-child td { border-bottom: none; }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
 
+/* deny and blocked deliberately use two DIFFERENT red tokens, not the same
+   one -- v2's own final review caught deny (#DC2626) and blocked
+   (#991B1B) being visually indistinguishable and fixed it as two shades
+   of red; collapsing both onto --status-critical here would silently
+   reintroduce that exact bug. --status-critical-severe is v4's dedicated
+   5th token for "blocked" specifically (see the :root block for the WCAG
+   math). */
 .decision-cell { position: relative; padding-left: 20px !important; }
 .decision-cell::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
-.decision-cell[data-decision="allow"]::before { background: var(--allow); }
+.decision-cell[data-decision="allow"]::before { background: var(--status-ok); }
 .decision-cell[data-decision="deny"]::before,
-.decision-cell[data-decision="error"]::before { background: var(--deny); }
-.decision-cell[data-decision="throttled"]::before { background: var(--throttled); }
-.decision-cell[data-decision="passthrough"]::before { background: var(--passthrough); }
-.decision-cell[data-decision="blocked"]::before { background: var(--blocked); }
+.decision-cell[data-decision="error"]::before { background: var(--status-critical); }
+.decision-cell[data-decision="throttled"]::before { background: var(--status-warn); }
+.decision-cell[data-decision="passthrough"]::before { background: var(--text-muted); }
+.decision-cell[data-decision="blocked"]::before { background: var(--status-critical-severe); }
 
 /* Federation accent (M3): a --federation-colored left-border accent on
    each Federation row's first cell, mirroring .decision-cell's own
@@ -656,7 +709,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   height: 44px;
   border-radius: var(--radius-control);
   cursor: pointer;
-  color: var(--muted);
+  color: var(--text-muted);
   transition: transform 150ms var(--ease-hover), background-color 150ms var(--ease-hover), color 150ms var(--ease-hover);
 }
 
@@ -667,8 +720,8 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
 .expand-toggle:hover,
 .expand-toggle:focus-visible {
-  background: var(--mist);
-  color: var(--ink);
+  background: var(--surface-raised);
+  color: var(--text);
 }
 
 .expand-toggle.is-open {
@@ -682,7 +735,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 }
 
 .detail-row td {
-  background: var(--mist);
+  background: var(--surface-raised);
   padding: 16px 20px;
   border-bottom: 1px solid var(--border);
   font-family: var(--font-data);
@@ -699,7 +752,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 }
 
 .detail-row dt {
-  color: var(--muted);
+  color: var(--text-muted);
   font-family: var(--font-body);
   font-weight: 500;
 }
@@ -708,7 +761,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   margin: 0;
 }
 
-.empty-state { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 14px; }
+.empty-state { padding: 48px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
 
 /* Destructive row action (Blocked view's Unblock; Task 5's credential-revoke
    reuses this same class/shape) -- confirmation itself is the browser's
@@ -790,22 +843,23 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   font-weight: 600;
   font-size: 13px;
   padding: 4px 12px;
-  background: var(--brand-soft);
-  color: var(--brand);
+  background: var(--surface-raised);
+  color: var(--status-info);
   border-radius: var(--radius-pill);
 }
 
 .policy-source {
   font-family: var(--font-data);
   font-size: 13px;
-  background: var(--card);
+  /* .panel treatment, inlined -- see comment above .panel */
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-panel);
   padding: 24px;
   overflow-x: auto;
   white-space: pre;
   margin: 0;
-  color: var(--ink);
+  color: var(--text);
 }
 
 .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin: 0 0 32px; }
@@ -821,21 +875,21 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
    the larger heading font would make long values worse, not more
    consistent, so this one axis is a disclosed, deliberate exception. */
 .status-grid div {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   padding: 16px;
 }
 
-.status-grid dt { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+.status-grid dt { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; }
 /* overflow-wrap: long values (upstream URLs, listen addresses) have no
    natural break points, so without this they silently spill out of their
    status-grid cell at tablet/laptop widths where multiple columns leave
    less room per cell than the single-column mobile layout does (task-8
    responsive audit). */
-.status-grid dd { margin: 0; font-family: var(--font-data); font-size: 16px; font-weight: 600; color: var(--ink); overflow-wrap: break-word; }
+.status-grid dd { margin: 0; font-family: var(--font-data); font-size: 16px; font-weight: 600; color: var(--text); overflow-wrap: break-word; }
 
-.status-subheading { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--ink); }
+.status-subheading { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
 
 .feature-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 
@@ -846,15 +900,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   font-family: var(--font-body);
   font-size: 14px;
   padding: 12px 16px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  color: var(--ink);
+  color: var(--text);
 }
 
 .feature-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.feature-dot.is-on { background: var(--allow); }
-.feature-dot.is-off { background: var(--muted); }
+.feature-dot.is-on { background: var(--status-ok); }
+.feature-dot.is-off { background: var(--text-muted); }
 
 .status-band {
   display: flex;
