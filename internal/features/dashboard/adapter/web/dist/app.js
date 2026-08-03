@@ -331,14 +331,18 @@ const MAX_BUCKETS = 12;
 function chooseBucketMs(spanMs) {
   for (const minutes of BUCKET_MINUTES) {
     const ms = minutes * 60000;
-    if (spanMs / ms <= MAX_BUCKETS) return ms;
+    // Floor-aligned bucket boundaries mean the actual number of buckets
+    // touched by [minT, maxT] can be one more than spanMs/ms (the span's
+    // start/end don't line up with bucket edges) -- cap at MAX_BUCKETS - 1
+    // here so the real rendered count never exceeds MAX_BUCKETS.
+    if (spanMs / ms <= MAX_BUCKETS - 1) return ms;
   }
   return BUCKET_MINUTES[BUCKET_MINUTES.length - 1] * 60000;
 }
 
 function bucketEntries(entries) {
   const times = entries.map((e) => new Date(e.Timestamp).getTime()).filter((t) => !Number.isNaN(t));
-  if (times.length === 0) return { buckets: [], bucketMs: 0 };
+  if (times.length === 0) return { buckets: [], bucketMs: 0, spanMs: 0 };
 
   const spanMs = Math.max(...times) - Math.min(...times);
   const bucketMs = chooseBucketMs(spanMs || 1);
@@ -349,21 +353,29 @@ function bucketEntries(entries) {
     counts.set(key, (counts.get(key) || 0) + 1);
   }
   const buckets = Array.from(counts.entries()).sort(([a], [b]) => a - b);
-  return { buckets, bucketMs };
+  return { buckets, bucketMs, spanMs };
 }
 
-function formatBucketLabel(bucketStartMs, bucketMs) {
+function formatBucketLabel(bucketStartMs, bucketMs, spanMs) {
   const d = new Date(bucketStartMs);
-  // Honest about the real granularity (M7): once the buffer's span pushes
-  // bucketing out to whole-day buckets, a date reads better than a
-  // time-of-day that would otherwise silently span multiple days.
-  return bucketMs >= 24 * 60 * 60 * 1000
-    ? d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
-    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  // Honest about the real granularity (M7). Whole-day buckets never need a
+  // time component. Otherwise, ambiguity depends on the TOTAL SPAN the
+  // chart covers, not the bucket width: a >=24h span can repeat the same
+  // time-of-day label across two different calendar days with sub-day
+  // buckets, so once the span could do that, include a date alongside the
+  // time to disambiguate.
+  if (bucketMs >= DAY_MS) {
+    return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+  }
+  if (spanMs >= DAY_MS) {
+    return d.toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function renderActivityChart() {
-  const { buckets, bucketMs } = bucketEntries(state.entries);
+  const { buckets, bucketMs, spanMs } = bucketEntries(state.entries);
   const svg = document.getElementById('activity-chart');
   const caption = document.getElementById('chart-caption');
   caption.textContent = `Based on the last ${state.entries.length} buffered events — not a full historical view.`;
@@ -382,7 +394,7 @@ function renderActivityChart() {
     const x = i * barWidth + barWidth * 0.15;
     const w = barWidth * 0.7;
     const y = chartHeight - barHeight + 10;
-    const label = formatBucketLabel(bucketStart, bucketMs);
+    const label = formatBucketLabel(bucketStart, bucketMs, spanMs);
     return `
       <rect class="chart-bar" x="${x}" y="${y}" width="${w}" height="${barHeight}" rx="4"></rect>
       <text class="chart-value-label" x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${count}</text>
