@@ -116,20 +116,20 @@
         </div>
 
         <div class="card-grid">
-          <div class="card" id="chart-card">
-            <h2 class="card-title">Recent activity</h2>
+          <div class="card panel" id="chart-card">
+            <div class="panel-title-bar"><h2 class="card-title">Recent activity</h2></div>
             <svg id="activity-chart" viewBox="0 0 400 180" role="img" aria-label="Bar chart of recent request volume over time"></svg>
             <p class="card-caption" id="chart-caption"></p>
           </div>
 
-          <div class="card" id="needs-review-card">
-            <h2 class="card-title">Needs review</h2>
+          <div class="card panel" id="needs-review-card">
+            <div class="panel-title-bar"><h2 class="card-title">Needs review</h2></div>
             <p id="needs-review-summary"></p>
             <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
           </div>
 
-          <div class="card card-dark" id="live-pulse-card">
-            <h2 class="card-title">Live pulse</h2>
+          <div class="card card-dark panel" id="live-pulse-card">
+            <div class="panel-title-bar"><h2 class="card-title">Live pulse</h2></div>
             <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
             <button class="pulse-toggle" id="pulse-toggle" aria-label="Pause live updates">
               <span data-icon="pause" aria-hidden="true"></span>
