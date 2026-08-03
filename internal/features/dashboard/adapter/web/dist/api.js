@@ -43,6 +43,14 @@ export async function fetchFederationCorrelated(afterID, limit) {
   return res.json();
 }
 
+export async function fetchRBAC() {
+  const res = await fetch('api/rbac');
+  if (!res.ok) {
+    throw new Error(`rbac fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchBlocked() {
   const res = await fetch('api/anomalies/blocked');
   if (!res.ok) {

@@ -740,7 +740,17 @@ func runServe(logger *slog.Logger, args []string) {
 			unblockAuthorizer = newUnblockAuthorizer(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer)
+		// rbacSource backs GET /dashboard/api/rbac with the same real,
+		// already-loaded rbacAuthorizer every other rbac-gated route in
+		// this file reads from -- nil (rbac off) makes that route answer
+		// 404, the same "not wired" posture as every other optional
+		// Source above.
+		var rbacSource dashboardadapter.RBACSource
+		if rbacEnabled {
+			rbacSource = rbacAuthorizer
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}

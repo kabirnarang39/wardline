@@ -134,6 +134,7 @@
   --status-critical: #F85149;
   --status-critical-soft: rgba(248, 81, 73, 0.14);
   --status-info: #58A6FF;
+  --status-info-soft: rgba(88, 166, 255, 0.14);
   /* 5th token, deliberately NOT collapsed onto --status-critical: v2's own
      final review found deny (#DC2626) and blocked (#991B1B) being
      visually indistinguishable a real bug worth a dedicated fix. deny
@@ -183,6 +184,7 @@
   --status-critical: #CF222E;
   --status-critical-soft: rgba(207, 34, 46, 0.08);
   --status-info: #0969DA;
+  --status-info-soft: rgba(9, 105, 218, 0.10);
   /* Distinct deny-vs-blocked red, light mode. 9.58:1 against --surface
      (#FFFFFF) -- clears both the 3:1 non-text and 4.5:1 text floors with
      a wide margin, in the same deep-maroon family v2's own --blocked
@@ -747,6 +749,50 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .pill[data-decision="throttled"] { color: var(--status-warn); background: var(--status-warn-soft); }
 .pill[data-decision="passthrough"] { color: var(--text-muted); background: var(--surface-raised); }
 .pill[data-decision="blocked"] { color: var(--status-critical-severe); background: var(--status-critical-severe-soft); }
+
+/* .pill.info (Task 7 RBAC screen): the role-name pill in the Bindings
+   panel, same info/soft-background pairing as every other .pill variant
+   above -- not keyed off [data-decision] since a role name isn't a
+   decision, so it's a plain class instead. */
+.pill.info { color: var(--status-info); background: var(--status-info-soft); }
+
+/* .mono: monospace text outside a table (which already sets
+   font-family: var(--font-data) on itself, e.g. .audit-table) --
+   currently only the RBAC Bindings panel's subject column needs this. */
+.mono { font-family: var(--font-data); }
+
+/* Task 7: RBAC screen's Roles/Bindings two-column layout -- the same
+   "wide table + narrower side panel" shape as .card-grid's per-view
+   siblings, just a fixed 2-column split (no auto-fit) since this view
+   is always exactly Roles + Bindings, never a variable count of cards. */
+.two-col-rbac { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+
+/* .rbac-binding-list: the Bindings panel's scrollable subject -> role
+   pill list -- same scroll/max-height posture as .table-wrap (Activity's
+   own scrolling container) so a long binding list scrolls within the
+   panel instead of growing the page. */
+.rbac-binding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  overflow-y: auto;
+  max-height: 65vh;
+}
+
+.rbac-binding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.rbac-binding-tenant { color: var(--text-muted); }
+
+@media (max-width: 900px) {
+  .two-col-rbac { grid-template-columns: 1fr; }
+}
 
 /* Federation accent (M3): a --federation-colored left-border accent on
    each Federation row's first cell, mirroring .decision-cell's own

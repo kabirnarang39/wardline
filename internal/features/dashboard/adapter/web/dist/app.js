@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -803,6 +803,40 @@ async function loadStatus() {
   }
 }
 
+// renderRBAC populates the read-only RBAC screen's two panels from a
+// single fetchRBAC() response -- this data can't change at runtime today
+// (no hot-reload wiring yet, see task-7-rbac-screen-brief.md), so it's
+// fetched once per view-switch, same posture as loadPolicy/loadStatus
+// above, not polled on an interval like Activity/Anomalies/Federation.
+async function renderRBAC() {
+  const roleRows = document.getElementById('rbac-role-rows');
+  const bindingList = document.getElementById('rbac-binding-list');
+  try {
+    const { roles, bindings } = await fetchRBAC();
+    roleRows.innerHTML = (roles || []).map((role) => {
+      const perms = role.permissions.join(', ');
+      return `
+      <tr>
+        <td><strong>${escapeHTML(role.name)}</strong></td>
+        <td class="reason-cell" title="${escapeHTML(perms)}">${escapeHTML(perms)}</td>
+        <td>${role.binding_count}</td>
+      </tr>
+    `;
+    }).join('');
+    bindingList.innerHTML = (bindings || []).map((binding) => `
+      <div class="rbac-binding-row">
+        <span class="mono">${escapeHTML(binding.subject)}</span>
+        <span class="pill info">${escapeHTML(binding.role)}</span>
+        <span class="rbac-binding-tenant">${binding.tenant ? escapeHTML(binding.tenant) : '—global—'}</span>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('rbac fetch failed:', err);
+    roleRows.innerHTML = '';
+    bindingList.innerHTML = '<p class="empty-state">Failed to load RBAC data — try refreshing.</p>';
+  }
+}
+
 function formatUptime(totalSeconds) {
   const s = totalSeconds % 60;
   const m = Math.floor(totalSeconds / 60) % 60;
@@ -825,6 +859,7 @@ function switchView(name) {
   if (name === 'blocked') renderBlockedTable();
   if (name === 'policy') loadPolicy();
   if (name === 'status') loadStatus();
+  if (name === 'rbac') renderRBAC();
 }
 
 function wireNav() {

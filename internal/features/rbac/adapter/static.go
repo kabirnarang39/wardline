@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -147,6 +148,32 @@ func (a *StaticAuthorizer) Authorize(identity, tenant string, perm domain.Permis
 		}
 	}
 	return false
+}
+
+// Roles returns every role this authorizer knows about (built-in plus
+// whatever rbac.yaml defined), sorted by name for deterministic
+// dashboard rendering.
+func (a *StaticAuthorizer) Roles() []domain.Role {
+	names := make([]string, 0, len(a.roles))
+	for name := range a.roles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	roles := make([]domain.Role, 0, len(names))
+	for _, name := range names {
+		roles = append(roles, a.roles[name])
+	}
+	return roles
+}
+
+// ClusterRoleBindings returns every global (cross-tenant) binding.
+func (a *StaticAuthorizer) ClusterRoleBindings() []domain.ClusterRoleBinding {
+	return append([]domain.ClusterRoleBinding{}, a.clusterRoleBindings...)
+}
+
+// RoleBindings returns every tenant-scoped binding.
+func (a *StaticAuthorizer) RoleBindings() []domain.RoleBinding {
+	return append([]domain.RoleBinding{}, a.roleBindings...)
 }
 
 func (a *StaticAuthorizer) IsGlobal(identity string, perm domain.Permission) bool {

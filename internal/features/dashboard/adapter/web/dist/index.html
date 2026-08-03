@@ -51,6 +51,10 @@
           <span class="nav-icon" data-icon="policy"></span>
           <span>Policy</span>
         </button>
+        <button class="nav-item" data-view="rbac">
+          <span class="nav-icon" data-icon="rbac"></span>
+          <span>RBAC</span>
+        </button>
       </div>
 
       <div class="sidebar-group">
@@ -287,6 +291,27 @@
           <span class="badge" id="policy-backend"></span>
         </div>
         <pre class="policy-source" id="policy-source" tabindex="0"></pre>
+      </section>
+
+      <section id="view-rbac" class="view" aria-labelledby="view-rbac-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-rbac-heading">RBAC</h1>
+        </div>
+        <div class="two-col-rbac">
+          <div class="panel">
+            <div class="panel-title-bar">Roles</div>
+            <div class="table-wrap">
+              <table class="audit-table">
+                <thead><tr><th scope="col">Role</th><th scope="col">Permissions</th><th scope="col">Bindings</th></tr></thead>
+                <tbody id="rbac-role-rows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-title-bar">Bindings</div>
+            <div id="rbac-binding-list" class="rbac-binding-list"></div>
+          </div>
+        </div>
       </section>
 
       <section id="view-status" class="view" aria-labelledby="view-status-heading" hidden>
