@@ -495,6 +495,12 @@ func runServe(logger *slog.Logger, args []string) {
 	// rbacChecker) so the scim block below can rewrap it in a
 	// CompositeAuthorizer without reloading rbac.config_file.
 	var rbacAuthorizer *rbacadapter.StaticAuthorizer
+	// rbacHolder holds whichever domain.Authorizer rbacChecker currently
+	// delegates to (the bare StaticAuthorizer, or -- once the scim block
+	// below runs -- a CompositeAuthorizer wrapping it). A hot reload
+	// swaps this holder rather than rebuilding rbacChecker, so the SAME
+	// Checker instance observes the new authorizer on its very next call.
+	var rbacHolder *reload.ReloadableEngine[rbacdomain.Authorizer]
 	if rbacEnabled {
 		authorizer, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile)
 		if err != nil {
@@ -502,7 +508,9 @@ func runServe(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 		rbacAuthorizer = authorizer
-		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
+		var initialAuthorizer rbacdomain.Authorizer = authorizer
+		rbacHolder = reload.NewReloadableEngine(&initialAuthorizer)
+		rbacChecker = rbacusecase.NewCheckerWithHolder(featureFlags, rbacHolder)
 		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
 	}
 
@@ -511,12 +519,10 @@ func runServe(logger *slog.Logger, args []string) {
 	// narrow method set both scimusecase.ProvisioningService.SetBindingStore
 	// and rbacusecase.NewCompositeAuthorizer's dynamic source expect --
 	// their own bindingSink/dynamicBindingSource types are unexported, so
-	// this package can't reference them by name.
-	var scimBindingStore interface {
-		SetGroupMembers(groupName string, memberUserNames []string)
-		RemoveGroup(groupName string)
-		Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
-	}
+	// this package can't reference them by name. Named (rather than an
+	// inline interface literal) so newRBACReloadFn's signature below can
+	// reference the exact same shape.
+	var scimBindingStore scimDynamicBindingSource
 	var scimHandler http.Handler
 	var bindingStoreCloser io.Closer
 	if scimEnabled {
@@ -536,11 +542,12 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Warn("scim-provisioned bindings are in-process only; safe for exactly one replica -- enable scim.persist_postgres to share across replicas")
 		}
 		if rbacEnabled {
-			rbacChecker = rbacusecase.NewChecker(featureFlags, rbacusecase.NewCompositeAuthorizer(
+			var composite rbacdomain.Authorizer = rbacusecase.NewCompositeAuthorizer(
 				rbacAuthorizer,
 				scimBindingStore,
 				rbacAuthorizer.RoleHasPermission,
-			))
+			)
+			rbacHolder.Swap(&composite)
 		}
 
 		// config.Config.validate() only requires scim.bearer_token_env to
@@ -558,6 +565,9 @@ func runServe(logger *slog.Logger, args []string) {
 		scimHandler = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
 		logger.Info("scim enabled", "path", "/scim/v2/")
 	}
+
+	rbacReload := newRBACReloadFn(rbacHolder, *configPath, rbacEnabled, scimEnabled, scimBindingStore)
+	_ = rbacReload // wired into the ReloadCoordinator's reloaders["rbac"] in a later task
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
 	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
@@ -1321,6 +1331,70 @@ func newPolicyReloadFn(policyHolder *reload.ReloadableEngine[policydomain.Engine
 			return fmt.Errorf("reload policy: %w", err)
 		}
 		policyHolder.Swap(&newEngine)
+		return nil
+	}
+}
+
+// scimDynamicBindingSource is the narrow method set both
+// scimusecase.ProvisioningService.SetBindingStore and
+// rbacusecase.NewCompositeAuthorizer's dynamic source expect -- named so
+// runServe's scimBindingStore variable and newRBACReloadFn's parameter
+// below share the exact same type instead of two separately-spelled
+// interface literals.
+type scimDynamicBindingSource interface {
+	SetGroupMembers(groupName string, memberUserNames []string)
+	RemoveGroup(groupName string)
+	Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
+}
+
+// newRBACReloadFn builds the RBAC hot-reload closure: it re-reads the
+// config file at configPath and re-runs rbacadapter.LoadAuthorizer --
+// the exact same construction path runServe used at startup -- against
+// whatever rbac.config_file that config currently names.
+//
+// Critical: this reloads ONLY the static, YAML-sourced half of the
+// authorizer. When scim was enabled at startup, the freshly loaded
+// StaticAuthorizer is re-wrapped in a NEW CompositeAuthorizer around the
+// SAME scimBindingStore instance already running -- scimBindingStore
+// holds live role-binding state mutated by real SCIM provisioning calls
+// and is never itself reconstructed or reset here. Reloading RBAC must
+// never discard a live SCIM-provisioned binding.
+//
+// It only calls rbacHolder.Swap when construction fully succeeds: a
+// config-load, parse, or validation error is returned to the caller and
+// Swap is never reached, so the previously-loaded authorizer (and its
+// SCIM composition, if any) keeps enforcing every request completely
+// untouched. This closure is what a later task registers with the
+// ReloadCoordinator under reloaders["rbac"].
+//
+// When rbac itself is disabled (rbacEnabled false), rbacHolder is nil
+// and there is nothing to reload -- the returned closure is a no-op that
+// always succeeds.
+func newRBACReloadFn(rbacHolder *reload.ReloadableEngine[rbacdomain.Authorizer], configPath string, rbacEnabled, scimEnabled bool, scimBindingStore scimDynamicBindingSource) func() error {
+	if !rbacEnabled {
+		return func() error { return nil }
+	}
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload rbac: %w", err)
+		}
+		newStaticAuthorizer, err := rbacadapter.LoadAuthorizer(newCfg.RBAC.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("reload rbac: %w", err)
+		}
+		var newAuthorizer rbacdomain.Authorizer = newStaticAuthorizer
+		if scimEnabled {
+			// CRITICAL: reuse the SAME scimBindingStore already running --
+			// do NOT reconstruct it, that would discard every live
+			// SCIM-provisioned binding.
+			newAuthorizer = rbacusecase.NewCompositeAuthorizer(
+				newStaticAuthorizer,
+				scimBindingStore,
+				newStaticAuthorizer.RoleHasPermission,
+			)
+		}
+		rbacHolder.Swap(&newAuthorizer)
 		return nil
 	}
 }
