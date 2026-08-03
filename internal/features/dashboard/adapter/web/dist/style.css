@@ -460,34 +460,39 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 #federation-rows tr td:first-child { position: relative; padding-left: 20px; }
 #federation-rows tr td:first-child::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--federation); }
 
-/* Expandable rows (shared primitive, wired via wireExpandableRows).
-   Scoped to tbody.is-expandable (a class wireExpandableRows adds itself)
-   rather than the bare `tr[data-row-id]` attribute selector -- that
-   attribute is also used by withScrollAnchor's scroll-anchoring on
-   tables (Federation) that don't call wireExpandableRows, so scoping by
-   attribute alone would paint a pointer cursor + hover affordance on
-   rows that don't actually do anything when clicked. */
-.audit-table tbody.is-expandable tr[data-row-id] {
-  cursor: pointer;
-}
-
-.audit-table tbody.is-expandable tr[data-row-id]:hover {
-  background: var(--mist);
-}
-
-/* Bumps row height to a 44px touch target on expandable tables only --
-   left the base .audit-table td padding alone so Federation/Blocked
-   density is unaffected. */
-.audit-table tbody.is-expandable tr[data-row-id] td {
-  padding-top: 15px;
-  padding-bottom: 15px;
-}
-
+/* Expandable rows (shared primitive, wired via wireExpandableRows). The
+   interactive control is .expand-toggle (each row's disclosure button),
+   not the <tr> -- role="button"/tabindex on a <tr> would conflict with
+   its <td> children's implicit table-cell roles, so only the toggle
+   itself is a real button-shaped hit target; the row's own cursor/hover
+   is left alone (no whole-row click affordance to imply). Sized and
+   centered like this file's other icon-button controls
+   (.topbar-icon-btn, .pulse-toggle: 44px hit target, smaller centered
+   SVG) rather than a bespoke size, both for the 44px touch-target
+   requirement and visual consistency -- naturally scoped to tables that
+   actually render one, so a plain tr[data-row-id] table (Federation)
+   that never renders .expand-toggle is untouched by any of this. */
 .expand-toggle {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  color: var(--muted);
+  transition: transform 150ms var(--ease-hover), background-color 150ms var(--ease-hover), color 150ms var(--ease-hover);
+}
+
+.expand-toggle svg {
   width: 16px;
   height: 16px;
-  transition: transform 150ms var(--ease-hover);
+}
+
+.expand-toggle:hover,
+.expand-toggle:focus-visible {
+  background: var(--mist);
+  color: var(--ink);
 }
 
 .expand-toggle.is-open {

@@ -78,39 +78,59 @@ function withScrollAnchor(tbody, renderRows) {
 // HTML (already escaped by the caller); colSpan is how many columns the
 // detail row's single <td> must span.
 function wireExpandableRows(tbody, colSpan, detailRenderer) {
-  // Scopes the CSS pointer-cursor/hover affordance (see style.css) to
-  // tables that actually wire this up -- other tr[data-row-id] tables
-  // (Federation) share that attribute for scroll-anchoring only and
-  // shouldn't look clickable.
-  tbody.classList.add('is-expandable');
+  // The interactive control is each row's .expand-toggle element, not the
+  // <tr> itself -- role="button"/tabindex on a <tr> conflicts with its
+  // <td> children's implicit table-cell roles (breaks the row/cell
+  // ancestor relationship table-structure a11y rules expect), even though
+  // it can look fine under manual inspection. Matches this file's other
+  // icon-button controls (.topbar-icon-btn, .pulse-toggle): a real
+  // focusable/labelled element wrapping a decorative aria-hidden icon
+  // span. Every row wired through this primitive is expected to render
+  // one -- rows without a .expand-toggle simply aren't operable, mouse or
+  // keyboard.
+  function closeToggle(toggle) {
+    if (!toggle) return;
+    toggle.classList.remove('is-open');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-label', 'Expand row details');
+  }
+
+  function openToggle(toggle) {
+    if (!toggle) return;
+    toggle.classList.add('is-open');
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.setAttribute('aria-label', 'Collapse row details');
+  }
 
   // A poll-driven re-render replaces tbody.innerHTML wholesale (see
   // withScrollAnchor), which would silently strip tabindex/role/aria off
-  // every row along with the markup itself -- re-apply them to whatever
-  // rows land in the DOM on every render instead of requiring each
-  // caller's row template to remember this wiring.
-  const markRowFocusable = (row) => {
-    row.tabIndex = 0;
-    row.setAttribute('role', 'button');
-    if (!row.hasAttribute('aria-expanded')) row.setAttribute('aria-expanded', 'false');
+  // every toggle along with the markup itself -- re-apply them to
+  // whatever rows land in the DOM on every render instead of requiring
+  // each caller's row template to remember this wiring.
+  const markToggleFocusable = (row) => {
+    const toggle = row.querySelector('.expand-toggle');
+    if (!toggle) return;
+    toggle.tabIndex = 0;
+    toggle.setAttribute('role', 'button');
+    closeToggle(toggle);
   };
-  tbody.querySelectorAll('tr[data-row-id]').forEach(markRowFocusable);
+  tbody.querySelectorAll('tr[data-row-id]').forEach(markToggleFocusable);
   new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType !== Node.ELEMENT_NODE) return;
-        if (node.matches('tr[data-row-id]')) markRowFocusable(node);
-        node.querySelectorAll?.('tr[data-row-id]').forEach(markRowFocusable);
+        if (node.matches('tr[data-row-id]')) markToggleFocusable(node);
+        node.querySelectorAll?.('tr[data-row-id]').forEach(markToggleFocusable);
       });
     }
   }).observe(tbody, { childList: true });
 
   function toggleRow(row) {
+    const toggle = row.querySelector('.expand-toggle');
     const existingDetail = row.nextElementSibling;
     if (existingDetail && existingDetail.classList.contains('detail-row')) {
       existingDetail.remove();
-      row.querySelector('.expand-toggle')?.classList.remove('is-open');
-      row.setAttribute('aria-expanded', 'false');
+      closeToggle(toggle);
       return;
     }
 
@@ -121,35 +141,39 @@ function wireExpandableRows(tbody, colSpan, detailRenderer) {
     // account for (this deliberately does NOT try to keep a detail row
     // open across a poll tick; it closes on next render, matching this
     // project's "polling never animates or preserves transient UI state"
-    // posture already established for the live-pulse widget).
-    tbody.querySelectorAll('.detail-row').forEach((el) => {
-      el.previousElementSibling?.setAttribute('aria-expanded', 'false');
-      el.remove();
-    });
-    tbody.querySelectorAll('.expand-toggle.is-open').forEach((el) => el.classList.remove('is-open'));
+    // posture already established for the live-pulse widget -- so an
+    // operator mid-read of an expanded row will see it silently collapse
+    // on the next ~2s poll tick, same as any other transient UI state
+    // here).
+    tbody.querySelectorAll('.detail-row').forEach((el) => el.remove());
+    tbody.querySelectorAll('.expand-toggle.is-open').forEach(closeToggle);
 
     const rowId = row.dataset.rowId;
     const detail = document.createElement('tr');
     detail.className = 'detail-row';
     detail.innerHTML = `<td colspan="${colSpan}">${detailRenderer(rowId)}</td>`;
     row.after(detail);
-    row.querySelector('.expand-toggle')?.classList.add('is-open');
-    row.setAttribute('aria-expanded', 'true');
+    openToggle(toggle);
   }
 
   tbody.addEventListener('click', (e) => {
-    const row = e.target.closest('tr[data-row-id]');
-    if (!row || !tbody.contains(row)) return;
+    const toggle = e.target.closest('.expand-toggle');
+    if (!toggle || !tbody.contains(toggle)) return;
+    const row = toggle.closest('tr[data-row-id]');
+    if (!row) return;
     toggleRow(row);
   });
 
-  // Enter/Space activate the row the same way a click does, matching the
-  // WAI-ARIA disclosure-pattern expectation for a role="button" element.
-  // Space additionally needs preventDefault so it doesn't scroll the page.
+  // Enter/Space activate the toggle the same way a click does, matching
+  // the WAI-ARIA disclosure-pattern expectation for a role="button"
+  // element. Space additionally needs preventDefault so it doesn't
+  // scroll the page.
   tbody.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
-    const row = e.target.closest('tr[data-row-id]');
-    if (!row || !tbody.contains(row)) return;
+    const toggle = e.target.closest('.expand-toggle');
+    if (!toggle || !tbody.contains(toggle)) return;
+    const row = toggle.closest('tr[data-row-id]');
+    if (!row) return;
     e.preventDefault();
     toggleRow(row);
   });
