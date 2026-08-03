@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -100,6 +101,39 @@ func (l *InMemoryLimiter) SetToolLimit(toolName string, requestsPerWindow int, w
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// DefaultLimit returns the global (non-override) rate limit.
+func (l *InMemoryLimiter) DefaultLimit() domain.LimitInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return domain.LimitInfo{RequestsPerWindow: l.requestsPerWindow, Window: l.window}
+}
+
+// TenantOverrides returns every configured tenant-scoped override, sorted
+// by name for stable output.
+func (l *InMemoryLimiter) TenantOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.tenantLimits))
+	for name, lim := range l.tenantLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tenant", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ToolOverrides returns every configured tool-scoped override, sorted by
+// name for stable output.
+func (l *InMemoryLimiter) ToolOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.toolLimits))
+	for name, lim := range l.toolLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tool", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Allow requires the identity bucket, the tenant bucket (if tenant has a

@@ -67,3 +67,23 @@ type BindingEntry struct {
 	// Tenant is empty for a cluster-scoped (global) binding.
 	Tenant string `json:"tenant"`
 }
+
+// BudgetDefaultEntry is the dashboard's JSON view of the global
+// (non-override) rate limit -- deliberately its own type (not a reuse of
+// budgetdomain.LimitInfo), same reasoning as AnomalyEntry/BindingEntry
+// above, and so it gets this file's snake_case wire convention instead of
+// encoding/json's default Go-cased fields.
+type BudgetDefaultEntry struct {
+	RequestsPerWindow int `json:"requests_per_window"`
+	WindowSeconds     int `json:"window_seconds"`
+}
+
+// BudgetOverrideEntry is the dashboard's JSON view of one tenant or tool
+// rate-limit override -- deliberately its own type, same reasoning as
+// BudgetDefaultEntry above.
+type BudgetOverrideEntry struct {
+	Scope             string `json:"scope"`
+	Name              string `json:"name"`
+	RequestsPerWindow int    `json:"requests_per_window"`
+	WindowSeconds     int    `json:"window_seconds"`
+}

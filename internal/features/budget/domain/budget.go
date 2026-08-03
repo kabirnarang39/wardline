@@ -22,6 +22,21 @@ type Verdict struct {
 	FailedOpen bool
 }
 
+// LimitInfo is a read-only snapshot of one configured rate limit (either
+// the global default or a tenant/tool override).
+type LimitInfo struct {
+	RequestsPerWindow int
+	Window            time.Duration
+}
+
+// OverrideInfo is one tenant or tool override, with its scope kind and the
+// name it applies to.
+type OverrideInfo struct {
+	Scope string // "tenant" or "tool"
+	Name  string
+	LimitInfo
+}
+
 // Limiter decides whether an identity may make another call right now.
 // tenant is the identity's resolved tenant; an empty tenant (or one with no
 // configured override) is simply not checked against any tenant-level
@@ -29,4 +44,11 @@ type Verdict struct {
 // override is likewise never checked against any tool-level bucket.
 type Limiter interface {
 	Allow(identity, tenant, tool string, now time.Time) Verdict
+
+	// DefaultLimit returns the global (non-override) rate limit.
+	DefaultLimit() LimitInfo
+	// TenantOverrides returns every configured tenant-scoped override.
+	TenantOverrides() []OverrideInfo
+	// ToolOverrides returns every configured tool-scoped override.
+	ToolOverrides() []OverrideInfo
 }

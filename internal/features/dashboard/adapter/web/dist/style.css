@@ -755,6 +755,11 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
    above -- not keyed off [data-decision] since a role name isn't a
    decision, so it's a plain class instead. */
 .pill.info { color: var(--status-info); background: var(--status-info-soft); }
+/* .pill.muted (Task 8 Budget screen): the tool-scope pill in the
+   Overrides table, same non-decision plain-class pattern as .pill.info
+   above -- reuses the exact same passthrough-decision colors since a
+   "tool" scope isn't a status/decision, just a lower-emphasis label. */
+.pill.muted { color: var(--text-muted); background: var(--surface-raised); }
 
 /* .mono: monospace text outside a table (which already sets
    font-family: var(--font-data) on itself, e.g. .audit-table) --

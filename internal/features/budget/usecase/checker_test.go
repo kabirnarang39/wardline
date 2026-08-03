@@ -20,6 +20,10 @@ func (alwaysDenyLimiter) Allow(identity, tenant, tool string, now time.Time) dom
 	return domain.Verdict{Allowed: false, Reason: "always denies"}
 }
 
+func (alwaysDenyLimiter) DefaultLimit() domain.LimitInfo         { return domain.LimitInfo{} }
+func (alwaysDenyLimiter) TenantOverrides() []domain.OverrideInfo { return nil }
+func (alwaysDenyLimiter) ToolOverrides() []domain.OverrideInfo   { return nil }
+
 func TestChecker_FlagOffAlwaysAllows(t *testing.T) {
 	c := usecase.NewChecker(stubFlags{enabled: false}, alwaysDenyLimiter{})
 	got := c.Check("agent-abc123", "acme", "some_tool", time.Now())
@@ -41,6 +45,10 @@ func (r *recordingLimiter) Allow(identity, tenant, tool string, now time.Time) d
 	r.calledWithTool = tool
 	return r.verdict
 }
+
+func (r *recordingLimiter) DefaultLimit() domain.LimitInfo         { return domain.LimitInfo{} }
+func (r *recordingLimiter) TenantOverrides() []domain.OverrideInfo { return nil }
+func (r *recordingLimiter) ToolOverrides() []domain.OverrideInfo   { return nil }
 
 func TestChecker_FlagOnDelegatesToLimiter(t *testing.T) {
 	limiter := &recordingLimiter{verdict: domain.Verdict{Allowed: false, Reason: "over budget"}}

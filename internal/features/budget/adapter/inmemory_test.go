@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/budget/adapter"
+	"github.com/kabirnarang39/wardline/internal/features/budget/domain"
 )
 
 func TestInMemoryLimiter_AllowsUpToLimit(t *testing.T) {
@@ -128,6 +129,55 @@ func TestInMemoryLimiter_ToolOverrideThrottlesIndependentlyOfIdentityAndTenant(t
 	v = l.Allow("alice", "acme", "cheap_tool", now)
 	if !v.Allowed {
 		t.Error("expected a tool with no override to be unaffected by expensive_tool's bucket")
+	}
+}
+
+// TestInMemoryLimiter_DefaultLimitReflectsConstructor proves DefaultLimit
+// returns exactly what the constructor was given, unaffected by any
+// override configured afterward.
+func TestInMemoryLimiter_DefaultLimitReflectsConstructor(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(25, time.Minute)
+	l.SetTenantLimit("acme", 10, 30*time.Second)
+
+	got := l.DefaultLimit()
+	want := domain.LimitInfo{RequestsPerWindow: 25, Window: time.Minute}
+	if got != want {
+		t.Errorf("DefaultLimit() = %+v, want %+v", got, want)
+	}
+}
+
+// TestInMemoryLimiter_TenantAndToolOverridesReturnSortedSets proves
+// TenantOverrides/ToolOverrides return every configured override, sorted
+// by name, and an empty slice (not nil) when none are configured.
+func TestInMemoryLimiter_TenantAndToolOverridesReturnSortedSets(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(25, time.Minute)
+
+	if got := l.TenantOverrides(); len(got) != 0 {
+		t.Fatalf("expected no tenant overrides before any are set, got %+v", got)
+	}
+	if got := l.ToolOverrides(); len(got) != 0 {
+		t.Fatalf("expected no tool overrides before any are set, got %+v", got)
+	}
+
+	l.SetTenantLimit("widgets-inc", 10, 30*time.Second)
+	l.SetTenantLimit("acme", 5, 60*time.Second)
+	l.SetToolLimit("run_query", 15, 30*time.Second)
+
+	tenants := l.TenantOverrides()
+	want := []domain.OverrideInfo{
+		{Scope: "tenant", Name: "acme", LimitInfo: domain.LimitInfo{RequestsPerWindow: 5, Window: 60 * time.Second}},
+		{Scope: "tenant", Name: "widgets-inc", LimitInfo: domain.LimitInfo{RequestsPerWindow: 10, Window: 30 * time.Second}},
+	}
+	if len(tenants) != len(want) || tenants[0] != want[0] || tenants[1] != want[1] {
+		t.Errorf("TenantOverrides() = %+v, want %+v (sorted by name)", tenants, want)
+	}
+
+	tools := l.ToolOverrides()
+	wantTools := []domain.OverrideInfo{
+		{Scope: "tool", Name: "run_query", LimitInfo: domain.LimitInfo{RequestsPerWindow: 15, Window: 30 * time.Second}},
+	}
+	if len(tools) != len(wantTools) || tools[0] != wantTools[0] {
+		t.Errorf("ToolOverrides() = %+v, want %+v", tools, wantTools)
 	}
 }
 

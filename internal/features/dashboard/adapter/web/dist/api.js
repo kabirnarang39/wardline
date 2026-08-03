@@ -51,6 +51,14 @@ export async function fetchRBAC() {
   return res.json();
 }
 
+export async function fetchBudget() {
+  const res = await fetch('api/budget');
+  if (!res.ok) {
+    throw new Error(`budget fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchBlocked() {
   const res = await fetch('api/anomalies/blocked');
   if (!res.ok) {
