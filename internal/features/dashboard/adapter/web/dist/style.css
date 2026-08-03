@@ -443,6 +443,24 @@ button, input {
   padding: 24px;
 }
 
+/* Task 5: Overview's 3 cards additionally carry `.panel` (identical
+   background/border/radius values to .card's own above -- redundant but
+   harmless per source order, .card-dark's override still wins either
+   way) and now open with a `.panel-title-bar` (its own 12px/16px
+   padding + bottom border, see rule below). .card's blanket `padding:
+   24px` would double up around that title bar, so for `.card.panel`
+   specifically, carve the same 24px around it instead of including it:
+   horizontal on every non-title child, top on the one right after the
+   title bar, bottom on the last one. Net result is identical to the old
+   single `padding: 24px` box, just excluding the title bar.
+   Scoped to `.card.panel` (not bare `.card`) so Credentials' card --
+   still bare `.card`, no title bar, not part of this task -- keeps its
+   original single-box padding untouched. */
+.card.panel { padding: 0; }
+.card.panel > *:not(.panel-title-bar) { padding: 0 24px; }
+.card.panel > .panel-title-bar + * { padding-top: 24px; }
+.card.panel > *:not(.panel-title-bar):last-child { padding-bottom: 24px; }
+
 .content {
   flex: 1;
   min-width: 0;
@@ -963,7 +981,11 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 
-.card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--text); }
+/* Now always nested in .panel-title-bar (Task 5), which already supplies
+   the strip's padding/border/vertical centering — no margin of its own
+   needed, that 12px bottom margin was only for the old inline-in-card-body
+   layout and would just add unwanted height inside the title bar now. */
+.card-title { font-size: 15px; font-weight: 600; margin: 0; color: var(--text); }
 .card-caption { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
 
 @media (hover: hover) and (pointer: fine) {
