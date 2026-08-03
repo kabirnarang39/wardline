@@ -668,7 +668,7 @@ function wireCredentials() {
     if (!identity) {
       result.hidden = false;
       result.textContent = 'Enter an identity to revoke.';
-      result.style.color = 'var(--deny)';
+      result.style.color = 'var(--status-critical)';
       return;
     }
     if (!window.confirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`)) {
@@ -680,14 +680,14 @@ function wireCredentials() {
     result.hidden = false;
     if (res.ok) {
       result.textContent = `Revoked "${identity}".`;
-      result.style.color = 'var(--brand)';
+      result.style.color = 'var(--status-ok)';
       input.value = '';
     } else if (res.status === 403) {
       result.textContent = 'You don’t have permission to revoke credentials.';
-      result.style.color = 'var(--deny)';
+      result.style.color = 'var(--status-critical)';
     } else {
       result.textContent = res.message;
-      result.style.color = 'var(--deny)';
+      result.style.color = 'var(--status-critical)';
     }
   });
 }
