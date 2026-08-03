@@ -3306,3 +3306,427 @@ audit:
 		t.Errorf("expected /healthz and /readyz to produce zero audit entries, got: %s", data)
 	}
 }
+
+// reloadResponse mirrors the wire shape of reload.ReloadResult
+// (internal/platform/reload/coordinator.go) -- no json tags there either,
+// so this decodes the Go field names verbatim, the same convention
+// dashboardAuditEntry (e2e_tenant_isolation_test.go) already uses for
+// dashboard/domain.LiveEntry.
+type reloadResponse struct {
+	Domain    string
+	OK        bool
+	Error     string
+	AppliedBy string
+}
+
+// postReload POSTs to /dashboard/api/reload/{domain} as identity (via
+// X-Wardline-Identity, resolved by the default HeaderIdentity
+// authenticator -- none of the reload tests enable credential_issuance)
+// and decodes the JSON reload.ReloadResult body. handleReload always
+// answers 200 with OK true/false in the body for a recognized domain --
+// only an authorization failure (missing config:edit) produces a non-200 --
+// so this fails the test on a non-200 (an auth/wiring bug) but leaves
+// interpreting OK/Error to the caller.
+func postReload(t *testing.T, listenAddr, domain, identity string) reloadResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/dashboard/api/reload/"+domain, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("reload %s as %s: expected 200, got %d: %s", domain, identity, resp.StatusCode, b)
+	}
+	var result reloadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("invalid reload response: %v", err)
+	}
+	return result
+}
+
+// dashboardStatusCode GETs /dashboard/api/status as identity, returning
+// just the status code -- used by the RBAC reload test as a cheap
+// "does this identity currently hold dashboard:view" probe, the same
+// route TestServeEndToEnd_RBACDashboard uses for the same purpose.
+func dashboardStatusCode(t *testing.T, listenAddr, identity string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// startPolicyReloadServer stands up a real wardline serve subprocess with
+// rbac on (an "operator" identity bound to the built-in admin role, which
+// carries both dashboard:view and config:edit -- POST
+// /dashboard/api/reload/{domain} requires both: the top-level
+// rbacadapter.RequirePermission wrap around the whole /dashboard/ tree
+// checks dashboard:view before the request ever reaches handleReload's
+// own inner config:edit check, see main.go's dashboardRoute wiring) and
+// policy seeded from initialPolicyBody. Unlike startWardline, this
+// returns policyPath -- the actual on-disk file the running process reads
+// policy from -- so a test can overwrite it after the server is up and
+// prove a hot-reload picks up the change, which startWardline's own
+// internal (test-inaccessible) temp dir doesn't allow. Mirrors the
+// manual build/write/start/waitForServer sequence startWardline and
+// several other custom setups in this file (e.g.
+// TestPolicyPackEndToEnd_InstalledPackIsEnforcedByRealServe) already use.
+func startPolicyReloadServer(t *testing.T, initialPolicyBody string) (listenAddr, policyPath string, stderr *safeBuffer) {
+	t.Helper()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath = filepath.Join(dir, "policy.yaml")
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte(initialPolicyBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: operator
+    role: admin
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	listenAddr = reserveAddr(t)
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  web_ui: true
+  rbac: true
+rbac:
+  config_file: "%s"
+audit:
+  output: stdout
+`, listenAddr, upstream.URL, policyPath, rbacPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	stderr = &safeBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wardline: %v", err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+listenAddr)
+	return listenAddr, policyPath, stderr
+}
+
+// TestServeEndToEnd_PolicyReloadTakesEffectWithoutRestart proves a policy
+// hot-reload takes effect on the very next proxied call against the SAME
+// running process -- no restart -- by denying alice under the initial
+// policy, overwriting the on-disk policy file with a version allowing
+// her, hitting POST /dashboard/api/reload/policy as an identity holding
+// config:edit, and confirming alice's next call succeeds.
+func TestServeEndToEnd_PolicyReloadTakesEffectWithoutRestart(t *testing.T) {
+	listenAddr, policyPath, stderr := startPolicyReloadServer(t, `
+rules:
+  - identity: "bob"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+
+	deniedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if deniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for alice under the initial policy (only bob is allowed), got %d (stderr: %s)", deniedResp.StatusCode, stderr.String())
+	}
+
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := postReload(t, listenAddr, "policy", "operator")
+	if !result.OK {
+		t.Fatalf("expected the policy reload to succeed, got error: %q", result.Error)
+	}
+	if result.AppliedBy != "operator" {
+		t.Errorf("expected AppliedBy %q, got %q", "operator", result.AppliedBy)
+	}
+
+	// The VERY NEXT proxied call from alice -- same running process, no
+	// restart -- is now allowed.
+	allowedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alice immediately after the policy reload, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_BadPolicyReloadRejectedOldPolicyKeepsServing proves a
+// reload attempt with genuinely invalid YAML is rejected by the reload
+// endpoint (OK: false, a non-empty Error) and that the previously-loaded
+// policy engine is never touched: alice's call, denied before the bad
+// reload, is denied identically after it.
+func TestServeEndToEnd_BadPolicyReloadRejectedOldPolicyKeepsServing(t *testing.T) {
+	listenAddr, policyPath, stderr := startPolicyReloadServer(t, `
+rules:
+  - identity: "bob"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+
+	deniedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if deniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for alice under the initial policy, got %d (stderr: %s)", deniedResp.StatusCode, stderr.String())
+	}
+
+	// Genuinely invalid YAML -- an unterminated flow sequence -- not just
+	// a semantically-odd-but-parseable policy.
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+  bad: [unterminated
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := postReload(t, listenAddr, "policy", "operator")
+	if result.OK {
+		t.Fatal("expected the reload of genuinely invalid policy YAML to be rejected, got OK")
+	}
+	if result.Error == "" {
+		t.Error("expected a non-empty Error on a rejected reload")
+	}
+
+	// The old, valid engine never got touched: alice is denied exactly as
+	// before.
+	stillDeniedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if stillDeniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected alice to still be denied after the rejected reload, got %d (stderr: %s)", stillDeniedResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_RBACReloadPreservesLiveSCIMBinding is the test the
+// Task 3 doc comment on newRBACReloadFn (cmd/wardline/main.go) warns
+// would have caught the "reconstruct instead of reuse the SCIM store" bug
+// class: a real SCIM-provisioned RoleBinding must survive a genuinely
+// different (but valid) rbac.yaml reload, because newRBACReloadFn
+// re-wraps the freshly loaded StaticAuthorizer around the SAME
+// scimBindingStore instance rather than constructing a new one.
+//
+// carol is granted the "viewer" role (dashboard:view) purely via a real
+// SCIM Group provisioning call (POST /scim/v2/Groups,
+// "wardline:role-viewer") -- rbac.yaml never mentions her. After
+// confirming she has dashboard:view, rbac.yaml is overwritten with
+// different (but valid) content -- an additional static binding for
+// "dave" -- and reloaded. Two things must both be true afterward: carol
+// (SCIM-provisioned, untouched by the YAML edit) still has dashboard:view,
+// proving her binding survived the reload; and dave (newly added in the
+// reloaded YAML) now also has it, proving the new YAML was genuinely
+// loaded rather than the old engine having silently kept serving
+// unchanged.
+func TestServeEndToEnd_RBACReloadPreservesLiveSCIMBinding(t *testing.T) {
+	dir := t.TempDir()
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: operator
+    role: admin
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const scimToken = "scim-bearer-token-for-rbac-reload-e2e"
+	t.Setenv("WARDLINE_E2E_RBAC_RELOAD_SCIM_TOKEN", scimToken)
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`, fmt.Sprintf(`features:
+  web_ui: true
+  rbac: true
+  scim: true
+rbac:
+  config_file: "%s"
+scim:
+  bearer_token_env: "WARDLINE_E2E_RBAC_RELOAD_SCIM_TOKEN"`, rbacPath))
+
+	// Provision carol's viewer access entirely via SCIM -- rbac.yaml never
+	// mentions her.
+	carolID := scimCreateUser(t, listenAddr, scimToken, "carol")
+	scimCreateGroup(t, listenAddr, scimToken, "wardline:role-viewer", []string{carolID})
+
+	if code := dashboardStatusCode(t, listenAddr, "carol"); code != http.StatusOK {
+		t.Fatalf("expected 200 for carol's SCIM-provisioned viewer binding, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	// A genuinely different, but valid, rbac.yaml -- an added static
+	// binding for dave, "operator" retained so the reload call below still
+	// has config:edit.
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: operator
+    role: admin
+  - subject: dave
+    role: viewer
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := postReload(t, listenAddr, "rbac", "operator")
+	if !result.OK {
+		t.Fatalf("expected the rbac reload to succeed, got error: %q", result.Error)
+	}
+
+	// carol's live SCIM binding survived the reload.
+	if code := dashboardStatusCode(t, listenAddr, "carol"); code != http.StatusOK {
+		t.Fatalf("expected carol's SCIM-provisioned viewer binding to survive the rbac reload, got %d (stderr: %s)", code, stderr.String())
+	}
+	// dave's newly-added static binding proves the new YAML was genuinely
+	// loaded, not that the old engine was left untouched.
+	if code := dashboardStatusCode(t, listenAddr, "dave"); code != http.StatusOK {
+		t.Fatalf("expected dave's newly-reloaded static viewer binding to be honored, got %d (stderr: %s)", code, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_BudgetReloadPreservesConsumedUsage proves a budget
+// reload that raises the limit updates the SAME running limiter's
+// threshold in place (newBudgetReloadFn, cmd/wardline/main.go) rather
+// than swapping in a fresh limiter instance: alice consumes 4 of an
+// initial 5-request window, the limit is then raised to 20 via a config
+// reload, and her remaining allowance is exactly 20-4=16 more successful
+// calls followed by a 429 -- not a fresh 20, which is what a silently
+// reset counter would allow.
+func TestServeEndToEnd_BudgetReloadPreservesConsumedUsage(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: operator
+    role: admin
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	listenAddr := reserveAddr(t)
+	// window_seconds is deliberately long (300s) and left UNCHANGED by the
+	// reload below -- only requests_per_window rises -- so the window
+	// never rolls over mid-test and the only variable in play is the
+	// threshold change itself.
+	configBody := fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  web_ui: true
+  rbac: true
+  budget_enforcement: true
+rbac:
+  config_file: "%s"
+budget:
+  requests_per_window: 5
+  window_seconds: 300
+audit:
+  output: stdout
+`, listenAddr, upstream.URL, policyPath, rbacPath)
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	stderr := &safeBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wardline: %v", err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+listenAddr)
+
+	// Consume 4 of the initial 5-request window.
+	for i := 0; i < 4; i++ {
+		resp := postToolCall(t, listenAddr, "alice", "read_file")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for alice's warm-up call %d/4, got %d (stderr: %s)", i+1, resp.StatusCode, stderr.String())
+		}
+	}
+
+	// Raise the limit via a config reload -- same window_seconds, higher
+	// requests_per_window.
+	raisedConfigBody := strings.Replace(configBody, "requests_per_window: 5", "requests_per_window: 20", 1)
+	if err := os.WriteFile(configPath, []byte(raisedConfigBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := postReload(t, listenAddr, "budget", "operator")
+	if !result.OK {
+		t.Fatalf("expected the budget reload to succeed, got error: %q", result.Error)
+	}
+
+	// Remaining allowance is (new limit - already consumed) = 20-4 = 16,
+	// not a fresh 20: exactly 16 more calls succeed...
+	for i := 0; i < 16; i++ {
+		resp := postToolCall(t, listenAddr, "alice", "read_file")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for alice's post-reload call %d/16 (remaining allowance 20-4=16), got %d (stderr: %s)", i+1, resp.StatusCode, stderr.String())
+		}
+	}
+	// ...and the next one (the 21st overall, exceeding the raised limit of
+	// 20) is throttled -- proving the counter genuinely survived the
+	// reload rather than being silently reset to a fresh 20.
+	throttledResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if throttledResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for alice's 21st call (exceeding the raised limit of 20, proving the pre-reload usage of 4 survived), got %d (stderr: %s)", throttledResp.StatusCode, stderr.String())
+	}
+}
