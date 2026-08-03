@@ -2118,6 +2118,37 @@ anomaly:
 	}
 }
 
+// TestServeEndToEnd_DefaultConfigNoiseAndDisabledCredentialsRoutesReturn404
+// closes a gap the I1/I4 unit tests (main_test.go) left open: those tests
+// hand-build their own extraRoutes map and call buildTopHandler directly,
+// which proves routeOrNotFound/noiseRouteHandler work as a MECHANISM but
+// never confirms runServe actually wires them into a real startup path.
+// This starts a real "wardline serve" subprocess with a bare-default
+// config (no web_ui, no credential_issuance, no special flags) and
+// confirms both wiring points survive real startup: a generic-noise path
+// returns a clean 404 instead of falling through to the proxy catch-all,
+// and so does a disabled /credentials/* route.
+func TestServeEndToEnd_DefaultConfigNoiseAndDisabledCredentialsRoutesReturn404(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+default: allow
+`, "")
+
+	robotsResp, err := http.Get("http://" + listenAddr + "/robots.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = robotsResp.Body.Close()
+	if robotsResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a clean 404 (routed to noiseRouteHandler, never reaching the proxy) for GET /robots.txt on a default-config real instance, got %d (stderr: %s)", robotsResp.StatusCode, stderr.String())
+	}
+
+	tokenResp := postCredentialsToken(t, listenAddr, "any-secret")
+	_ = tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a clean 404 (routed to routeOrNotFound, never reaching the proxy) for POST /credentials/token with credential_issuance off on a default-config real instance, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+}
+
 // TestValidateConfigEndToEnd_AnomalyOutputNotCreated proves
 // `wardline validate-config` has no filesystem side effects: it must
 // report a valid anomaly block without creating anomaly.output, which an
