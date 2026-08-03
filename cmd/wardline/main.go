@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -746,30 +747,78 @@ func runServe(logger *slog.Logger, args []string) {
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
 	}
-	if credentialIssuanceEnabled {
-		extraRoutes["/credentials/token"] = http.HandlerFunc(credentialHandler.HandleToken)
-		extraRoutes["/credentials/revoke"] = http.HandlerFunc(credentialHandler.HandleRevoke)
-		extraRoutes["/credentials/refresh"] = http.HandlerFunc(credentialHandler.HandleRefresh)
-	}
-	if federationEnabled {
-		// Unconditional on web_ui, unlike the dashboard route above -- a
-		// peer must be able to reach this even when the local dashboard UI
-		// is off, matching /credentials/token's unconditional-when-flag-on
-		// pattern.
-		extraRoutes["/federation/summaries"] = federationSummariesHandler
-	}
-	if scimEnabled {
-		// No rbacadapter.RequirePermission wrapping here, unlike
-		// /dashboard/ -- SCIM authenticates its own bearer token inside
-		// Handler.ServeHTTP, an independent trust boundary matching
-		// /federation/summaries' own message-level auth rather than RBAC.
-		extraRoutes["/scim/v2/"] = scimHandler
-	}
+	// Registered unconditionally, unlike /dashboard/ above -- mirrors
+	// handleAnomalies/handleFederationCorrelated/handleBlocked's nil-source
+	// pattern in dashboard/adapter/handler.go: the route always exists, but
+	// returns a clean 404 when credential_issuance is off, instead of an
+	// unregistered path falling through to the "/" catch-all proxy handler
+	// (same bug class /favicon.ico had -- see below). credentialHandler is
+	// nil here when the flag is off; taking its methods as values is safe
+	// since credentialsRouteOrNotFound never invokes them in that case.
+	//
+	// Trade-off worth naming: this also means a disabled /credentials/*
+	// permanently shadows those exact paths from ever reaching the proxy,
+	// even for an upstream that happens to expose a path with that literal
+	// name -- a spurious audit-log entry from silently swallowing the
+	// request would be worse than a 404 for that vanishingly rare case, so
+	// this is the correct trade-off, just written down explicitly (M9).
+	extraRoutes["/credentials/token"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleToken)
+	extraRoutes["/credentials/revoke"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRevoke)
+	extraRoutes["/credentials/refresh"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRefresh)
+	// Unconditional on web_ui, unlike the dashboard route above -- a peer
+	// must be able to reach this even when the local dashboard UI is off,
+	// matching /credentials/token's unconditional-when-flag-on pattern.
+	// Registered even when federation is off (routeOrNotFound never invokes
+	// the nil federationSummariesHandler in that case) so a partially-rolled-
+	// out federation cluster's peers stop generating a spurious audit-log
+	// "error" entry per POST instead of a clean 404 -- same bug class as
+	// /favicon.ico and /credentials/*, and the same shadowing trade-off as
+	// /credentials/* above (M9): an upstream that happens to expose its own
+	// /federation/summaries path is now permanently shadowed too.
+	extraRoutes["/federation/summaries"] = routeOrNotFound(federationEnabled, federationSummariesHandler)
+	// No rbacadapter.RequirePermission wrapping here, unlike /dashboard/ --
+	// SCIM authenticates its own bearer token inside Handler.ServeHTTP, an
+	// independent trust boundary matching /federation/summaries' own
+	// message-level auth rather than RBAC. Registered unconditionally for
+	// the same reason /federation/summaries is above: an IdP already
+	// provisioned against /scim/v2/* on a poll cadence would otherwise write
+	// a spurious audit-log "error" entry forever whenever scim is off; same
+	// M9 shadowing trade-off applies.
+	extraRoutes["/scim/v2/"] = routeOrNotFound(scimEnabled, scimHandler)
 	// Unconditional, unlike every other extraRoutes entry -- every
 	// deployment needs health/readiness checking, it isn't a feature an
 	// operator opts into with a flag.
 	extraRoutes["/healthz"] = healthHandler
 	extraRoutes["/readyz"] = healthHandler
+	// Also unconditional, and deliberately independent of webUIEnabled:
+	// browsers request GET /favicon.ico from the origin root automatically
+	// on every page load, dashboard or not. Without a route registered
+	// here it falls through to the "/" catch-all proxy handler, which has
+	// no method/body guard and audits the unparseable request as an
+	// "error" decision -- a stray entry that shows up in a fresh
+	// dashboard's audit log/KPI tiles before any real MCP traffic exists.
+	// Serving it from a more specific mux pattern than "/" (see
+	// buildTopHandler) satisfies the browser before it ever reaches the
+	// proxy, for every deployment, dashboard enabled or not.
+	extraRoutes["/favicon.ico"] = faviconHandler(logger)
+	// Same bug class and same unconditional-registration fix as
+	// /favicon.ico just above, for the rest of the top-level paths a
+	// browser or crawler routinely requests unprompted: none of these are
+	// ever a legitimate MCP JSON-RPC call under any feature-flag
+	// combination, so each gets a bare 404 rather than falling through to
+	// the proxy catch-all and polluting the audit log. Unlike favicon,
+	// there's no real content to serve for any of these -- the fix is
+	// keeping them off the proxy/audit-log, not adding new product
+	// surface, so noiseRouteHandler is a shared no-op 404.
+	for _, path := range []string{
+		"/robots.txt",
+		"/apple-touch-icon.png",
+		"/apple-touch-icon-precomposed.png",
+		"/.well-known/appspecific/com.chrome.devtools.json",
+		"/sitemap.xml",
+	} {
+		extraRoutes[path] = http.HandlerFunc(noiseRouteHandler)
+	}
 
 	topHandler := buildTopHandler(handler, extraRoutes)
 
@@ -1126,6 +1175,30 @@ func targetIdentityFromRequest(r *http.Request) (string, error) {
 	return req.Identity, nil
 }
 
+// faviconHandler serves favicon.ico out of the dashboard's own embedded
+// asset tree (dashboardadapter.Assets(), the same //go:embed web/dist
+// already used for style.css/app.js/fonts) regardless of whether web_ui
+// is on -- the dashboard package and its embed are always compiled in,
+// the flag only gates whether /dashboard/ itself is routed. Read once at
+// startup and served from memory rather than through http.FileServer:
+// the content type is set explicitly instead of relying on the host's
+// mime.types having an .ico entry (Go's stdlib mime table doesn't
+// register one by default), which a minimal container image may lack.
+func faviconHandler(logger *slog.Logger) http.Handler {
+	data, err := fs.ReadFile(dashboardadapter.Assets(), "favicon.ico")
+	if err != nil {
+		// Embedded at compile time (internal/features/dashboard/adapter/web/dist/favicon.ico)
+		// -- a missing file here is a build-time problem, not a runtime one.
+		logger.Error("failed to read embedded favicon", "error", err)
+		os.Exit(1)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(data)
+	})
+}
+
 // buildTopHandler routes each key of extraRoutes to its handler, and
 // everything else to proxy. Every route except /healthz and /readyz is
 // only ever present in the map when its owning feature flag is on — this
@@ -1140,6 +1213,46 @@ func targetIdentityFromRequest(r *http.Request) (string, error) {
 // ones with dashboard/credential/rbac routes on as before this cycle —
 // an accepted, necessary trade-off of giving health/readiness checks real
 // routes rather than special-casing them inside the proxy handler itself.
+
+// routeOrNotFound returns h unchanged when enabled, otherwise a handler that
+// responds with a clean 404 -- so a route stays registered on the mux
+// (never reaching the "/" proxy catch-all, and never writing an audit-log
+// entry) whether or not its owning feature flag is on, matching
+// dashboard's handleAnomalies-style nil-source-returns-404 convention
+// instead of that package's real MCP JSON-RPC error shape leaking out on
+// an unregistered path. Shared by /credentials/* (via
+// credentialsRouteOrNotFound below), /federation/summaries, and
+// /scim/v2/ -- three different feature flags hitting the identical bug
+// class and fix (I1). enabled is checked before h is touched at all, so a
+// nil h (the disabled-flag zero value every caller here passes) is never
+// dereferenced.
+func routeOrNotFound(enabled bool, h http.Handler) http.Handler {
+	if enabled {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+}
+
+// credentialsRouteOrNotFound is routeOrNotFound specialized to
+// http.HandlerFunc for /credentials/*'s call sites, which each pass a
+// Handler *method value* (e.g. credentialHandler.HandleToken) rather than
+// an http.Handler.
+func credentialsRouteOrNotFound(enabled bool, fn http.HandlerFunc) http.HandlerFunc {
+	return routeOrNotFound(enabled, fn).ServeHTTP
+}
+
+// noiseRouteHandler answers well-known browser/crawler request paths
+// (robots.txt, apple-touch-icon*, the Chrome DevTools well-known probe,
+// sitemap.xml) that will never be a legitimate MCP JSON-RPC call under any
+// feature-flag combination. There's no real content to serve for any of
+// them -- unlike faviconHandler above, this is a bare 404, not an embedded
+// asset (I1).
+func noiseRouteHandler(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
 func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) http.Handler {
 	if len(extraRoutes) == 0 {
 		return proxy

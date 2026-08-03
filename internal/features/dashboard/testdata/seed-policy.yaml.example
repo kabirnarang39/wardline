@@ -1,0 +1,17 @@
+# Example policy for use with seed.sh -- denies a handful of the
+# identity/tool combos seed.sh actually sends, so the "deny" decision type
+# shows up in the seeded traffic instead of everything being "allow".
+rules:
+  - identity: "acme-carol"
+    tool: "write_file"
+    effect: deny
+  - identity: "acme-carol"
+    tool: "run_query"
+    effect: deny
+  - identity: "globex-erin"
+    tool: "run_query"
+    effect: deny
+  - identity: "globex-dave"
+    tool: "write_file"
+    effect: deny
+default: allow

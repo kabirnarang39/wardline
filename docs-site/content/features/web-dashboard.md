@@ -1,0 +1,213 @@
+---
+title: "Web Dashboard"
+weight: 55
+summary: "The in-browser Overview/Activity/Anomalies/Blocked/Federation/Credentials/Policy/Status view."
+---
+
+An in-browser, largely read-only view of what Wardline is doing right
+now. Off by default — enable with:
+
+```yaml
+features:
+  web_ui: true
+```
+
+Then visit `http://<listen-addr>/dashboard/`. Eight views, reached from
+the sidebar in this order: **Overview, Activity, Anomalies, Blocked,
+Federation, Credentials, Policy, Status**. Live views poll every 2
+seconds; Policy and Status are loaded once and reflect state as of
+startup / the last poll respectively.
+
+## Overview
+
+The first view you land on, deliberately: a single status band answers
+"is anything wrong right now" before you look at anything else. The
+band's state is derived client-side, on every poll tick, from the same
+data Blocked and Anomalies already show — checked in this fixed order,
+**a real block always outranks a real anomaly**:
+
+1. **`action-needed`** (red) — at least one identity is currently under
+   an active `anomaly.auto_block`.
+2. **`attention`** (amber) — no active blocks, but at least one recorded
+   anomaly exists.
+3. **`nominal`** (green, "All systems nominal") — neither.
+
+This ordering is intentional, not incidental: a block is Wardline
+already having taken automated action against real traffic, which is a
+strictly more urgent signal than an anomaly that was merely logged. A
+tenant with 500 logged anomalies and zero active blocks still shows
+amber, not red — volume of anomalies never escalates the band on its
+own, only the presence of an active block does.
+
+Below the band: a KPI row (request count, deny rate, anomaly count,
+blocked count — all computed from the exact same buffers the Activity /
+Anomalies / Blocked views themselves poll, so nothing here can drift out
+of sync with what those views show), a recent-activity bar chart, a
+"needs review" summary with a CTA that jumps straight to Anomalies, and
+a live pulse (requests/sec over the trailing 10 seconds, with a
+pause/resume toggle).
+
+**Chart caveat:** the recent-activity chart buckets **the last N
+buffered audit events only** — the same bounded, in-memory,
+resets-on-restart ring buffer (default capacity 1000) that the Activity
+view itself polls, not a query over the durable audit trail
+(`audit.output`'s JSONL file, or the `postgres_storage` table). On a
+busy instance that cycles through the buffer in minutes, the chart
+shows *recent* activity, not a full historical view — do not read it as
+"today's total traffic" once request volume exceeds the buffer's
+capacity. The chart's own caption states this plainly at runtime
+("Based on the last N buffered events — not a full historical view.");
+this is that caveat's source of truth, not a display bug.
+
+Overview polls at the same 2-second cadence as every other live view,
+but nothing on it animates on a routine poll tick — only a genuine state
+*transition* (the status band flipping from one severity to another)
+triggers motion, and that transition respects
+`prefers-reduced-motion` like every other animated element in this
+dashboard.
+
+## Activity, Anomalies, Federation
+
+Live-updating tables over the same after-ID polling pattern. Activity
+and Anomalies are described in [Anomaly detection](/features/anomaly-detection/);
+Federation is empty by design on a single-instance deployment (no peers
+to correlate with) and 404s on its API when `features.federation` is
+off, same as every other feature-gated dashboard route.
+
+## Blocked
+
+A live-updating table of identities currently under a time-bounded
+`anomaly.auto_block` — identity, tenant, reason, and expiry. Each row
+carries an **Unblock** button that clears the block early (`DELETE
+/dashboard/api/anomalies/blocked/{identity}`), after a confirm prompt.
+This is one of the dashboard's only two mutations (see Credentials
+below for the other) — see "Auth requirement for mutations" below for
+exactly who can press it successfully.
+
+## Credentials
+
+**Revoke only — deliberately not symmetric with issuance or refresh.**
+`POST /credentials/revoke` is the one action here: enter an identity,
+confirm, and every outstanding and future-until-expiry access token
+plus any outstanding refresh token for that identity is invalidated
+immediately.
+
+**Why revoke-only:** `/credentials/refresh` performs machine-to-machine
+token rotation on a caller-supplied `refresh_token` value — a dashboard
+operator has no legitimate reason to hold or exercise *another*
+identity's refresh token from a browser UI, so this view never exposes
+that path at all. There is no issuance UI either: bootstrapping a new
+credential requires that identity's own registration secret (see
+[Credential issuance](/features/credential-issuance/)), which is not
+something that belongs behind an operator-facing screen reachable by
+anyone who can load the dashboard. Revocation is the one genuinely
+admin-shaped action left — undoing a credential's standing, not
+minting or renewing one — so it is the one this view ships.
+
+### Auth requirement for mutations (Blocked's Unblock, Credentials' Revoke) — read this before assuming a 403 is a bug
+
+Both mutations are gated more strictly than the rest of the dashboard,
+and by two *different* mechanisms depending on which button you press:
+
+- **Credentials' Revoke** reuses `/credentials/revoke`'s own existing
+  gate, unchanged by this view's existence: allowed unconditionally from
+  a loopback caller (`127.0.0.1`/`::1`); from anywhere else, only when
+  `features.rbac` is on **and** the resolved caller holds
+  `credential:revoke` (the built-in `admin` role, or a custom role
+  naming that permission — see [RBAC](/features/rbac/)). A caller
+  holding only `dashboard:view` (e.g. the built-in `viewer` role) loads
+  the rest of the dashboard fine and gets a clean `403` here — that is
+  correct, not a bug, and the view surfaces a specific "You don't have
+  permission to revoke credentials." message for exactly that case
+  rather than a generic error.
+- **Blocked's Unblock** has no loopback exception at all — it is gated
+  purely by the same `credential:revoke` permission, checked separately
+  from the `dashboard:view` permission the rest of the Blocked view
+  relies on to render at all. A caller who can see the Blocked table
+  (holds `dashboard:view`) but lacks `credential:revoke` gets a clean
+  `403` clicking Unblock, same posture as Credentials' Revoke.
+
+**A sharp edge worth knowing before you rely on either button:**
+neither button's own client-side code attaches a credential of its
+own — both rely entirely on whatever the browser sends automatically
+with every same-origin request. That is sufficient in two common cases:
+you're loopback (nothing to attach — the loopback exception on
+`/credentials/revoke` needs no identity at all; Blocked's Unblock still
+needs a resolvable identity, but a loopback operator typically already
+has one via whichever `IdentityAuthenticator` is active), or identity is
+resolved from a raw `X-Wardline-Identity` header that a trusted
+intermediary (reverse proxy, mesh sidecar) injects on your behalf before
+traffic reaches Wardline — browsers don't send that header themselves,
+but an intermediary that does makes every request the browser makes
+already carry it, including these two.
+
+It is **not** sufficient when `features.credential_issuance` is on and
+you are not loopback: identity there is a bearer token
+(`Authorization: Bearer <jwt>`, obtained via `POST /credentials/token`),
+and a plain browser tab has no built-in mechanism to attach that header
+to its own requests the way it automatically attaches cookies. This
+applies to *every* dashboard route when `features.rbac` is also on
+(the entire `/dashboard/` mount, not just these two buttons, requires a
+resolvable identity holding `dashboard:view` in that case — see
+[RBAC](/features/rbac/)) — and unlike `/credentials/revoke` above,
+**`/dashboard/` itself has no loopback exception at all**:
+`rbacadapter.RequirePermission` denies an unresolved identity identically
+whether the request comes from `127.0.0.1`/`::1` or a LAN address. So in
+the `rbac` + `credential_issuance` combination, a first-time operator
+opening a bare browser tab to `/dashboard/` should expect the whole
+dashboard to be unreachable — **loopback included**, not just non-loopback
+access — not just these two buttons. Reach it instead through something
+that can attach the bearer token for you (a reverse proxy/mesh sidecar
+that injects it, a browser extension that adds the header, or API tooling
+calling `/dashboard/api/*` and `/credentials/revoke` directly) rather
+than a bare browser session. This is an accurate description of how
+`rbac`'s dashboard gate has always worked (predates this redesign's
+visual changes entirely — see [RBAC](/features/rbac/)'s own "every
+dashboard request must resolve an identity" language, which likewise has
+no loopback exception); it is not new behavior, but is easy to miss the
+first time you turn both flags on together, so it's called out here
+explicitly.
+
+## Policy, Status
+
+Policy shows the active policy backend and raw policy file content as
+loaded at startup — not hot-reloaded; restart Wardline after editing
+the policy file to see the update here. Status shows version, uptime,
+listen/upstream addresses, and which feature flags are on.
+
+## Security note
+
+The dashboard requires no authentication and every non-mutating route
+is read-only **by default** (unless `features.rbac` is on — see
+[RBAC](/features/rbac/); with it on, every dashboard request must
+resolve an identity holding `dashboard:view`, else `403`). The two
+exceptions are Blocked's Unblock and Credentials' Revoke, above — each
+is a real, security-relevant mutation, and each is independently gated
+by `credential:revoke` rather than the weaker `dashboard:view` a plain
+reader might hold. Neither can influence policy evaluation, budget
+accounting, or how a proxied call is decided going forward except
+through that one narrow, audited, explicitly-permissioned action. The
+dashboard shares the exact same listener/port as the proxy itself, so
+anyone who can reach Wardline's proxy port — including every agent
+Wardline proxies calls for — can already read full audit reasons and
+raw policy source over that identical socket; binding to `localhost`
+does not change this. This is why `web_ui` defaults to off.
+
+## Known limitations
+
+- The recent-activity chart on Overview reflects the bounded audit ring
+  buffer, not the durable audit trail — see the chart caveat above.
+- There is no browser-native way to deliver a bearer token
+  (`features.credential_issuance` on) to `/dashboard/` itself, or to
+  Blocked's Unblock, or to Credentials' Revoke from non-loopback — see
+  "Auth requirement for mutations" above. Credentials' Revoke is the one
+  exception with a loopback path around this; `/dashboard/` (once
+  `features.rbac` is also on) and Blocked's Unblock have no loopback
+  exception at all, so for those two the gap applies from loopback too, not
+  just non-loopback access. A dedicated token-entry/login flow would close
+  this gap; none exists today.
+- Federation's correlated-alerts view is not tenant-scoped (see
+  [RBAC](/features/rbac/)'s known limitations) — it correlates on an
+  identity fingerprint computed locally, independent of tenant.
+- Policy is a startup snapshot, not hot-reloaded; edit the policy file
+  and restart Wardline to see the change reflected here.

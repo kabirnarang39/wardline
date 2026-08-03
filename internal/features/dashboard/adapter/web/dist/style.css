@@ -1,17 +1,111 @@
+/* Self-hosted fonts (not a Google Fonts @import) -- the dashboard's CSP is
+   `default-src 'self'` and stays that way; loosening it to allow
+   fonts.googleapis.com/fonts.gstatic.com would be the wrong tradeoff for a
+   security product's own console. IBM Plex Sans and Space Grotesk each ship
+   from Google as a single variable-font file covering their whole weight
+   range, so one @font-face per weight below still means only one file
+   fetched per family (the browser reuses its own cache across the 3
+   declarations). IBM Plex Mono doesn't have a variable build on Google
+   Fonts, hence 3 separate static files. */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/ibm-plex-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/ibm-plex-mono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/ibm-plex-sans-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/ibm-plex-sans-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/ibm-plex-sans-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/space-grotesk-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/space-grotesk-variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/space-grotesk-variable.woff2') format('woff2');
+}
+
 :root {
-  --bg: #020617;
-  --surface: #1A1E2F;
-  --border: #334155;
-  --fg: #F8FAFC;
-  --fg-muted: #94A3B8;
-  --allow: #22C55E;
-  --deny: #EF4444;
-  --throttled: #F59E0B;
-  --passthrough: #64748B;
-  --focus-ring: #60A5FA;
-  --radius: 6px;
-  --font-ui: 'Fira Sans', system-ui, sans-serif;
-  --font-data: 'Fira Code', ui-monospace, monospace;
+  --ink: #0B1220;
+  --paper: #FFFFFF;
+  --mist: #F6F8FA;
+  --card: #FFFFFF;
+  --border: #E1E7EF;
+  --muted: #5B6B82;
+
+  --brand: #15803D;
+  --brand-soft: #DCFCE7;
+  --brand-hover: #14732F;
+
+  --allow: var(--brand);
+  --deny: #DC2626;
+  --throttled: #B45309;
+  --passthrough: var(--muted);
+  --blocked: #991B1B;
+
+  --federation: #4F46E5;
+
+  --attention-soft: #FEF3E2;
+  --action-soft: #FEE2E2;
+
+  --dark-border: #1E293B;
+  --dark-foreground: #F8FAFC;
+  --muted-on-dark: #94A3B8;
+
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+
+  --shadow-resting: 0 1px 2px rgba(11, 18, 32, 0.06);
+  --shadow-raised: 0 8px 24px rgba(11, 18, 32, 0.12);
+
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-data: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-hover: ease;
+  --duration-micro: 120ms;
+  --duration-standard: 200ms;
 }
 
 * { box-sizing: border-box; }
@@ -22,11 +116,16 @@ html, body {
 }
 
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font-family: var(--font-ui);
+  background: var(--mist);
+  color: var(--ink);
+  font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
 }
 
 button, input {
@@ -36,7 +135,7 @@ button, input {
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
@@ -45,86 +144,212 @@ button, input {
   min-height: 100dvh;
 }
 
-/* Rail nav (desktop) / top bar (mobile) */
-.rail {
+/* Sidebar nav (desktop) / top bar (mobile) */
+.sidebar {
   display: flex;
   flex-direction: column;
-  width: 220px;
+  width: 240px;
   flex-shrink: 0;
-  padding: 20px 12px;
+  padding: 24px 16px;
+  background: var(--card);
   border-right: 1px solid var(--border);
   gap: 4px;
 }
 
 .brand {
-  font-family: var(--font-data);
-  font-weight: 600;
-  font-size: 18px;
-  padding: 8px 12px 20px;
-  letter-spacing: 0.02em;
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--brand);
+  padding: 8px 12px 24px;
+}
+
+.brand-mark {
+  display: inline-block;
+  color: var(--brand);
+  margin-right: 2px;
+  animation: brand-blink 250ms var(--ease-out) 1;
+}
+
+@keyframes brand-blink {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  75% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark { animation: none; }
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: transparent;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   text-align: left;
   cursor: pointer;
-  transition: background-color 150ms ease-out;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 15px;
+  transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
-.nav-item:hover { background: var(--surface); }
-.nav-item.is-active { background: var(--surface); font-weight: 600; }
+.nav-item:hover { background: var(--mist); color: var(--ink); }
+.nav-item.is-active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
 
-.nav-icon {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
+.nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
 
 .live-indicator {
   margin-top: auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   font-size: 13px;
-  color: var(--fg-muted);
+  color: var(--muted);
 }
 
+/* Calm/static by design (M1): this cycle's own design spec rules out a
+   perpetually-pulsing element on a console an operator stares at for
+   hours. A solid dot communicates "live" fine on its own -- no infinite
+   loop needed, unlike the status-band pulse below, which is correctly
+   bounded to real state transitions (status-pulse, 3 iterations). */
 .live-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--allow);
-  animation: pulse 2s ease-in-out infinite;
+  background: var(--brand);
 }
 
-.live-dot.is-stale {
-  background: var(--throttled);
-  animation: none;
+.live-dot.is-stale { background: var(--throttled); }
+
+/* Sticky top bar shell (Task 1 builds the shell only; Task 6 wires it up) */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0 20px;
+  background: var(--mist);
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+.topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 360px;
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .live-dot { animation: none; }
+.topbar-search-icon { width: 16px; height: 16px; color: var(--muted); flex-shrink: 0; }
+
+.topbar-search input {
+  border: none;
+  background: transparent;
+  width: 100%;
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.topbar-icon-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.topbar-icon-btn:hover { color: var(--ink); background: var(--mist); }
+.topbar-icon-btn svg { width: 18px; height: 18px; }
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: var(--radius-pill);
+  background: var(--deny);
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notification-badge[hidden],
+.identity-tenant-badge[hidden] { display: none; }
+
+.topbar-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.identity-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  padding: 4px;
+}
+
+.identity-tenant-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-soft);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+}
+
+/* Generic card system — later tasks build Overview's KPI tiles, Blocked's
+   list, Federation's list, Credentials' form from these. */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-resting);
+  padding: 24px;
 }
 
 .content {
   flex: 1;
   min-width: 0;
-  padding: 32px 40px;
-  overflow-x: auto;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 40px 40px;
 }
 
 .view[hidden] { display: none; }
@@ -135,217 +360,400 @@ button, input {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
-h1 {
-  font-size: 24px;
-  font-weight: 700;
-  margin: 0;
-}
+h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
+.filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 .filters input {
   min-height: 44px;
-  padding: 0 12px;
-  background: var(--surface);
+  padding: 0 14px;
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--fg);
+  border-radius: var(--radius-control);
+  color: var(--ink);
 }
 
-.chip-group {
-  display: flex;
-  gap: 8px;
-}
+.chip-group { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .chip {
   min-height: 44px;
   padding: 0 14px;
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
-  font-family: var(--font-data);
+  font-family: var(--font-body);
   font-size: 13px;
-  transition: border-color 150ms ease-out, background-color 150ms ease-out;
+  font-weight: 500;
+  color: var(--muted);
+  transition: border-color var(--duration-standard) var(--ease-out), background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
-.chip.is-active {
-  border-color: var(--fg);
-  background: #263042;
+.chip:hover { border-color: var(--brand); }
+.chip.is-active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+
+.chip:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip:active { transform: none; }
 }
 
 .table-wrap {
-  overflow-x: auto;
+  /* overflow-x: auto here forces overflow-y's computed value to auto too
+     (CSS Overflow spec: declaring one axis non-visible converts the other
+     from its visible default), making this the audit-table thead's
+     nearest scrolling ancestor for `position: sticky`. Left unbounded
+     (no max-height), that computed-auto container never scrolls on its
+     own -- it just grows with its content and scrolls away with the
+     page, so the sticky header silently never sticks. Only visible past
+     ~1-2 screens of rows, which is why realistic-volume testing (task 7)
+     is what caught it. max-height turns this into a real, bounded scroll
+     region so the header has something to stick against. */
+  overflow: auto;
+  max-height: 65vh;
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
 }
 
-.audit-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-data);
-  font-size: 13px;
-}
+.audit-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 13px; }
 
 .audit-table th {
   text-align: left;
-  padding: 10px 12px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-weight: 500;
+  color: var(--muted);
+  font-weight: 600;
+  font-family: var(--font-body);
   position: sticky;
   top: 0;
-  background: var(--bg);
+  background: var(--card);
 }
 
-.audit-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
+.audit-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink); }
+.audit-table tr:last-child td { border-bottom: none; }
 
-.audit-table td.reason-cell {
-  white-space: normal;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
 
-.decision-cell {
-  position: relative;
-  padding-left: 16px !important;
-}
-
-.decision-cell::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-}
-
+.decision-cell { position: relative; padding-left: 20px !important; }
+.decision-cell::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
 .decision-cell[data-decision="allow"]::before { background: var(--allow); }
 .decision-cell[data-decision="deny"]::before,
 .decision-cell[data-decision="error"]::before { background: var(--deny); }
 .decision-cell[data-decision="throttled"]::before { background: var(--throttled); }
 .decision-cell[data-decision="passthrough"]::before { background: var(--passthrough); }
-.decision-cell[data-decision="blocked"]::before { background: var(--deny); }
+.decision-cell[data-decision="blocked"]::before { background: var(--blocked); }
 
-.empty-state {
-  padding: 40px 20px;
-  text-align: center;
-  color: var(--fg-muted);
+/* Federation accent (M3): a --federation-colored left-border accent on
+   each Federation row's first cell, mirroring .decision-cell's own
+   per-row semantic-color convention just above -- the design spec's
+   federation accent, "used sparingly... so an operator can tell 'this is
+   about other instances' at a glance", previously had no real use
+   anywhere in the Federation view. Scoped by ID since these rows have no
+   dedicated cell class of their own (unlike decision-cell). */
+#federation-rows tr td:first-child { position: relative; padding-left: 20px; }
+#federation-rows tr td:first-child::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--federation); }
+
+.empty-state { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 14px; }
+
+/* Destructive row action (Blocked view's Unblock; Task 5's credential-revoke
+   reuses this same class/shape) -- confirmation itself is the browser's
+   native window.confirm, not a custom dialog, so there's no .confirm-dialog
+   element to style here. */
+.btn-unblock {
+  min-height: 44px;
+  padding: 0 14px;
+  background: transparent;
+  border: 1px solid var(--deny);
+  border-radius: var(--radius-control);
+  color: var(--deny);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
-.badge {
-  font-family: var(--font-data);
-  font-size: 13px;
-  padding: 4px 10px;
-  background: var(--surface);
+.btn-unblock:hover { background: var(--deny); color: var(--paper); }
+
+.btn-unblock:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover), background-color var(--duration-standard) var(--ease-hover), color var(--duration-standard) var(--ease-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-unblock:active { transform: none; }
+}
+
+.btn-primary {
+  min-height: 44px;
+  padding: 0 20px;
+  background: var(--brand);
+  color: var(--paper);
+  border: none;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color var(--duration-standard) var(--ease-hover);
+}
+.btn-primary:hover { background: var(--brand-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary:active { transform: none; }
+}
+
+/* Credentials view: these were inline style="" attributes in index.html,
+   which this dashboard's own CSP (default-src 'self', no style-src
+   unsafe-inline exemption) silently discards at runtime -- confirmed via
+   a `securitypolicyviolation` listener during the task-8 audit, which
+   caught 5 `style-src-attr` violations, one per attribute below. The
+   practical effect was #revoke-identity-input rendering at the browser's
+   unstyled ~26px default height, under the 44px touch-target minimum.
+   Moved here as real rules so the CSP actually allows them to apply. */
+.credentials-card { max-width: 480px; }
+.credentials-hint { margin-top: 0; color: var(--muted); font-size: 14px; }
+#view-credentials label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+#revoke-identity-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--mist);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-control);
+  margin-bottom: 12px;
+}
+#revoke-result { margin-top: 12px; font-size: 14px; }
+
+.badge {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 4px 12px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-radius: var(--radius-pill);
 }
 
 .policy-source {
   font-family: var(--font-data);
   font-size: 13px;
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
+  border-radius: var(--radius-card);
+  padding: 24px;
   overflow-x: auto;
   white-space: pre;
   margin: 0;
+  color: var(--ink);
 }
 
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
-  margin: 0 0 32px;
-}
+.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin: 0 0 32px; }
 
+/* M8: reconciled onto .kpi-tile's container/label convention (the newer,
+   Overview-specific "small metric tile" language) instead of keeping a
+   second, visually different one here -- same border-radius/padding as
+   .kpi-tile below, same label size/weight/color/margin as .kpi-label.
+   dd's own font-family/size deliberately stays monospace rather than
+   adopting .kpi-value's 24px Space Grotesk: these values are long free
+   text (upstream URLs, listen addresses), not short numbers, and the
+   overflow-wrap fix just below exists specifically because of that --
+   the larger heading font would make long values worse, not more
+   consistent, so this one axis is a disclosed, deliberate exception. */
 .status-grid div {
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   padding: 16px;
 }
 
-.status-grid dt {
-  font-size: 13px;
-  color: var(--fg-muted);
-  margin-bottom: 4px;
-}
+.status-grid dt { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+/* overflow-wrap: long values (upstream URLs, listen addresses) have no
+   natural break points, so without this they silently spill out of their
+   status-grid cell at tablet/laptop widths where multiple columns leave
+   less room per cell than the single-column mobile layout does (task-8
+   responsive audit). */
+.status-grid dd { margin: 0; font-family: var(--font-data); font-size: 16px; font-weight: 600; color: var(--ink); overflow-wrap: break-word; }
 
-.status-grid dd {
-  margin: 0;
-  font-family: var(--font-data);
-  font-size: 15px;
-}
+.status-subheading { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--ink); }
 
-.status-subheading {
-  font-size: 16px;
-  margin-bottom: 12px;
-}
-
-.feature-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+.feature-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 
 .feature-list li {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-family: var(--font-data);
+  font-family: var(--font-body);
   font-size: 14px;
-  padding: 10px 14px;
-  background: var(--surface);
+  padding: 12px 16px;
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
+  color: var(--ink);
 }
 
-.feature-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
+.feature-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .feature-dot.is-on { background: var(--allow); }
-.feature-dot.is-off { background: var(--fg-muted); }
+.feature-dot.is-off { background: var(--muted); }
+
+.status-band {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 20px;
+  margin-bottom: 20px;
+  border-radius: var(--radius-card);
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.status-band[data-state="nominal"] { background: var(--brand-soft); color: var(--brand); }
+.status-band[data-state="attention"] { background: var(--attention-soft); color: var(--throttled); }
+.status-band[data-state="action-needed"] { background: var(--action-soft); color: var(--blocked); }
+
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+.status-band.is-transitioning .status-dot {
+  animation: status-pulse 600ms var(--ease-hover) 3;
+}
+@keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .status-band.is-transitioning .status-dot { animation: none; }
+}
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.kpi-tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 16px;
+}
+
+.kpi-label { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+.kpi-value { font-family: var(--font-heading); font-size: 24px; font-weight: 700; color: var(--ink); }
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+
+.card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--ink); }
+.card-caption { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+
+@media (hover: hover) and (pointer: fine) {
+  .card {
+    transition: transform var(--duration-standard) var(--ease-hover), box-shadow var(--duration-standard) var(--ease-hover);
+  }
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-raised);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card:hover { transform: none; }
+}
+
+.card-dark {
+  background: var(--ink);
+  border-color: var(--dark-border);
+  color: var(--dark-foreground);
+}
+.card-dark .card-title { color: var(--dark-foreground); }
+
+.pulse-value { font-family: var(--font-heading); font-size: 28px; font-weight: 700; margin-bottom: 16px; }
+.pulse-unit { font-size: 14px; font-weight: 400; color: var(--muted-on-dark); }
+
+.pulse-toggle {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--brand);
+  border: none;
+  color: var(--paper);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pulse-toggle svg { width: 18px; height: 18px; }
+.pulse-toggle:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-toggle:active { transform: none; }
+}
+
+#activity-chart { width: 100%; height: auto; }
+.chart-bar { fill: var(--brand); }
+.chart-bar-label { font-family: var(--font-body); font-size: 10px; fill: var(--muted); }
+.chart-value-label { font-family: var(--font-body); font-size: 10px; font-weight: 600; fill: var(--ink); }
+
+/* Page-load stagger -- Overview cards only, once per load, never per-poll-tick */
+.stagger-in {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: stagger-in var(--duration-standard) var(--ease-out) forwards;
+}
+@keyframes stagger-in { to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .stagger-in { animation: none; opacity: 1; transform: none; }
+}
 
 @media (max-width: 1023px) {
   #app { flex-direction: column; }
-  .rail {
+  .sidebar {
     flex-direction: row;
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--border);
     padding: 8px 12px;
     align-items: center;
+    /* Row layout's 8 nav items + brand + live-indicator don't fit any
+       viewport in this range at their natural (min-content) width even
+       with nav labels hidden at <=480px -- without this the PAGE itself
+       scrolled horizontally (task-8 responsive audit). Scoped to the
+       sidebar's own strip, same convention as .table-wrap's internal
+       scroll: the page stays fixed-width, only this row scrolls. */
+    overflow-x: auto;
   }
+  /* .nav-item's desktop width: 100% is a flex-basis of "100% of a row
+     container" here, which the row's default flex-shrink can't undo
+     enough to actually fit -- reset to content width so items scroll
+     instead of blowing out the row. */
+  .nav-item { width: auto; flex-shrink: 0; }
+  .brand, .live-indicator { flex-shrink: 0; }
   .brand { padding: 8px 12px; }
   .live-indicator { margin-top: 0; margin-left: auto; }
-  .content { padding: 20px; }
+  /* #app is a column flex container at this width, so .content's
+     left/right margin is now a CROSS-axis margin -- an auto value there
+     opts the item out of the default cross-axis stretch and back to
+     content-based (shrink-to-fit) sizing, which let the audit table's
+     full unwrapped width leak through as page-level horizontal scroll
+     (task-8 audit). max-width above is still fine to keep; only the
+     auto margin needs resetting here so .content keeps stretching to
+     the viewport's width like before that rule was added. */
+  .content { padding: 20px; margin: 0; }
 }
 
 @media (max-width: 480px) {
-  .rail .nav-item span:last-child { display: none; }
+  .sidebar .nav-item span:last-child { display: none; }
   .view-header { flex-direction: column; align-items: flex-start; }
 }

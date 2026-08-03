@@ -136,6 +136,275 @@ func TestBuildTopHandler_WebUIAndCredentialIssuanceOn_AllRoutesReachCorrectHandl
 	}
 }
 
+// TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll guards the actual
+// bug this route exists to fix: browsers auto-request GET /favicon.ico on
+// every page load, and without a more-specific mux entry it used to fall
+// through to the "/" catch-all proxy handler, which audited it as a
+// malformed JSON-RPC "error" -- a stray reading on a dashboard that has
+// seen zero real traffic. Mirrors TestBuildTopHandler_WebUIOn_OtherPathsStillGoToProxy's
+// shape exactly, just for /favicon.ico instead of /dashboard/.
+func TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("proxy handler should not be reached for /favicon.ico when the route is registered")
+	})
+	faviconHit := false
+	favicon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { faviconHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{"/favicon.ico": favicon})
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+
+	if !faviconHit {
+		t.Error("expected the favicon handler to receive /favicon.ico requests, not the proxy catch-all")
+	}
+}
+
+// TestFaviconHandler_ServesEmbeddedIconWithImageContentType exercises the
+// real handler (not a stub), proving it serves actual, non-empty bytes
+// read from the dashboard's embedded web/dist/favicon.ico with an
+// explicit image content type -- not relying on the host's mime.types
+// having an .ico entry.
+func TestFaviconHandler_ServesEmbeddedIconWithImageContentType(t *testing.T) {
+	h := faviconHandler(testLogger())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/x-icon" {
+		t.Errorf("expected Content-Type image/x-icon, got %q", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("expected a non-empty favicon body")
+	}
+	// ICO files start with a 2-byte reserved field (0x0000) followed by a
+	// 2-byte type field (0x0001 for icon) -- a cheap sanity check that
+	// this is a real .ico, not a placeholder blob.
+	body := rec.Body.Bytes()
+	if len(body) < 4 || body[0] != 0 || body[1] != 0 || body[2] != 1 || body[3] != 0 {
+		t.Errorf("expected ICO magic header 00 00 01 00, got % x", body[:min(4, len(body))])
+	}
+}
+
+// --- I1/I4 fix-wave regression tests --------------------------------------
+//
+// I1: the "unregistered path falls through to the proxy, gets audited as a
+// spurious error" bug class (first found/fixed for /favicon.ico, then
+// /credentials/*) recurs at generic browser/crawler noise paths and at the
+// /federation/summaries and /scim/v2/* feature-gated paths. I4: the
+// /credentials/* fix (8ffb3bf) shipped with zero tests -- these also cover
+// that gap.
+
+// TestRouteOrNotFound_DisabledReturnsCleanNotFound guards routeOrNotFound's
+// disabled branch directly: the wrapped handler must never be invoked, and
+// the response must be a plain 404, not a JSON-RPC-shaped error.
+func TestRouteOrNotFound_DisabledReturnsCleanNotFound(t *testing.T) {
+	h := routeOrNotFound(false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("real handler should not be invoked when disabled")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/whatever", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "jsonrpc") {
+		t.Errorf("expected a plain 404 body, got %q", rec.Body.String())
+	}
+}
+
+// TestRouteOrNotFound_EnabledPassesThroughUnchanged guards the enabled
+// branch: the real handler must run, completely unchanged.
+func TestRouteOrNotFound_EnabledPassesThroughUnchanged(t *testing.T) {
+	hit := false
+	h := routeOrNotFound(true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/whatever", nil))
+	if !hit {
+		t.Error("expected the real handler to be invoked when enabled")
+	}
+}
+
+// TestBuildTopHandler_NoiseRoutesWinOverProxyCatchAll guards I1's fix for
+// generic browser/crawler noise paths: none of robots.txt, the two
+// apple-touch-icon variants, the Chrome DevTools well-known probe, or
+// sitemap.xml are ever a legitimate MCP JSON-RPC call, so each must be
+// answered by its own route rather than falling through to the "/"
+// catch-all proxy handler and getting audited as a spurious error --
+// mirrors TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll's shape.
+func TestBuildTopHandler_NoiseRoutesWinOverProxyCatchAll(t *testing.T) {
+	noisePaths := []string{
+		"/robots.txt",
+		"/apple-touch-icon.png",
+		"/apple-touch-icon-precomposed.png",
+		"/.well-known/appspecific/com.chrome.devtools.json",
+		"/sitemap.xml",
+	}
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("proxy handler should not be reached for %s", r.URL.Path)
+	})
+	routes := map[string]http.Handler{}
+	for _, p := range noisePaths {
+		routes[p] = http.HandlerFunc(noiseRouteHandler)
+	}
+	h := buildTopHandler(proxy, routes)
+	for _, p := range noisePaths {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d", p, rec.Code)
+		}
+	}
+}
+
+// TestBuildTopHandler_FederationAndSCIMRoutesOffReturn404NotProxy guards
+// I1's fix for the two feature-gated instances of this bug class:
+// /federation/summaries and /scim/v2/* previously fell through to the
+// proxy catch-all -- and got audited as spurious errors -- whenever their
+// owning flag was off. Mirrors the /credentials/* disabled-state test
+// below.
+func TestBuildTopHandler_FederationAndSCIMRoutesOffReturn404NotProxy(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("proxy handler should not be reached for %s when its flag is off", r.URL.Path)
+	})
+	realHandlerHit := false
+	realHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { realHandlerHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/federation/summaries": routeOrNotFound(false, realHandler),
+		"/scim/v2/":             routeOrNotFound(false, realHandler),
+	})
+
+	for _, p := range []string{"/federation/summaries", "/scim/v2/Users"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d", p, rec.Code)
+		}
+	}
+	if realHandlerHit {
+		t.Error("expected the real federation/scim handler not to be invoked while disabled")
+	}
+}
+
+// TestBuildTopHandler_FederationAndSCIMRoutesOnReachRealHandler confirms
+// the enabled path's existing behavior is unchanged by I1's fix.
+func TestBuildTopHandler_FederationAndSCIMRoutesOnReachRealHandler(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("proxy handler should not be reached when federation/scim are enabled")
+	})
+	federationHit, scimHit := false, false
+	federation := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { federationHit = true })
+	scim := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { scimHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/federation/summaries": routeOrNotFound(true, federation),
+		"/scim/v2/":             routeOrNotFound(true, scim),
+	})
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/federation/summaries", nil))
+	if !federationHit {
+		t.Error("expected the federation handler to receive /federation/summaries requests when enabled")
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/scim/v2/Users", nil))
+	if !scimHit {
+		t.Error("expected the scim handler to receive /scim/v2/* requests when enabled")
+	}
+}
+
+// TestCredentialsRoutes_DisabledReturnCleanNotFound is I4: the
+// /credentials/* fix (8ffb3bf) shipped with no test that the disabled-state
+// 404 actually fires. Confirms all three routes return a clean 404 -- not
+// a JSON-RPC-shaped proxy error, not the real handler -- when
+// credential_issuance is off.
+func TestCredentialsRoutes_DisabledReturnCleanNotFound(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("proxy handler should not be reached for %s when credential_issuance is off", r.URL.Path)
+	})
+	realHandlerHit := false
+	real := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { realHandlerHit = true })
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/credentials/token":   http.HandlerFunc(credentialsRouteOrNotFound(false, real.ServeHTTP)),
+		"/credentials/revoke":  http.HandlerFunc(credentialsRouteOrNotFound(false, real.ServeHTTP)),
+		"/credentials/refresh": http.HandlerFunc(credentialsRouteOrNotFound(false, real.ServeHTTP)),
+	})
+
+	for _, p := range []string{"/credentials/token", "/credentials/revoke", "/credentials/refresh"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d", p, rec.Code)
+		}
+		if body := rec.Body.String(); strings.Contains(body, "jsonrpc") {
+			t.Errorf("%s: expected a plain 404 body, not a JSON-RPC-shaped error, got %q", p, body)
+		}
+	}
+	if realHandlerHit {
+		t.Error("expected the real credential handler not to be invoked while credential_issuance is off")
+	}
+}
+
+// TestCredentialsRoutes_EnabledReachRealHandler is I4's routing-layer smoke
+// check for the enabled path -- deeper token/revoke/refresh semantics are
+// already covered elsewhere (e2e_test.go, e2e_tenant_isolation_test.go);
+// this test's job is confirming the routing layer only.
+func TestCredentialsRoutes_EnabledReachRealHandler(t *testing.T) {
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("proxy handler should not be reached when credential_issuance is on")
+	})
+	var tokenHit, revokeHit, refreshHit bool
+	token := func(w http.ResponseWriter, r *http.Request) { tokenHit = true }
+	revoke := func(w http.ResponseWriter, r *http.Request) { revokeHit = true }
+	refresh := func(w http.ResponseWriter, r *http.Request) { refreshHit = true }
+
+	h := buildTopHandler(proxy, map[string]http.Handler{
+		"/credentials/token":   http.HandlerFunc(credentialsRouteOrNotFound(true, token)),
+		"/credentials/revoke":  http.HandlerFunc(credentialsRouteOrNotFound(true, revoke)),
+		"/credentials/refresh": http.HandlerFunc(credentialsRouteOrNotFound(true, refresh)),
+	})
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/credentials/token", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/credentials/revoke", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/credentials/refresh", nil))
+
+	if !tokenHit || !revokeHit || !refreshHit {
+		t.Errorf("expected all three credential handlers to be invoked when enabled: token=%v revoke=%v refresh=%v", tokenHit, revokeHit, refreshHit)
+	}
+}
+
+// TestCredentialsRoutes_WinOverProxyCatchAll_MapIterationOrder is I4's
+// catch-all-precedence guard, mirroring
+// TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll -- run repeatedly
+// since Go deliberately randomizes map iteration order and buildTopHandler
+// ranges over extraRoutes to register each pattern on the mux.
+// http.ServeMux's own longest-match routing (not registration order) is
+// what actually guarantees /credentials/* always beats "/", but this
+// codifies that guarantee as a real test instead of the final reviewer's
+// manual 5x spot-check of the real binary.
+func TestCredentialsRoutes_WinOverProxyCatchAll_MapIterationOrder(t *testing.T) {
+	paths := []string{"/credentials/token", "/credentials/revoke", "/credentials/refresh"}
+	for i := 0; i < 20; i++ {
+		proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("proxy handler should not be reached for %s", r.URL.Path)
+		})
+		hit := map[string]bool{}
+		routes := map[string]http.Handler{}
+		for _, p := range paths {
+			p := p
+			routes[p] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit[p] = true })
+		}
+		h := buildTopHandler(proxy, routes)
+		for _, p := range paths {
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, p, nil))
+		}
+		for _, p := range paths {
+			if !hit[p] {
+				t.Errorf("iteration %d: expected %s to reach its own handler, not the proxy", i, p)
+			}
+		}
+	}
+}
+
 // fakeRevokeIdentityAuth is a minimal proxyadapter.IdentityAuthenticator
 // fake for newRevokeAuthorizer's tests.
 type fakeRevokeIdentityAuth struct {
