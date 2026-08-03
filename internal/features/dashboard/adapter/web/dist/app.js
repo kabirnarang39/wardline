@@ -179,7 +179,63 @@ function wireExpandableRows(tbody, colSpan, detailRenderer) {
   });
 }
 
+// computeFacets/renderFacetGroup/renderFacets (Activity-only, not shared):
+// surfaces the distinct identity/tool/decision values actually present in
+// the currently-buffered dataset, with counts, alongside the existing
+// free-text filters/chips -- both patterns coexist, this doesn't replace
+// either. Recomputed every renderActivity call so it reflects the same
+// buffered data the table renders from on each poll tick.
+function computeFacets(entries) {
+  const identity = new Map();
+  const tool = new Map();
+  const decision = new Map();
+  for (const e of entries) {
+    identity.set(e.Identity, (identity.get(e.Identity) || 0) + 1);
+    tool.set(e.Tool, (tool.get(e.Tool) || 0) + 1);
+    decision.set(e.Decision, (decision.get(e.Decision) || 0) + 1);
+  }
+  const sortByCount = (m) => Array.from(m.entries()).sort(([, a], [, b]) => b - a).slice(0, 10);
+  return { identity: sortByCount(identity), tool: sortByCount(tool), decision: sortByCount(decision) };
+}
+
+function renderFacetGroup(listID, entries, filterKey) {
+  const list = document.getElementById(listID);
+  list.innerHTML = entries.map(([value, count]) => {
+    const isActive = filterKey === 'decisions'
+      ? state.filters.decisions.has(value)
+      : state.filters[filterKey] === value;
+    return `
+      <li>
+        <button class="${isActive ? 'is-active' : ''}" data-facet-key="${escapeHTML(filterKey)}" data-facet-value="${escapeHTML(value)}">
+          <span>${escapeHTML(value || '(none)')}</span>
+          <span class="facet-count">${count}</span>
+        </button>
+      </li>
+    `;
+  }).join('');
+}
+
+function renderFacets() {
+  const { identity, tool, decision } = computeFacets(state.entries);
+  renderFacetGroup('facet-identity', identity, 'identity');
+  renderFacetGroup('facet-tool', tool, 'tool');
+  renderFacetGroup('facet-decision', decision, 'decisions');
+}
+
+function activityDetailRenderer(rowId) {
+  const entry = state.entries.find((e) => String(e.ID) === rowId);
+  if (!entry) return '';
+  return `
+    <dl>
+      <dt>Trace ID</dt><dd>${escapeHTML(entry.TraceID || '—')}</dd>
+      <dt>Latency</dt><dd>${entry.LatencyMS}ms</dd>
+      <dt>Reason</dt><dd>${escapeHTML(entry.Reason || '—')}</dd>
+    </dl>
+  `;
+}
+
 function renderActivity() {
+  renderFacets();
   const tbody = document.getElementById('audit-rows');
   const empty = document.getElementById('audit-empty');
   const visible = state.entries.filter(passesFilters);
@@ -195,7 +251,7 @@ function renderActivity() {
   withScrollAnchor(tbody, () => {
     const rows = visible.slice().reverse().map((e) => `
       <tr data-row-id="${escapeHTML(String(e.ID))}">
-        <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"></td>
+        <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron" aria-hidden="true"></span></td>
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
         <td>${escapeHTML(e.Identity)}</td>
         <td>${escapeHTML(e.Tool)}</td>
@@ -206,6 +262,46 @@ function renderActivity() {
       </tr>
     `).join('');
     tbody.innerHTML = rows;
+    mountIcons(tbody);
+  });
+}
+
+// wireActivityInteractions (called once from init()): wires the shared
+// expandable-row primitive onto the Activity table (colSpan 8 matches the
+// table's real column count), the facet-panel open/close toggle, and
+// click-to-filter delegation from facet buttons -- kept in sync with the
+// existing free-text inputs/chips so both filtering patterns always agree
+// on the active state.
+function wireActivityInteractions() {
+  const tbody = document.getElementById('audit-rows');
+  wireExpandableRows(tbody, 8, activityDetailRenderer);
+
+  document.getElementById('facet-toggle').addEventListener('click', () => {
+    const panel = document.getElementById('facet-panel');
+    const btn = document.getElementById('facet-toggle');
+    const isOpen = !panel.hidden;
+    panel.hidden = isOpen;
+    btn.setAttribute('aria-expanded', String(!isOpen));
+  });
+
+  document.getElementById('facet-panel').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-facet-key]');
+    if (!btn) return;
+    const key = btn.dataset.facetKey;
+    const value = btn.dataset.facetValue;
+    if (key === 'decisions') {
+      if (state.filters.decisions.has(value)) state.filters.decisions.delete(value);
+      else state.filters.decisions.add(value);
+      document.querySelectorAll(`.chip[data-decision="${CSS.escape(value)}"]`).forEach((chip) => {
+        chip.classList.toggle('is-active', state.filters.decisions.has(value));
+        chip.setAttribute('aria-pressed', String(state.filters.decisions.has(value)));
+      });
+    } else {
+      state.filters[key] = state.filters[key] === value ? '' : value;
+      const input = document.getElementById(`filter-${key}`);
+      if (input) input.value = state.filters[key];
+    }
+    renderActivity();
   });
 }
 
@@ -765,6 +861,7 @@ function init() {
 
   wireNav();
   wireFilters();
+  wireActivityInteractions();
   wireCredentials();
   wireTopbar();
   wireLivePulseToggle();
