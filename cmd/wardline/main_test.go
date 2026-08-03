@@ -795,6 +795,62 @@ func TestNewRevokeAuthorizer_PreservesRequestBodyForLaterDecode(t *testing.T) {
 	}
 }
 
+// TestNewReloadAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants mirrors
+// TestNewUnblockAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants:
+// a caller who resolves and holds config:edit must be authorized, and the
+// resolved identity must be returned for the audit trail's AppliedBy.
+func TestNewReloadAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true})
+
+	authz := newReloadAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	identity, ok := authz.Authorize(req)
+	if !ok {
+		t.Fatal("expected Authorize to return true when identity resolves and the checker grants config:edit")
+	}
+	if identity != "alice" {
+		t.Errorf("expected resolved identity %q, got %q", "alice", identity)
+	}
+}
+
+// TestNewReloadAuthorizer_DeniesWhenCheckerDenies mirrors
+// TestNewUnblockAuthorizer_DeniesWhenCheckerDenies: a caller who resolves
+// but lacks config:edit must be denied, with no identity returned.
+func TestNewReloadAuthorizer_DeniesWhenCheckerDenies(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "bob", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: false})
+
+	authz := newReloadAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	identity, ok := authz.Authorize(req)
+	if ok {
+		t.Error("expected Authorize to return false when the checker denies config:edit")
+	}
+	if identity != "" {
+		t.Errorf("expected empty identity on denial, got %q", identity)
+	}
+}
+
+// TestNewReloadAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails
+// mirrors TestNewUnblockAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails:
+// an identity-resolution error must deny outright, without ever reaching
+// the checker (panicIfCalledAuthorizer proves this).
+func TestNewReloadAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{err: errors.New("no identity")}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
+
+	authz := newReloadAuthorizer(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	identity, ok := authz.Authorize(req)
+	if ok {
+		t.Error("expected Authorize to return false when identity resolution fails")
+	}
+	if identity != "" {
+		t.Errorf("expected empty identity when identity resolution fails, got %q", identity)
+	}
+}
+
 // TestRunExportEvidence_NoFeaturesBlock_ManifestFeaturesIsEmptyMapNotNull
 // covers a real operator-facing bug: a wardline.yaml with no top-level
 // features: key decodes cfg.Features as a nil map (yaml.v3's behavior for
