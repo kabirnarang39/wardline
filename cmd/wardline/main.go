@@ -753,18 +753,36 @@ func runServe(logger *slog.Logger, args []string) {
 			unblockAuthorizer = newUnblockAuthorizer(identityAuth, rbacChecker)
 		}
 
+		// reloadBuffer gives operators visibility into every reload attempt
+		// (success or rejection), independent of the audit/domain.Entry
+		// stream -- see reload.ReloadEventBuffer's doc comment for why a
+		// reload event gets its own purpose-built buffer rather than
+		// reusing the general audit log. Capacity: reload events are rare
+		// (operator-triggered), 100 is generous headroom, not a tuned
+		// figure.
+		reloadBuffer := reload.NewReloadEventBuffer(100)
+
 		// reloadCoordinator dispatches POST /dashboard/api/reload/{domain} to
 		// the Task 2/3/4 hot-reload closures built earlier in runServe
 		// (policyReload, rbacReload, budgetReload -- see their own
-		// declarations above). OnAudit is a stub for now: Task 6 fills it in
-		// (log + buffer, not the audit/domain.Entry stream).
+		// declarations above). OnAudit logs the outcome (Info on success,
+		// Warn on rejection -- a rejected reload is exactly as important to
+		// surface as an accepted one) and records it into reloadBuffer for
+		// GET /dashboard/api/reload/history.
 		reloadCoordinator := &reload.ReloadCoordinator{
 			Reloaders: map[string]func() error{
 				"policy": policyReload,
 				"rbac":   rbacReload,
 				"budget": budgetReload,
 			},
-			OnAudit: func(reload.ReloadResult) {},
+			OnAudit: func(result reload.ReloadResult) {
+				if result.OK {
+					logger.Info("config reload applied", "domain", result.Domain, "applied_by", result.AppliedBy)
+				} else {
+					logger.Warn("config reload rejected", "domain", result.Domain, "applied_by", result.AppliedBy, "error", result.Error)
+				}
+				reloadBuffer.Add(result)
+			},
 		}
 
 		// reloadAuth gates POST /dashboard/api/reload/{domain} the same way
@@ -781,7 +799,7 @@ func runServe(logger *slog.Logger, args []string) {
 			reloadAuth = newReloadAuthorizer(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, reloadCoordinator, reloadAuth)
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, reloadCoordinator, reloadAuth, reloadBuffer)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}

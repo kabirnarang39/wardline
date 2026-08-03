@@ -89,6 +89,18 @@ type ReloadAuthorizer interface {
 	Authorize(r *http.Request) (identity string, ok bool)
 }
 
+// ReloadHistorySource is the subset of reload.ReloadEventBuffer's
+// behavior Handler depends on -- same one-method pattern as
+// AnomalySource/FederationSource. handleReloadHistory converts to this
+// package's own domain.ReloadEntry before writing, so the endpoint's
+// wire shape is not tied to reload.ReloadEvent. Gated on
+// PermissionDashboardView like every other read route in this file, NOT
+// config:edit -- viewing history is a read, not a mutation, unlike
+// POST /dashboard/api/reload/{domain} itself.
+type ReloadHistorySource interface {
+	Since(afterID int64, limit int) []reload.ReloadEvent
+}
+
 // TenantScopeResolver derives the effective tenant filter for the
 // caller of a request: empty string means "no filter" (a global,
 // ClusterRoleBinding-scoped caller, or rbac off entirely); a non-empty
@@ -128,6 +140,7 @@ type Handler struct {
 	unblock           UnblockAuthorizer
 	reloadCoordinator *reload.ReloadCoordinator
 	reloadAuth        ReloadAuthorizer
+	reloadHistory     ReloadHistorySource
 	mux               *http.ServeMux
 }
 
@@ -148,9 +161,15 @@ type Handler struct {
 // 404 the same way as every other "not wired" route above. reloadCoordinator
 // and reloadAuth gate POST /dashboard/api/reload/{domain} the same pairing
 // as blocked/unblock above (a source plus its authorizer) -- either nil
-// answers 404 the same way.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth}
+// answers 404 the same way. reloadHistory backs GET
+// /dashboard/api/reload/history -- unlike reloadCoordinator/reloadAuth it
+// needs no separate authorizer of its own: it's a read, gated by the
+// same dashboard:view permission wrapping this whole handler (see
+// main.go), never config:edit. nil (dashboard enabled without the reload
+// buffer wired) answers 404, the same "not wired" posture as every other
+// nil-source route above.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -160,6 +179,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
+	mux.HandleFunc("/dashboard/api/reload/history", h.handleReloadHistory)
 	mux.HandleFunc("/dashboard/api/reload/", h.handleReload)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
@@ -385,6 +405,39 @@ func (h *Handler) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, h.reloadCoordinator.Reload(domainName, appliedBy))
+}
+
+// handleReloadHistory serves GET /dashboard/api/reload/history, the
+// read-only counterpart to POST /dashboard/api/reload/{domain} -- same
+// pagination/writeJSON/nil-source-404 shape as handleAnomalies, but
+// gated only by the dashboard:view permission wrapping this whole
+// handler (see main.go), never config:edit: viewing history is a read,
+// not a mutation. Registered as an exact path so it takes precedence
+// over "/dashboard/api/reload/"'s subtree match (handleReload) for this
+// one literal path -- ServeMux always prefers the more specific pattern.
+func (h *Handler) handleReloadHistory(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.reloadHistory == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	after, limit := pagination(r)
+
+	events := h.reloadHistory.Since(after, limit)
+	entries := make([]domain.ReloadEntry, 0, len(events))
+	for _, e := range events {
+		entries = append(entries, domain.ReloadEntry{
+			ID:        e.ID,
+			Timestamp: e.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Domain:    e.Domain,
+			OK:        e.OK,
+			Error:     e.Error,
+			AppliedBy: e.AppliedBy,
+		})
+	}
+	writeJSON(w, entries)
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
