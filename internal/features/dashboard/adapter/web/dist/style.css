@@ -404,6 +404,105 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
   .chip:active { transform: none; }
 }
 
+/* Facet panel (Activity view): a distinct pattern from the free-text
+   filters/chips above -- surfaces the distinct identity/tool/decision
+   values actually present in the currently-buffered data, with counts,
+   click-to-filter. Both patterns coexist; this doesn't replace either. */
+.facet-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.facet-toggle [data-icon="chevron"] {
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms var(--ease-hover);
+}
+
+.facet-toggle[aria-expanded="true"] [data-icon="chevron"] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .facet-toggle [data-icon="chevron"] {
+    transition: none;
+  }
+}
+
+.facet-panel {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 16px;
+  margin-top: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.facet-group h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.facet-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.facet-group button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.facet-group button:hover {
+  background: var(--mist);
+}
+
+.facet-group button.is-active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.facet-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .table-wrap {
   /* overflow-x: auto here forces overflow-y's computed value to auto too
      (CSS Overflow spec: declaring one axis non-visible converts the other

@@ -133,6 +133,24 @@
               <button class="chip" data-decision="blocked" aria-pressed="false">blocked</button>
             </div>
           </div>
+          <button class="facet-toggle" id="facet-toggle" aria-expanded="false" aria-controls="facet-panel">
+            <span data-icon="chevron" aria-hidden="true"></span>
+            Filter by value
+          </button>
+          <div class="facet-panel" id="facet-panel" hidden>
+            <div class="facet-group">
+              <h3>Identity</h3>
+              <ul id="facet-identity"></ul>
+            </div>
+            <div class="facet-group">
+              <h3>Tool</h3>
+              <ul id="facet-tool"></ul>
+            </div>
+            <div class="facet-group">
+              <h3>Decision</h3>
+              <ul id="facet-decision"></ul>
+            </div>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="audit-table">
