@@ -69,6 +69,92 @@ function withScrollAnchor(tbody, renderRows) {
   container.scrollTop += (newAnchorRow.getBoundingClientRect().top - containerTop) - anchorOffset;
 }
 
+// wireExpandableRows delegates a single click/keydown listener on tbody
+// rather than attaching one per row, so it survives withScrollAnchor's
+// wholesale tbody.innerHTML replacement on every poll tick without
+// needing to be re-wired after each render -- call it once per table
+// right after wiring the table's poll function, not inside the render
+// function itself. detailRenderer(rowId) returns the detail row's inner
+// HTML (already escaped by the caller); colSpan is how many columns the
+// detail row's single <td> must span.
+function wireExpandableRows(tbody, colSpan, detailRenderer) {
+  // Scopes the CSS pointer-cursor/hover affordance (see style.css) to
+  // tables that actually wire this up -- other tr[data-row-id] tables
+  // (Federation) share that attribute for scroll-anchoring only and
+  // shouldn't look clickable.
+  tbody.classList.add('is-expandable');
+
+  // A poll-driven re-render replaces tbody.innerHTML wholesale (see
+  // withScrollAnchor), which would silently strip tabindex/role/aria off
+  // every row along with the markup itself -- re-apply them to whatever
+  // rows land in the DOM on every render instead of requiring each
+  // caller's row template to remember this wiring.
+  const markRowFocusable = (row) => {
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    if (!row.hasAttribute('aria-expanded')) row.setAttribute('aria-expanded', 'false');
+  };
+  tbody.querySelectorAll('tr[data-row-id]').forEach(markRowFocusable);
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.matches('tr[data-row-id]')) markRowFocusable(node);
+        node.querySelectorAll?.('tr[data-row-id]').forEach(markRowFocusable);
+      });
+    }
+  }).observe(tbody, { childList: true });
+
+  function toggleRow(row) {
+    const existingDetail = row.nextElementSibling;
+    if (existingDetail && existingDetail.classList.contains('detail-row')) {
+      existingDetail.remove();
+      row.querySelector('.expand-toggle')?.classList.remove('is-open');
+      row.setAttribute('aria-expanded', 'false');
+      return;
+    }
+
+    // A poll-driven re-render replaces tbody.innerHTML wholesale, which
+    // would silently discard any detail row a prior click opened -- close
+    // every other open detail row first so at most one is ever open,
+    // simplifying what withScrollAnchor's own row-reconciliation has to
+    // account for (this deliberately does NOT try to keep a detail row
+    // open across a poll tick; it closes on next render, matching this
+    // project's "polling never animates or preserves transient UI state"
+    // posture already established for the live-pulse widget).
+    tbody.querySelectorAll('.detail-row').forEach((el) => {
+      el.previousElementSibling?.setAttribute('aria-expanded', 'false');
+      el.remove();
+    });
+    tbody.querySelectorAll('.expand-toggle.is-open').forEach((el) => el.classList.remove('is-open'));
+
+    const rowId = row.dataset.rowId;
+    const detail = document.createElement('tr');
+    detail.className = 'detail-row';
+    detail.innerHTML = `<td colspan="${colSpan}">${detailRenderer(rowId)}</td>`;
+    row.after(detail);
+    row.querySelector('.expand-toggle')?.classList.add('is-open');
+    row.setAttribute('aria-expanded', 'true');
+  }
+
+  tbody.addEventListener('click', (e) => {
+    const row = e.target.closest('tr[data-row-id]');
+    if (!row || !tbody.contains(row)) return;
+    toggleRow(row);
+  });
+
+  // Enter/Space activate the row the same way a click does, matching the
+  // WAI-ARIA disclosure-pattern expectation for a role="button" element.
+  // Space additionally needs preventDefault so it doesn't scroll the page.
+  tbody.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('tr[data-row-id]');
+    if (!row || !tbody.contains(row)) return;
+    e.preventDefault();
+    toggleRow(row);
+  });
+}
+
 function renderActivity() {
   const tbody = document.getElementById('audit-rows');
   const empty = document.getElementById('audit-empty');
