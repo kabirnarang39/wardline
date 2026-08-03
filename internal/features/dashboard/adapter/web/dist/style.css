@@ -64,6 +64,19 @@
   src: url('fonts/space-grotesk-variable.woff2') format('woff2');
 }
 
+/* --- v2/UX-v3 token block (retiring) ---
+   Old-only names (--paper, --mist, --card, --muted, --brand*, --allow/
+   --deny/..., --dark-*, --radius-card) stay live here, unchanged, for
+   every view that hasn't migrated yet (Tasks 2-6 migrate them one at a
+   time; Task 7 deletes this whole block once grep confirms zero
+   survivors). Placed BEFORE the v4 block below on purpose: --ink,
+   --border, --radius-control and --shadow-resting/--shadow-raised are
+   names shared by both systems (old value here, new value below), and
+   for two plain `:root` selectors of equal specificity the cascade
+   takes the LAST declaration in source order -- so the v4 block below
+   deliberately wins on those shared names (dark-first is the new
+   default), while names declared only here are untouched and keep
+   working for unmigrated views. */
 :root {
   --ink: #0B1220;
   --paper: #FFFFFF;
@@ -97,6 +110,34 @@
 
   --shadow-resting: 0 1px 2px rgba(11, 18, 32, 0.06);
   --shadow-raised: 0 8px 24px rgba(11, 18, 32, 0.12);
+}
+
+/* --- v4 dark-first token system (dashboard-visual-v4 Task 1) ---
+   Wins the cascade over the block above for shared names (see comment
+   there); genuinely new names (--surface, --surface-raised, --text,
+   --text-muted, --status-*, --radius-panel) are simply dormant until
+   Tasks 2-6 add rules that consume them. */
+:root {
+  /* Dark-first base */
+  --ink: #0F1419;
+  --surface: #181D23;
+  --surface-raised: #20262E;
+  --border: #2A3038;
+  --text: #E4E7EB;
+  --text-muted: #8B95A1;
+
+  /* Threshold-driven status colors */
+  --status-ok: #3FB950;
+  --status-warn: #D29922;
+  --status-critical: #F85149;
+  --status-info: #58A6FF;
+
+  --radius-panel: 6px;
+  --radius-control: 4px;
+  --radius-pill: 999px;
+
+  --shadow-resting: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-raised: 0 8px 24px rgba(0, 0, 0, 0.4);
 
   --font-heading: 'Space Grotesk', system-ui, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, sans-serif;
@@ -106,6 +147,28 @@
   --ease-hover: ease;
   --duration-micro: 120ms;
   --duration-standard: 200ms;
+}
+
+:root[data-theme="light"] {
+  --ink: #F6F8FA;
+  --surface: #FFFFFF;
+  --surface-raised: #F0F2F5;
+  --border: #D8DEE5;
+  --text: #0F1419;
+  --text-muted: #5B6B82;
+
+  /* Status colors darkened for light-background contrast; independently
+     recomputed via the real relative-luminance formula (see task-1-report.md)
+     -- all 6 pairings clear both the 3:1 non-text and 4.5:1 text floors
+     against #FFFFFF, so no further adjustment from the plan's values was
+     needed. */
+  --status-ok: #1A7F37;
+  --status-warn: #9A6700;
+  --status-critical: #CF222E;
+  --status-info: #0969DA;
+
+  --shadow-resting: 0 1px 2px rgba(15, 20, 25, 0.08);
+  --shadow-raised: 0 8px 24px rgba(15, 20, 25, 0.16);
 }
 
 * { box-sizing: border-box; }

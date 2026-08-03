@@ -844,6 +844,24 @@ function wireTopbar() {
   });
 }
 
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('wardline-theme', theme);
+  const btn = document.getElementById('theme-toggle-btn');
+  btn.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+  btn.innerHTML = `<span data-icon="${theme === 'light' ? 'moon' : 'sun'}" aria-hidden="true"></span>`;
+  mountIcons(btn);
+}
+
+function wireThemeToggle() {
+  const saved = localStorage.getItem('wardline-theme') || 'dark';
+  applyTheme(saved);
+  document.getElementById('theme-toggle-btn').addEventListener('click', () => {
+    const current = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+    applyTheme(current === 'light' ? 'dark' : 'light');
+  });
+}
+
 function init() {
   mountIcons(document);
 
@@ -872,6 +890,7 @@ function init() {
   wireActivityInteractions();
   wireCredentials();
   wireTopbar();
+  wireThemeToggle();
   wireLivePulseToggle();
   document.getElementById('needs-review-cta').addEventListener('click', () => switchView('anomalies'));
   loadStatus();
