@@ -83,11 +83,14 @@ function wireExpandableRows(tbody, colSpan, detailRenderer) {
   // <td> children's implicit table-cell roles (breaks the row/cell
   // ancestor relationship table-structure a11y rules expect), even though
   // it can look fine under manual inspection. Matches this file's other
-  // icon-button controls (.topbar-icon-btn, .pulse-toggle): a real
-  // focusable/labelled element wrapping a decorative aria-hidden icon
-  // span. Every row wired through this primitive is expected to render
-  // one -- rows without a .expand-toggle simply aren't operable, mouse or
-  // keyboard.
+  // icon-button controls (.topbar-icon-btn, .pulse-toggle) in spirit: a
+  // real focusable/labelled element, just rendered via CSS off
+  // data-icon rather than wrapping a nested decorative icon span --
+  // so unlike those controls' inner spans, .expand-toggle itself is the
+  // interactive control and must NEVER carry aria-hidden (asserted
+  // below regardless of what a row template's markup sets). Every row
+  // wired through this primitive is expected to render one -- rows
+  // without a .expand-toggle simply aren't operable, mouse or keyboard.
   function closeToggle(toggle) {
     if (!toggle) return;
     toggle.classList.remove('is-open');
@@ -112,6 +115,11 @@ function wireExpandableRows(tbody, colSpan, detailRenderer) {
     if (!toggle) return;
     toggle.tabIndex = 0;
     toggle.setAttribute('role', 'button');
+    // An interactive control can't also be aria-hidden -- assert this
+    // regardless of what the row markup set, so this function stays the
+    // single source of truth for the toggle's a11y contract instead of
+    // relying on every row template to remember not to set it.
+    toggle.removeAttribute('aria-hidden');
     closeToggle(toggle);
   };
   tbody.querySelectorAll('tr[data-row-id]').forEach(markToggleFocusable);
@@ -251,7 +259,7 @@ function renderActivity() {
   withScrollAnchor(tbody, () => {
     const rows = visible.slice().reverse().map((e) => `
       <tr data-row-id="${escapeHTML(String(e.ID))}">
-        <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron" aria-hidden="true"></span></td>
+        <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron"></span></td>
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
         <td>${escapeHTML(e.Identity)}</td>
         <td>${escapeHTML(e.Tool)}</td>
