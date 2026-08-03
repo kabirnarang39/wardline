@@ -104,6 +104,14 @@ const budgetReapInterval = 1000
 // index if the sweep ever shows up in query timings.
 const reapExpiredBucketsSQL = `DELETE FROM budget_buckets WHERE window_start + ($1 * INTERVAL '1 microsecond') <= $2`
 
+// clearBudgetBucketSQL deletes a single tier's row by its exact key, used
+// by ClearTenantLimit/ClearToolLimit -- unlike reapExpiredBucketsSQL, which
+// only ages rows out by window expiry, this targets a specific
+// now-removed override's row immediately, so a later reload that
+// reintroduces the same override doesn't resume a frozen count/window_start
+// left over from before it was cleared.
+const clearBudgetBucketSQL = `DELETE FROM budget_buckets WHERE key = $1`
+
 // PostgresLimiter is a budget/domain.Limiter backed by a real Postgres
 // database -- the HA-safe alternative to InMemoryLimiter, wired in when
 // both budget_enforcement and postgres_storage are on. Every Allow call
@@ -204,22 +212,45 @@ func (l *PostgresLimiter) SetDefaultLimit(requestsPerWindow int, window time.Dur
 // ClearTenantLimit removes tenantName's override, reverting it to the
 // global default -- mirrors InMemoryLimiter.ClearTenantLimit exactly.
 // tenantLimits is a Go-side map populated from config (see PostgresLimiter's
-// doc comment), not a Postgres row, so this is a plain map delete; the
-// tenant's now-orphaned budget_buckets row (if any) is left for the
-// ordinary reap sweep to clean up on its own schedule, same as any other
-// expired row.
+// doc comment), not a Postgres row, so the map entry is a plain delete; the
+// tenant's budget_buckets row IS also deleted here (same reasoning as
+// InMemoryLimiter.ClearTenantLimit deleting its stale tenantBuckets entry):
+// leaving it would let a later reload that reintroduces the same tenant
+// override resume a frozen count/window_start from before the override was
+// removed, throttling the reintroduced override against usage from a
+// period when, by design, that tier wasn't even being checked. The delete
+// is logged-and-swallowed on failure, same as reapExpired -- a cleanup
+// failure here must not fail the reload itself, and the row would still
+// naturally age out via the ordinary reap sweep as a fallback.
 func (l *PostgresLimiter) ClearTenantLimit(tenantName string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	delete(l.tenantLimits, tenantName)
+	l.mu.Unlock()
+	l.deleteBucketRow("tenant:" + tenantName)
 }
 
 // ClearToolLimit mirrors ClearTenantLimit exactly, for the tool-tier
 // override.
 func (l *PostgresLimiter) ClearToolLimit(toolName string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	delete(l.toolLimits, toolName)
+	l.mu.Unlock()
+	l.deleteBucketRow("tool:" + toolName)
+}
+
+// deleteBucketRow deletes a single budget_buckets row by its exact key --
+// shared by ClearTenantLimit/ClearToolLimit. A failure is logged and
+// swallowed, matching reapExpired's own precedent: this is housekeeping
+// for a rare (reload-time) event, and failing the caller (main.go's
+// reload closure) over it would turn a stale-row cleanup concern into a
+// reload-availability one. Called without l.mu held -- it does its own
+// Postgres round trip, not a map mutation.
+func (l *PostgresLimiter) deleteBucketRow(key string) {
+	ctx, cancel := context.WithTimeout(context.Background(), budgetLimiterTimeout)
+	defer cancel()
+	if _, err := l.db.ExecContext(ctx, clearBudgetBucketSQL, key); err != nil && l.logger != nil {
+		l.logger.Warn("failed to delete cleared override's budget bucket row; it will age out via the ordinary reap sweep instead", "key", key, "error", err)
+	}
 }
 
 // checkAndAdvance runs the atomic upsert for one bucket key and returns
