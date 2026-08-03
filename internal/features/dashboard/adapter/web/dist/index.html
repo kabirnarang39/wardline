@@ -28,10 +28,12 @@
         <button class="nav-item" data-view="anomalies">
           <span class="nav-icon" data-icon="anomalies"></span>
           <span>Anomalies</span>
+          <span class="nav-count" id="nav-count-anomalies" hidden></span>
         </button>
         <button class="nav-item" data-view="blocked">
           <span class="nav-icon" data-icon="blocked"></span>
           <span>Blocked</span>
+          <span class="nav-count" id="nav-count-blocked" hidden></span>
         </button>
         <button class="nav-item" data-view="federation">
           <span class="nav-icon" data-icon="federation"></span>
@@ -140,7 +142,10 @@
 
       <section id="view-activity" class="view" aria-labelledby="view-activity-heading" hidden>
         <div class="view-header">
-          <h1 id="view-activity-heading">Activity</h1>
+          <div>
+            <h1 id="view-activity-heading">Activity</h1>
+            <p class="view-sub" id="activity-subtitle"></p>
+          </div>
           <div class="filters">
             <input type="text" id="filter-identity" placeholder="Filter by identity" aria-label="Filter by identity">
             <input type="text" id="filter-tool" placeholder="Filter by tool" aria-label="Filter by tool">
@@ -194,7 +199,10 @@
 
       <section id="view-anomalies" class="view" aria-labelledby="view-anomalies-heading" hidden>
         <div class="view-header">
-          <h1 id="view-anomalies-heading">Anomalies</h1>
+          <div>
+            <h1 id="view-anomalies-heading">Anomalies</h1>
+            <p class="view-sub">Read-only — detection runs in-process per replica</p>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="audit-table">
@@ -215,7 +223,10 @@
 
       <section id="view-blocked" class="view" aria-labelledby="view-blocked-heading" hidden>
         <div class="view-header">
-          <h1 id="view-blocked-heading">Blocked</h1>
+          <div>
+            <h1 id="view-blocked-heading">Blocked</h1>
+            <p class="view-sub" id="blocked-subtitle"></p>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="audit-table">

@@ -248,6 +248,15 @@ function renderActivity() {
   const empty = document.getElementById('audit-empty');
   const visible = state.entries.filter(passesFilters);
 
+  // Real count of everything currently held in the client-side ring
+  // buffer (state.entries, capped at MAX_CLIENT_ROWS) -- not the filtered
+  // `visible` count, so the subtitle always reflects total buffered
+  // events regardless of the active filters.
+  const subtitle = document.getElementById('activity-subtitle');
+  if (subtitle) {
+    subtitle.textContent = `${state.entries.length.toLocaleString()} buffered event${state.entries.length === 1 ? '' : 's'}`;
+  }
+
   if (visible.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
@@ -263,7 +272,7 @@ function renderActivity() {
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
         <td>${escapeHTML(e.Identity)}</td>
         <td>${escapeHTML(e.Tool)}</td>
-        <td>${escapeHTML(e.Decision)}</td>
+        <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
         <td>${e.LatencyMS}ms</td>
         <td title="${escapeHTML(e.TraceID)}">${escapeHTML(e.TraceID ? e.TraceID.slice(0, 8) : '')}</td>
         <td class="reason-cell" title="${escapeHTML(e.Reason)}">${escapeHTML(e.Reason)}</td>
@@ -448,6 +457,15 @@ function renderBlockedTable() {
   const empty = document.getElementById('blocked-empty');
   const entries = state.blocked;
 
+  // Every entry BlockedSource.List() returns is by definition a live,
+  // time-bounded block (BlockedEntry.BlockedUntil) -- real data, same
+  // count already shown by the Overview KPI and status band, so "active
+  // time-bounded block(s)" is honest rather than borrowed decoration.
+  const subtitle = document.getElementById('blocked-subtitle');
+  if (subtitle) {
+    subtitle.textContent = `${entries.length} active time-bounded block${entries.length === 1 ? '' : 's'}`;
+  }
+
   if (entries.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
@@ -529,6 +547,23 @@ function renderKPIs() {
   document.getElementById('kpi-deny-rate').textContent = `${denyRate}%`;
   document.getElementById('kpi-anomalies').textContent = String(state.anomalies.length);
   document.getElementById('kpi-blocked').textContent = String(state.blocked.length);
+
+  // Sidebar nav-count badges reuse these exact same counts (state.anomalies
+  // .length / state.blocked.length) -- sourced once here, not recomputed
+  // independently -- and hide entirely at zero rather than showing "0".
+  updateNavCount('nav-count-anomalies', state.anomalies.length);
+  updateNavCount('nav-count-blocked', state.blocked.length);
+}
+
+function updateNavCount(elementID, count) {
+  const el = document.getElementById(elementID);
+  if (!el) return;
+  if (count > 0) {
+    el.hidden = false;
+    el.textContent = String(count);
+  } else {
+    el.hidden = true;
+  }
 }
 
 // BUCKET_MINUTES are candidate bucket widths, smallest first. bucketEntries

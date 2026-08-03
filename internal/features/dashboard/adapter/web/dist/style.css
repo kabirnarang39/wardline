@@ -144,6 +144,7 @@
      used as a 4px left-border accent, never as text) -- see
      task-3-report.md for the full WCAG computation. */
   --status-critical-severe: #C93A26;
+  --status-critical-severe-soft: rgba(201, 58, 38, 0.16);
 
   --radius-panel: 6px;
   --radius-control: 4px;
@@ -188,6 +189,7 @@
      (#991B1B) used, so the "blocked is the darker, more settled red"
      visual convention carries over from v2 into v4. */
   --status-critical-severe: #8B1119;
+  --status-critical-severe-soft: rgba(139, 17, 25, 0.10);
 
   --shadow-resting: 0 1px 2px rgba(15, 20, 25, 0.08);
   --shadow-raised: 0 8px 24px rgba(15, 20, 25, 0.16);
@@ -301,6 +303,18 @@ button, input {
 
 .nav-item:hover { background: var(--surface-raised); color: var(--text); }
 .nav-item.is-active { background: var(--surface-raised); color: var(--status-info); font-weight: 600; }
+
+.nav-item .nav-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--font-data);
+  color: var(--text-muted);
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+}
+.nav-item.is-active .nav-count { color: var(--status-info); border-color: var(--status-info); }
 
 .nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
 
@@ -481,6 +495,8 @@ button, input {
 }
 
 h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
+
+.view-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
 
 .filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
@@ -680,6 +696,9 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   position: sticky;
   top: 0;
   background: var(--surface);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10.5px;
 }
 
 .audit-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
@@ -702,6 +721,31 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .decision-cell[data-decision="throttled"]::before { background: var(--status-warn); }
 .decision-cell[data-decision="passthrough"]::before { background: var(--text-muted); }
 .decision-cell[data-decision="blocked"]::before { background: var(--status-critical-severe); }
+
+/* .pill (Task 6b): Activity's Decision column, rendered as
+   `<span class="pill" data-decision="...">` -- keyed off the exact same
+   [data-decision="..."] values as .decision-cell just above, so a given
+   decision is always the same color as both its row-accent border and
+   its pill text. Each variant pairs full-opacity text with a low-opacity
+   "soft" background of the same status token; passthrough has no
+   dedicated soft token (it isn't a status color, just muted text) so it
+   reuses --surface-raised for its background, matching the reference
+   prototype's own .pill.muted rule exactly. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+.pill[data-decision="allow"] { color: var(--status-ok); background: var(--status-ok-soft); }
+.pill[data-decision="deny"],
+.pill[data-decision="error"] { color: var(--status-critical); background: var(--status-critical-soft); }
+.pill[data-decision="throttled"] { color: var(--status-warn); background: var(--status-warn-soft); }
+.pill[data-decision="passthrough"] { color: var(--text-muted); background: var(--surface-raised); }
+.pill[data-decision="blocked"] { color: var(--status-critical-severe); background: var(--status-critical-severe-soft); }
 
 /* Federation accent (M3): a --federation-colored left-border accent on
    each Federation row's first cell, mirroring .decision-cell's own
@@ -916,7 +960,25 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 .status-subheading { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
 
-.feature-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* 2-column grid (Task 6b): the 1px gap is filled with --border so it
+   reads as a hairline divider between cells, matching the reference
+   prototype's .feature-grid/.feature-cell effect exactly -- each
+   .feature-list li supplies its own --surface background and the grid
+   gap shows through only in the 1px seams between them (and in place of
+   any missing cell on an odd-count last row, where it reads as a
+   continuation of the divider rather than a broken box). */
+.feature-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
 
 .feature-list li {
   display: flex;
@@ -926,10 +988,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   font-size: 14px;
   padding: 12px 16px;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
   color: var(--text);
 }
+
+/* Odd feature count (this app's real config-driven set, e.g. 3 enabled
+   features) otherwise leaves the last row's second column empty --
+   visually a bare --border-colored box, not a clean hairline. Spanning
+   the lone trailing item across both columns instead removes the empty
+   box entirely. */
+.feature-list li:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
 .feature-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .feature-dot.is-on { background: var(--status-ok); }
@@ -976,7 +1043,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   padding: 16px;
 }
 
-.kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; }
+.kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
 .kpi-value { font-family: var(--font-data); font-size: 24px; font-weight: 700; color: var(--text); }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
