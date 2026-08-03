@@ -460,6 +460,73 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--ink); }
 #federation-rows tr td:first-child { position: relative; padding-left: 20px; }
 #federation-rows tr td:first-child::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--federation); }
 
+/* Expandable rows (shared primitive, wired via wireExpandableRows).
+   Scoped to tbody.is-expandable (a class wireExpandableRows adds itself)
+   rather than the bare `tr[data-row-id]` attribute selector -- that
+   attribute is also used by withScrollAnchor's scroll-anchoring on
+   tables (Federation) that don't call wireExpandableRows, so scoping by
+   attribute alone would paint a pointer cursor + hover affordance on
+   rows that don't actually do anything when clicked. */
+.audit-table tbody.is-expandable tr[data-row-id] {
+  cursor: pointer;
+}
+
+.audit-table tbody.is-expandable tr[data-row-id]:hover {
+  background: var(--mist);
+}
+
+/* Bumps row height to a 44px touch target on expandable tables only --
+   left the base .audit-table td padding alone so Federation/Blocked
+   density is unaffected. */
+.audit-table tbody.is-expandable tr[data-row-id] td {
+  padding-top: 15px;
+  padding-bottom: 15px;
+}
+
+.expand-toggle {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  transition: transform 150ms var(--ease-hover);
+}
+
+.expand-toggle.is-open {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .expand-toggle {
+    transition: none;
+  }
+}
+
+.detail-row td {
+  background: var(--mist);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-data);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.detail-row dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.detail-row dt {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-weight: 500;
+}
+
+.detail-row dd {
+  margin: 0;
+}
+
 .empty-state { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 14px; }
 
 /* Destructive row action (Blocked view's Unblock; Task 5's credential-revoke
