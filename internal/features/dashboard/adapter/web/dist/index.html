@@ -55,6 +55,10 @@
           <span class="nav-icon" data-icon="rbac"></span>
           <span>RBAC</span>
         </button>
+        <button class="nav-item" data-view="budget">
+          <span class="nav-icon" data-icon="budget"></span>
+          <span>Budget</span>
+        </button>
       </div>
 
       <div class="sidebar-group">
@@ -310,6 +314,26 @@
           <div class="panel">
             <div class="panel-title-bar">Bindings</div>
             <div id="rbac-binding-list" class="rbac-binding-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-budget" class="view" aria-labelledby="view-budget-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-budget-heading">Budget</h1>
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="panel-title-bar">Default limit</div>
+          <dl class="status-grid" id="budget-default-grid"></dl>
+        </div>
+        <div class="panel">
+          <div class="panel-title-bar">Overrides</div>
+          <div class="table-wrap">
+            <table class="audit-table">
+              <thead><tr><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Limit</th><th scope="col">Window</th></tr></thead>
+              <tbody id="budget-override-rows"></tbody>
+            </table>
+            <p id="budget-override-empty" class="empty-state" hidden>No tenant or tool overrides configured — every identity uses the default limit above.</p>
           </div>
         </div>
       </section>

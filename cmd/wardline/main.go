@@ -750,7 +750,19 @@ func runServe(logger *slog.Logger, args []string) {
 			rbacSource = rbacAuthorizer
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource)
+		// budgetSource backs GET /dashboard/api/budget with the same real,
+		// already-constructed limiter budgetChecker reads from -- nil
+		// (budget_enforcement off) makes that route answer 404, the same
+		// "not wired" posture as every other optional Source above. limiter
+		// itself is never nil (an InMemoryLimiter backs it even when the
+		// feature is off, harmlessly unused by budgetChecker), so the nil
+		// check has to happen here, not by testing limiter directly.
+		var budgetSource dashboardadapter.BudgetSource
+		if budgetEnforcementEnabled {
+			budgetSource = limiter
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}

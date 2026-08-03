@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -837,6 +837,40 @@ async function renderRBAC() {
   }
 }
 
+// renderBudget populates the read-only Budget screen's default-limit grid
+// and overrides table from a single fetchBudget() response -- this data
+// can't change at runtime today (no hot-reload wiring yet, see
+// task-8-budget-screen-brief.md), so it's fetched once per view-switch,
+// same posture as renderRBAC/loadPolicy/loadStatus above, not polled on
+// an interval like Activity/Anomalies/Federation.
+async function renderBudget() {
+  const grid = document.getElementById('budget-default-grid');
+  const rows = document.getElementById('budget-override-rows');
+  const empty = document.getElementById('budget-override-empty');
+  try {
+    const { default: def, overrides } = await fetchBudget();
+    grid.innerHTML = `
+      <div><dt>Requests / window</dt><dd>${def.requests_per_window}</dd></div>
+      <div><dt>Window</dt><dd>${def.window_seconds}s</dd></div>
+    `;
+    rows.innerHTML = (overrides || []).map((o) => `
+      <tr>
+        <td><span class="pill ${o.scope === 'tenant' ? 'info' : 'muted'}">${escapeHTML(o.scope)}</span></td>
+        <td>${escapeHTML(o.name)}</td>
+        <td>${o.requests_per_window}</td>
+        <td>${o.window_seconds}s</td>
+      </tr>
+    `).join('');
+    empty.hidden = (overrides || []).length > 0;
+  } catch (err) {
+    console.error('budget fetch failed:', err);
+    grid.innerHTML = '';
+    rows.innerHTML = '';
+    empty.hidden = true;
+    grid.textContent = 'Failed to load budget data — try refreshing.';
+  }
+}
+
 function formatUptime(totalSeconds) {
   const s = totalSeconds % 60;
   const m = Math.floor(totalSeconds / 60) % 60;
@@ -860,6 +894,7 @@ function switchView(name) {
   if (name === 'policy') loadPolicy();
   if (name === 'status') loadStatus();
   if (name === 'rbac') renderRBAC();
+  if (name === 'budget') renderBudget();
 }
 
 function wireNav() {

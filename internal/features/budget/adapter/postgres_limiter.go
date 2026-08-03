@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -186,6 +187,41 @@ func (l *PostgresLimiter) SetToolLimit(toolName string, requestsPerWindow int, w
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// DefaultLimit returns the global (non-override) rate limit. Mirrors
+// InMemoryLimiter.DefaultLimit exactly.
+func (l *PostgresLimiter) DefaultLimit() domain.LimitInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return domain.LimitInfo{RequestsPerWindow: l.requestsPerWindow, Window: l.window}
+}
+
+// TenantOverrides returns every configured tenant-scoped override, sorted
+// by name for stable output. Mirrors InMemoryLimiter.TenantOverrides
+// exactly.
+func (l *PostgresLimiter) TenantOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.tenantLimits))
+	for name, lim := range l.tenantLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tenant", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ToolOverrides returns every configured tool-scoped override, sorted by
+// name for stable output. Mirrors InMemoryLimiter.ToolOverrides exactly.
+func (l *PostgresLimiter) ToolOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.toolLimits))
+	for name, lim := range l.toolLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tool", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // checkAndAdvance runs the atomic upsert for one bucket key and returns

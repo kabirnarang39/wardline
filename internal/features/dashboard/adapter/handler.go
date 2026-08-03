@@ -9,6 +9,7 @@ import (
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
@@ -62,6 +63,15 @@ type RBACSource interface {
 	Roles() []rbacdomain.Role
 	ClusterRoleBindings() []rbacdomain.ClusterRoleBinding
 	RoleBindings() []rbacdomain.RoleBinding
+}
+
+// BudgetSource is the subset of budgetdomain.Limiter's behavior Handler
+// depends on -- read-only, matching every other Source interface's narrow
+// pattern in this file.
+type BudgetSource interface {
+	DefaultLimit() budgetdomain.LimitInfo
+	TenantOverrides() []budgetdomain.OverrideInfo
+	ToolOverrides() []budgetdomain.OverrideInfo
 }
 
 // UnblockAuthorizer decides whether a caller may clear an active
@@ -120,6 +130,7 @@ type Handler struct {
 	scope      TenantScopeResolver
 	unblock    UnblockAuthorizer
 	rbac       RBACSource
+	budget     BudgetSource
 	mux        *http.ServeMux
 }
 
@@ -139,9 +150,10 @@ type Handler struct {
 // off) -- DELETE /dashboard/api/anomalies/blocked/{identity} then answers
 // 404 the same way as every other "not wired" route above. rbac may
 // likewise be nil (rbac is off) -- GET /dashboard/api/rbac then answers
-// 404 the same way.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac}
+// 404 the same way. budget may likewise be nil (budget_enforcement is
+// off) -- GET /dashboard/api/budget then answers 404 the same way.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -152,6 +164,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
 	mux.HandleFunc("/dashboard/api/rbac", h.handleRBAC)
+	mux.HandleFunc("/dashboard/api/budget", h.handleBudget)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -385,6 +398,34 @@ func (h *Handler) handleRBAC(w http.ResponseWriter, r *http.Request) {
 		Roles    []domain.RoleEntry    `json:"roles"`
 		Bindings []domain.BindingEntry `json:"bindings"`
 	}{roles, bindings})
+}
+
+// handleBudget serves GET /dashboard/api/budget -- a read-only snapshot of
+// the global default rate limit and every tenant/tool override h.budget
+// (the real budgetdomain.Limiter, wired in main.go) currently holds.
+// Gated only by the outer dashboard:view RequirePermission wrap around the
+// whole /dashboard/ tree in main.go -- never config:edit, since this is a
+// read, not a mutation, and no edit capability exists yet.
+func (h *Handler) handleBudget(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.budget == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	def := h.budget.DefaultLimit()
+	overrides := make([]domain.BudgetOverrideEntry, 0)
+	for _, o := range h.budget.TenantOverrides() {
+		overrides = append(overrides, domain.BudgetOverrideEntry{Scope: o.Scope, Name: o.Name, RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())})
+	}
+	for _, o := range h.budget.ToolOverrides() {
+		overrides = append(overrides, domain.BudgetOverrideEntry{Scope: o.Scope, Name: o.Name, RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())})
+	}
+	writeJSON(w, struct {
+		Default   domain.BudgetDefaultEntry    `json:"default"`
+		Overrides []domain.BudgetOverrideEntry `json:"overrides"`
+	}{domain.BudgetDefaultEntry{RequestsPerWindow: def.RequestsPerWindow, WindowSeconds: int(def.Window.Seconds())}, overrides})
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
