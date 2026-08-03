@@ -211,12 +211,25 @@ button, input {
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 240px;
+  width: 256px;
   flex-shrink: 0;
   padding: 24px 16px;
-  background: var(--card);
+  background: var(--surface);
   border-right: 1px solid var(--border);
   gap: 4px;
+}
+
+.sidebar-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+.sidebar-group:last-of-type { margin-bottom: 0; }
+
+.sidebar-group-label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 12px 6px;
 }
 
 .brand {
@@ -257,15 +270,15 @@ button, input {
   border-radius: var(--radius-control);
   text-align: left;
   cursor: pointer;
-  color: var(--muted);
+  color: var(--text-muted);
   font-family: var(--font-body);
   font-weight: 500;
   font-size: 15px;
   transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
-.nav-item:hover { background: var(--mist); color: var(--ink); }
-.nav-item.is-active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.nav-item:hover { background: var(--surface-raised); color: var(--text); }
+.nav-item.is-active { background: var(--surface-raised); color: var(--status-info); font-weight: 600; }
 
 .nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
 
@@ -303,7 +316,7 @@ button, input {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 0 20px;
-  background: var(--mist);
+  background: var(--ink);
 }
 
 .topbar-search {
@@ -314,16 +327,17 @@ button, input {
   max-width: 360px;
   min-height: 44px;
   padding: 0 14px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
 
-.topbar-search-icon { width: 16px; height: 16px; color: var(--muted); flex-shrink: 0; }
+.topbar-search-icon { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
 
 .topbar-search input {
   border: none;
   background: transparent;
+  color: var(--text);
   width: 100%;
   min-height: 44px;
   font-size: 14px;
@@ -338,14 +352,14 @@ button, input {
   justify-content: center;
   width: 44px;
   height: 44px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   cursor: pointer;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
-.topbar-icon-btn:hover { color: var(--ink); background: var(--mist); }
+.topbar-icon-btn:hover { color: var(--text); background: var(--surface-raised); }
 .topbar-icon-btn svg { width: 18px; height: 18px; }
 
 .notification-badge {
@@ -356,8 +370,8 @@ button, input {
   height: 16px;
   padding: 0 3px;
   border-radius: var(--radius-pill);
-  background: var(--deny);
-  color: var(--paper);
+  background: var(--status-critical);
+  color: #FFFFFF; /* fixed white-on-critical-red text, not a surface token -- readable in both themes since --status-critical is always a saturated red */
   font-size: 10px;
   font-weight: 700;
   display: flex;
@@ -374,7 +388,7 @@ button, input {
   gap: 8px;
   min-height: 44px;
   padding: 0 12px;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
@@ -383,16 +397,16 @@ button, input {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--brand-soft);
-  color: var(--brand);
+  background: var(--surface-raised);
+  color: var(--status-info);
   padding: 4px;
 }
 
 .identity-tenant-badge {
   font-size: 12px;
   font-weight: 600;
-  color: var(--brand);
-  background: var(--brand-soft);
+  color: var(--status-info);
+  background: var(--surface-raised);
   padding: 2px 8px;
   border-radius: var(--radius-pill);
 }

@@ -10,38 +10,55 @@
   <div id="app">
     <nav class="sidebar" aria-label="Dashboard sections">
       <div class="brand"><span class="brand-mark" aria-hidden="true">│</span>Wardline</div>
-      <button class="nav-item is-active" data-view="overview" aria-current="page">
-        <span class="nav-icon" data-icon="overview"></span>
-        <span>Overview</span>
-      </button>
-      <button class="nav-item" data-view="activity">
-        <span class="nav-icon" data-icon="activity"></span>
-        <span>Activity</span>
-      </button>
-      <button class="nav-item" data-view="anomalies">
-        <span class="nav-icon" data-icon="anomalies"></span>
-        <span>Anomalies</span>
-      </button>
-      <button class="nav-item" data-view="blocked">
-        <span class="nav-icon" data-icon="blocked"></span>
-        <span>Blocked</span>
-      </button>
-      <button class="nav-item" data-view="federation">
-        <span class="nav-icon" data-icon="federation"></span>
-        <span>Federation</span>
-      </button>
-      <button class="nav-item" data-view="credentials">
-        <span class="nav-icon" data-icon="credentials"></span>
-        <span>Credentials</span>
-      </button>
-      <button class="nav-item" data-view="policy">
-        <span class="nav-icon" data-icon="policy"></span>
-        <span>Policy</span>
-      </button>
-      <button class="nav-item" data-view="status">
-        <span class="nav-icon" data-icon="status"></span>
-        <span>Status</span>
-      </button>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Overview</div>
+        <button class="nav-item is-active" data-view="overview" aria-current="page">
+          <span class="nav-icon" data-icon="overview"></span>
+          <span>Overview</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Observability</div>
+        <button class="nav-item" data-view="activity">
+          <span class="nav-icon" data-icon="activity"></span>
+          <span>Activity</span>
+        </button>
+        <button class="nav-item" data-view="anomalies">
+          <span class="nav-icon" data-icon="anomalies"></span>
+          <span>Anomalies</span>
+        </button>
+        <button class="nav-item" data-view="blocked">
+          <span class="nav-icon" data-icon="blocked"></span>
+          <span>Blocked</span>
+        </button>
+        <button class="nav-item" data-view="federation">
+          <span class="nav-icon" data-icon="federation"></span>
+          <span>Federation</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Configuration</div>
+        <button class="nav-item" data-view="credentials">
+          <span class="nav-icon" data-icon="credentials"></span>
+          <span>Credentials</span>
+        </button>
+        <button class="nav-item" data-view="policy">
+          <span class="nav-icon" data-icon="policy"></span>
+          <span>Policy</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">System</div>
+        <button class="nav-item" data-view="status">
+          <span class="nav-icon" data-icon="status"></span>
+          <span>Status</span>
+        </button>
+      </div>
+
       <div class="live-indicator" id="live-indicator" role="status" aria-live="polite">
         <span class="live-dot" id="live-dot"></span>
         <span id="live-label">Live</span>
