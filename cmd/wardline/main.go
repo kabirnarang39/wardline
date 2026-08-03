@@ -451,6 +451,8 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
+	budgetReload := newBudgetReloadFn(limiter, *configPath, cfg.Budget.Tenants, cfg.Budget.Tools)
+	_ = budgetReload // wired into the ReloadCoordinator's reloaders["budget"] in a later task
 
 	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)
 	if err != nil {
@@ -1395,6 +1397,63 @@ func newRBACReloadFn(rbacHolder *reload.ReloadableEngine[rbacdomain.Authorizer],
 			)
 		}
 		rbacHolder.Swap(&newAuthorizer)
+		return nil
+	}
+}
+
+// newBudgetReloadFn builds the budget hot-reload closure. Unlike
+// newPolicyReloadFn/newRBACReloadFn, it never constructs a new Limiter or
+// calls any ReloadableEngine.Swap -- InMemoryLimiter and PostgresLimiter
+// both hold live, in-flight per-identity/tenant/tool request counters, and
+// swapping the whole instance would silently reset every currently-tracked
+// counter to zero, letting a caller briefly burst past their real limit at
+// the exact moment a reload happens. Instead this re-reads the config file
+// at configPath and updates the SAME running limiter's thresholds in
+// place via SetDefaultLimit/SetTenantLimit/SetToolLimit.
+//
+// initialTenants/initialTools seed the closure's own before/after diff
+// (config.BudgetConfig is Budget.Tenants/Budget.Tools's real map value
+// type) with the config the process actually started with, so the very
+// first reload can already tell whether an override was removed.
+// SetTenantLimit/SetToolLimit alone can only add or update an override,
+// never remove one -- a tenant/tool present in the PREVIOUS config but
+// absent from the new one is explicitly cleared via
+// ClearTenantLimit/ClearToolLimit so a removed override doesn't survive as
+// a stale leftover forever. config.Load's own validate() already rejects
+// a negative/zero RequestsPerWindow/WindowSeconds before this closure ever
+// runs, so no extra defense-in-depth check is needed here.
+func newBudgetReloadFn(limiter budgetdomain.Limiter, configPath string, initialTenants, initialTools map[string]config.BudgetConfig) func() error {
+	previousBudgetTenants := initialTenants
+	previousBudgetTools := initialTools
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload budget: %w", err)
+		}
+		limiter.SetDefaultLimit(newCfg.Budget.RequestsPerWindow, time.Duration(newCfg.Budget.WindowSeconds)*time.Second)
+
+		// Clear overrides present in the OLD config but absent from the
+		// new one, so a removed override doesn't survive as a stale
+		// leftover.
+		for tenantName := range previousBudgetTenants {
+			if _, stillPresent := newCfg.Budget.Tenants[tenantName]; !stillPresent {
+				limiter.ClearTenantLimit(tenantName)
+			}
+		}
+		for tenantName, tenantCfg := range newCfg.Budget.Tenants {
+			limiter.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
+		}
+		for toolName := range previousBudgetTools {
+			if _, stillPresent := newCfg.Budget.Tools[toolName]; !stillPresent {
+				limiter.ClearToolLimit(toolName)
+			}
+		}
+		for toolName, toolCfg := range newCfg.Budget.Tools {
+			limiter.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+		}
+
+		previousBudgetTenants = newCfg.Budget.Tenants // update tracking for the NEXT reload's diff
+		previousBudgetTools = newCfg.Budget.Tools
 		return nil
 	}
 }

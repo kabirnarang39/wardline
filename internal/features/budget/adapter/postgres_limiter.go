@@ -188,6 +188,40 @@ func (l *PostgresLimiter) SetToolLimit(toolName string, requestsPerWindow int, w
 	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
 }
 
+// SetDefaultLimit updates the global (non-override) rate limit in place,
+// without resetting any identity's already-tracked usage in Postgres --
+// mirrors InMemoryLimiter.SetDefaultLimit exactly. The bucket *state*
+// lives in the budget_buckets table, keyed by identity/tenant/tool, and
+// is untouched here -- only the threshold checkAndAdvance compares
+// against changes.
+func (l *PostgresLimiter) SetDefaultLimit(requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.requestsPerWindow = requestsPerWindow
+	l.window = window
+}
+
+// ClearTenantLimit removes tenantName's override, reverting it to the
+// global default -- mirrors InMemoryLimiter.ClearTenantLimit exactly.
+// tenantLimits is a Go-side map populated from config (see PostgresLimiter's
+// doc comment), not a Postgres row, so this is a plain map delete; the
+// tenant's now-orphaned budget_buckets row (if any) is left for the
+// ordinary reap sweep to clean up on its own schedule, same as any other
+// expired row.
+func (l *PostgresLimiter) ClearTenantLimit(tenantName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.tenantLimits, tenantName)
+}
+
+// ClearToolLimit mirrors ClearTenantLimit exactly, for the tool-tier
+// override.
+func (l *PostgresLimiter) ClearToolLimit(toolName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.toolLimits, toolName)
+}
+
 // checkAndAdvance runs the atomic upsert for one bucket key and returns
 // the resulting domain.Verdict. The only error it returns is a genuine
 // Postgres failure (connection, timeout) -- callers must fail open on a
