@@ -56,6 +56,7 @@ import (
 	scimusecase "github.com/kabirnarang39/wardline/internal/features/scim/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
 	"github.com/kabirnarang39/wardline/internal/platform/version"
 )
@@ -144,6 +145,9 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
+	policyHolder := reload.NewReloadableEngine(&engine)
+	policyReload := newPolicyReloadFn(policyHolder, *configPath)
+	_ = policyReload // wired into the ReloadCoordinator's reloaders["policy"] in a later task
 
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
@@ -401,7 +405,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDecider(engine)
+	decider := proxyusecase.NewDeciderWithHolder(policyHolder)
 
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
@@ -1294,6 +1298,30 @@ func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
 		return policyadapter.LoadFile(path)
 	default:
 		return nil, fmt.Errorf("unknown policy backend %q (want \"yaml\", \"opa\", or \"cedar\")", backend)
+	}
+}
+
+// newPolicyReloadFn builds the policy hot-reload closure: it re-reads the
+// config file at configPath and re-runs loadPolicyEngine -- the exact same
+// construction path runServe used at startup -- against whatever
+// policy_file/policy_backend that config currently names. It only calls
+// policyHolder.Swap when construction fully succeeds: a config-load,
+// parse, or validation error is returned to the caller and Swap is never
+// reached, so the previously-loaded engine keeps enforcing every request
+// completely untouched. This closure is what a later task registers with
+// the ReloadCoordinator under reloaders["policy"].
+func newPolicyReloadFn(policyHolder *reload.ReloadableEngine[policydomain.Engine], configPath string) func() error {
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload policy: %w", err)
+		}
+		newEngine, err := loadPolicyEngine(newCfg.PolicyBackend, newCfg.PolicyFile)
+		if err != nil {
+			return fmt.Errorf("reload policy: %w", err)
+		}
+		policyHolder.Swap(&newEngine)
+		return nil
 	}
 }
 
