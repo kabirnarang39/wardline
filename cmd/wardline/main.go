@@ -147,7 +147,6 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	policyHolder := reload.NewReloadableEngine(&engine)
 	policyReload := newPolicyReloadFn(policyHolder, *configPath)
-	_ = policyReload // wired into the ReloadCoordinator's reloaders["policy"] in a later task
 
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
@@ -452,7 +451,6 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
 	budgetReload := newBudgetReloadFn(limiter, *configPath, cfg.Budget.Tenants, cfg.Budget.Tools)
-	_ = budgetReload // wired into the ReloadCoordinator's reloaders["budget"] in a later task
 
 	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)
 	if err != nil {
@@ -569,7 +567,6 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	rbacReload := newRBACReloadFn(rbacHolder, *configPath, rbacEnabled, scimEnabled, scimBindingStore)
-	_ = rbacReload // wired into the ReloadCoordinator's reloaders["rbac"] in a later task
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
 	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
@@ -756,7 +753,35 @@ func runServe(logger *slog.Logger, args []string) {
 			unblockAuthorizer = newUnblockAuthorizer(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer)
+		// reloadCoordinator dispatches POST /dashboard/api/reload/{domain} to
+		// the Task 2/3/4 hot-reload closures built earlier in runServe
+		// (policyReload, rbacReload, budgetReload -- see their own
+		// declarations above). OnAudit is a stub for now: Task 6 fills it in
+		// (log + buffer, not the audit/domain.Entry stream).
+		reloadCoordinator := &reload.ReloadCoordinator{
+			Reloaders: map[string]func() error{
+				"policy": policyReload,
+				"rbac":   rbacReload,
+				"budget": budgetReload,
+			},
+			OnAudit: func(reload.ReloadResult) {},
+		}
+
+		// reloadAuth gates POST /dashboard/api/reload/{domain} the same way
+		// unblockAuthorizer just above gates DELETE
+		// /dashboard/api/anomalies/blocked/{identity} -- via an injected
+		// Authorizer requiring a specific permission (config:edit here,
+		// credential:revoke there), never via a second top-level
+		// rbacadapter.RequirePermission wrap around the whole /dashboard/
+		// tree (that would only ever let dashboard:view gate it). nil when
+		// rbac is off, matching unblockAuthorizer's own nil posture: this
+		// mutation is unavailable entirely without rbac, not merely ungated.
+		var reloadAuth dashboardadapter.ReloadAuthorizer
+		if rbacEnabled {
+			reloadAuth = newReloadAuthorizer(identityAuth, rbacChecker)
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, reloadCoordinator, reloadAuth)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1053,6 +1078,13 @@ func (f unblockAuthorizerFunc) AllowedFor(r *http.Request, targetTenant string) 
 	return f(r, targetTenant)
 }
 
+// reloadAuthorizerFunc adapts a plain function to
+// dashboardadapter.ReloadAuthorizer, mirroring unblockAuthorizerFunc's
+// exact pattern immediately above.
+type reloadAuthorizerFunc func(r *http.Request) (identity string, ok bool)
+
+func (f reloadAuthorizerFunc) Authorize(r *http.Request) (string, bool) { return f(r) }
+
 // tenantScopeResolverFunc adapts a plain function to
 // dashboardadapter.TenantScopeResolver, matching revokeAuthorizerFunc's
 // pattern immediately above -- the scopeResolver closure built in
@@ -1121,6 +1153,32 @@ func newUnblockAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, check
 		// Cross-tenant authority must come from THIS permission (the one
 		// this mutation actually exercises), never from dashboard:view.
 		return targetTenant == "" || targetTenant == callerTenant || checker.IsGlobal(who, rbacdomain.PermissionCredentialRevoke)
+	})
+}
+
+// newReloadAuthorizer builds the dashboardadapter.ReloadAuthorizer wired
+// into POST /dashboard/api/reload/{domain} when rbac is on: a caller is
+// allowed through only if identity resolves and the resolved identity
+// holds config:edit -- the new, stricter permission tier for hot-reload
+// mutations (see rbacdomain.PermissionConfigEdit's doc comment), gated
+// separately from the read-only dashboard:view permission the rest of
+// the dashboard route relies on. Reload is not tenant-scoped (policy/
+// rbac/budget config applies cluster-wide, there is no per-tenant reload
+// target to check cross-tenant authority against), so this mirrors
+// newUnblockAuthorizer's identity-resolution/permission-check shape but
+// has no cross-tenant escape-hatch check to make. Returns the resolved
+// identity on success so ReloadResult.AppliedBy can carry it into the
+// audit trail.
+func newReloadAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.ReloadAuthorizer {
+	return reloadAuthorizerFunc(func(r *http.Request) (string, bool) {
+		who, callerTenant, err := identityAuth.Authenticate(r)
+		if err != nil {
+			return "", false
+		}
+		if !checker.Check(who, callerTenant, rbacdomain.PermissionConfigEdit) {
+			return "", false
+		}
+		return who, true
 	})
 }
 

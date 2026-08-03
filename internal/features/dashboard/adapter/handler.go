@@ -11,6 +11,7 @@ import (
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
 // AuditSource is the subset of RingBuffer's behavior Handler depends on —
@@ -72,6 +73,22 @@ type UnblockAuthorizer interface {
 	AllowedFor(r *http.Request, targetTenant string) bool
 }
 
+// ReloadAuthorizer decides whether a caller may trigger a hot-reload of
+// policy/rbac/budget configuration via POST
+// /dashboard/api/reload/{domain}, gating that mutation the same way
+// UnblockAuthorizer gates handleUnblock -- via an injected Authorizer
+// requiring a specific permission (config:edit here, credential:revoke
+// there), separately from the read-only dashboard:view permission the
+// rest of this file's routes rely on. Unlike UnblockAuthorizer, Authorize
+// also returns the resolved caller identity: ReloadResult.AppliedBy needs
+// it for the audit trail, and a bare AllowedFor(r) bool has nowhere to
+// carry that value back out. nil means "not wired" (rbac off) --
+// handleReload then answers 404, the same posture as every other
+// nil-source route in this file.
+type ReloadAuthorizer interface {
+	Authorize(r *http.Request) (identity string, ok bool)
+}
+
 // TenantScopeResolver derives the effective tenant filter for the
 // caller of a request: empty string means "no filter" (a global,
 // ClusterRoleBinding-scoped caller, or rbac off entirely); a non-empty
@@ -101,15 +118,17 @@ const (
 // all read-only by construction — it has no dependency on any policy,
 // budget, or proxy domain type, so it cannot influence a proxied request.
 type Handler struct {
-	audit      AuditSource
-	status     StatusSource
-	policy     domain.PolicyInfo
-	anomalies  AnomalySource
-	federation FederationSource
-	blocked    BlockedSource
-	scope      TenantScopeResolver
-	unblock    UnblockAuthorizer
-	mux        *http.ServeMux
+	audit             AuditSource
+	status            StatusSource
+	policy            domain.PolicyInfo
+	anomalies         AnomalySource
+	federation        FederationSource
+	blocked           BlockedSource
+	scope             TenantScopeResolver
+	unblock           UnblockAuthorizer
+	reloadCoordinator *reload.ReloadCoordinator
+	reloadAuth        ReloadAuthorizer
+	mux               *http.ServeMux
 }
 
 // NewHandler expects the returned *Handler to be mounted at exactly
@@ -126,9 +145,12 @@ type Handler struct {
 // -- every view then answers unfiltered, identical to today's behavior;
 // see tenantFilter's doc comment. unblock may likewise be nil (rbac is
 // off) -- DELETE /dashboard/api/anomalies/blocked/{identity} then answers
-// 404 the same way as every other "not wired" route above.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock}
+// 404 the same way as every other "not wired" route above. reloadCoordinator
+// and reloadAuth gate POST /dashboard/api/reload/{domain} the same pairing
+// as blocked/unblock above (a source plus its authorizer) -- either nil
+// answers 404 the same way.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -138,6 +160,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
+	mux.HandleFunc("/dashboard/api/reload/", h.handleReload)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -331,6 +354,37 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleReload serves POST /dashboard/api/reload/{domain}, triggering a
+// hot-reload of the named domain's configuration (policy, rbac, or
+// budget -- see cmd/wardline's ReloadCoordinator wiring for the exact
+// set). This is a mutation with real operational/security weight, so it
+// is gated by ReloadAuthorizer (requiring config:edit when rbac is on)
+// separately from the read-only dashboard:view permission the rest of
+// this file's routes rely on -- same posture as handleUnblock/
+// credential:revoke. appliedBy comes from ReloadAuthorizer.Authorize,
+// the resolved caller identity, never from anything the client supplies.
+func (h *Handler) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.reloadCoordinator == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	domainName := strings.TrimPrefix(r.URL.Path, "/dashboard/api/reload/")
+	if domainName == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, h.reloadCoordinator.Reload(domainName, appliedBy))
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
