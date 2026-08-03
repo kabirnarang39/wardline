@@ -803,7 +803,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   min-height: 44px;
   padding: 0 20px;
   background: var(--status-info);
-  color: var(--paper);
+  color: #06111F;
   border: none;
   border-radius: var(--radius-control);
   font-family: var(--font-body);
@@ -1012,7 +1012,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 #activity-chart { width: 100%; height: auto; }
 .chart-bar { fill: var(--brand); }
 .chart-bar-label { font-family: var(--font-body); font-size: 10px; fill: var(--muted); }
-.chart-value-label { font-family: var(--font-body); font-size: 10px; font-weight: 600; fill: var(--ink); }
+.chart-value-label { font-family: var(--font-body); font-size: 10px; font-weight: 600; fill: var(--text); }
 
 /* Page-load stagger -- Overview cards only, once per load, never per-poll-tick */
 .stagger-in {
