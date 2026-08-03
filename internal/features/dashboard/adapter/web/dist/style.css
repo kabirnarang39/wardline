@@ -128,8 +128,11 @@
 
   /* Threshold-driven status colors */
   --status-ok: #3FB950;
+  --status-ok-soft: rgba(63, 185, 80, 0.14);
   --status-warn: #D29922;
+  --status-warn-soft: rgba(210, 153, 34, 0.14);
   --status-critical: #F85149;
+  --status-critical-soft: rgba(248, 81, 73, 0.14);
   --status-info: #58A6FF;
   /* 5th token, deliberately NOT collapsed onto --status-critical: v2's own
      final review found deny (#DC2626) and blocked (#991B1B) being
@@ -173,8 +176,11 @@
      against #FFFFFF, so no further adjustment from the plan's values was
      needed. */
   --status-ok: #1A7F37;
+  --status-ok-soft: rgba(26, 127, 55, 0.10);
   --status-warn: #9A6700;
+  --status-warn-soft: rgba(154, 103, 0, 0.10);
   --status-critical: #CF222E;
+  --status-critical-soft: rgba(207, 34, 46, 0.08);
   --status-info: #0969DA;
   /* Distinct deny-vs-blocked red, light mode. 9.58:1 against --surface
      (#FFFFFF) -- clears both the 3:1 non-text and 4.5:1 text floors with
@@ -195,8 +201,8 @@ html, body {
 }
 
 body {
-  background: var(--mist);
-  color: var(--ink);
+  background: var(--ink);
+  color: var(--text);
   font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
@@ -430,9 +436,9 @@ button, input {
 /* Generic card system — later tasks build Overview's KPI tiles, Blocked's
    list, Federation's list, Credentials' form from these. */
 .card {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-resting);
   padding: 24px;
 }
@@ -796,7 +802,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .btn-primary {
   min-height: 44px;
   padding: 0 20px;
-  background: var(--brand);
+  background: var(--status-info);
   color: var(--paper);
   border: none;
   border-radius: var(--radius-control);
@@ -806,7 +812,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   cursor: pointer;
   transition: background-color var(--duration-standard) var(--ease-hover);
 }
-.btn-primary:hover { background: var(--brand-hover); }
+.btn-primary:hover { filter: brightness(1.08); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary:active {
   transform: scale(0.97);
@@ -825,14 +831,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
    unstyled ~26px default height, under the 44px touch-target minimum.
    Moved here as real rules so the CSP actually allows them to apply. */
 .credentials-card { max-width: 480px; }
-.credentials-hint { margin-top: 0; color: var(--muted); font-size: 14px; }
-#view-credentials label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.credentials-hint { margin-top: 0; color: var(--text-muted); font-size: 14px; }
+#view-credentials label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: var(--text); }
 #revoke-identity-input {
   width: 100%;
   min-height: 44px;
   padding: 0 14px;
-  background: var(--mist);
+  background: var(--ink);
   border: 1px solid var(--border);
+  color: var(--text);
   border-radius: var(--radius-control);
   margin-bottom: 12px;
 }
@@ -917,15 +924,15 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   min-height: 56px;
   padding: 0 20px;
   margin-bottom: 20px;
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-panel);
   font-family: var(--font-heading);
   font-weight: 600;
   font-size: 16px;
 }
 
-.status-band[data-state="nominal"] { background: var(--brand-soft); color: var(--brand); }
-.status-band[data-state="attention"] { background: var(--attention-soft); color: var(--throttled); }
-.status-band[data-state="action-needed"] { background: var(--action-soft); color: var(--blocked); }
+.status-band[data-state="nominal"] { background: var(--status-ok-soft); color: var(--status-ok); }
+.status-band[data-state="attention"] { background: var(--status-warn-soft); color: var(--status-warn); }
+.status-band[data-state="action-needed"] { background: var(--status-critical-soft); color: var(--status-critical); }
 
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 
@@ -945,19 +952,19 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 }
 
 .kpi-tile {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   padding: 16px;
 }
 
-.kpi-label { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
-.kpi-value { font-family: var(--font-heading); font-size: 24px; font-weight: 700; color: var(--ink); }
+.kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; }
+.kpi-value { font-family: var(--font-data); font-size: 24px; font-weight: 700; color: var(--text); }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 
-.card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--ink); }
-.card-caption { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+.card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; color: var(--text); }
+.card-caption { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
 
 @media (hover: hover) and (pointer: fine) {
   .card {
@@ -974,26 +981,25 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 .card-dark {
   background: var(--ink);
-  border-color: var(--dark-border);
-  color: var(--dark-foreground);
+  border-color: var(--border);
 }
-.card-dark .card-title { color: var(--dark-foreground); }
 
-.pulse-value { font-family: var(--font-heading); font-size: 28px; font-weight: 700; margin-bottom: 16px; }
-.pulse-unit { font-size: 14px; font-weight: 400; color: var(--muted-on-dark); }
+.pulse-value { font-family: var(--font-data); font-size: 28px; font-weight: 700; margin-bottom: 16px; color: var(--text); }
+.pulse-unit { font-size: 14px; font-weight: 400; color: var(--text-muted); }
 
 .pulse-toggle {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: var(--brand);
-  border: none;
-  color: var(--paper);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+.pulse-toggle:hover { color: var(--text); background: var(--surface-raised); }
 .pulse-toggle svg { width: 18px; height: 18px; }
 .pulse-toggle:active {
   transform: scale(0.97);
