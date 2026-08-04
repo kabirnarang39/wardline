@@ -98,7 +98,10 @@
 
       <section id="view-overview" class="view is-active" aria-labelledby="view-overview-heading">
         <div class="view-header">
-          <h1 id="view-overview-heading">Overview</h1>
+          <div>
+            <h1 id="view-overview-heading">Overview</h1>
+            <p class="view-sub" id="overview-subtitle"></p>
+          </div>
         </div>
 
         <div class="status-band" id="status-band" data-state="nominal">
@@ -128,8 +131,11 @@
         <div class="card-grid">
           <div class="card panel" id="chart-card">
             <div class="panel-title-bar"><h2 class="card-title">Recent activity</h2></div>
-            <svg id="activity-chart" viewBox="0 0 400 180" role="img" aria-label="Bar chart of recent request volume over time"></svg>
-            <p class="card-caption" id="chart-caption"></p>
+            <table class="audit-table">
+              <thead><tr><th scope="col">Identity</th><th scope="col">Tool</th><th scope="col">Decision</th><th scope="col">Latency</th></tr></thead>
+              <tbody id="overview-recent-rows"></tbody>
+            </table>
+            <p id="overview-recent-empty" class="empty-state" hidden>No activity yet — requests through Wardline will show up here.</p>
           </div>
 
           <div class="card panel" id="needs-review-card">

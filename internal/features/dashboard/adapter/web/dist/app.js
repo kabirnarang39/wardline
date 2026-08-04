@@ -573,90 +573,32 @@ function updateNavCount(elementID, count) {
   }
 }
 
-// BUCKET_MINUTES are candidate bucket widths, smallest first. bucketEntries
-// (M7) picks the smallest one that still keeps the observed span at or
-// under MAX_BUCKETS bars -- calendar-day bucketing (the old behavior)
-// degenerated to a single solid bar on any realistic instance, since the
-// actual data source (the 500-entry client-side ring buffer) spans
-// minutes to low hours, not days. "Round" minute counts keep bucket
-// boundaries and their axis labels legible instead of an arbitrary
-// span/7 division.
-const BUCKET_MINUTES = [1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440];
-const MAX_BUCKETS = 12;
+// OVERVIEW_RECENT_ROWS caps how many of the most recent real audit entries
+// Overview's "Recent activity" panel shows -- matches the reference
+// prototype's own 4-row mini-table exactly, same real fields (Identity/
+// Tool/Decision/Latency) and same .pill decision styling Activity's full
+// table already uses, just the newest N instead of everything buffered.
+const OVERVIEW_RECENT_ROWS = 4;
 
-function chooseBucketMs(spanMs) {
-  for (const minutes of BUCKET_MINUTES) {
-    const ms = minutes * 60000;
-    // Floor-aligned bucket boundaries mean the actual number of buckets
-    // touched by [minT, maxT] can be one more than spanMs/ms (the span's
-    // start/end don't line up with bucket edges) -- cap at MAX_BUCKETS - 1
-    // here so the real rendered count never exceeds MAX_BUCKETS.
-    if (spanMs / ms <= MAX_BUCKETS - 1) return ms;
-  }
-  return BUCKET_MINUTES[BUCKET_MINUTES.length - 1] * 60000;
-}
+function renderOverviewRecentTable() {
+  const tbody = document.getElementById('overview-recent-rows');
+  const empty = document.getElementById('overview-recent-empty');
+  const recent = state.entries.slice(-OVERVIEW_RECENT_ROWS).reverse();
 
-function bucketEntries(entries) {
-  const times = entries.map((e) => new Date(e.Timestamp).getTime()).filter((t) => !Number.isNaN(t));
-  if (times.length === 0) return { buckets: [], bucketMs: 0, spanMs: 0 };
-
-  const spanMs = Math.max(...times) - Math.min(...times);
-  const bucketMs = chooseBucketMs(spanMs || 1);
-
-  const counts = new Map();
-  for (const t of times) {
-    const key = Math.floor(t / bucketMs) * bucketMs;
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  const buckets = Array.from(counts.entries()).sort(([a], [b]) => a - b);
-  return { buckets, bucketMs, spanMs };
-}
-
-function formatBucketLabel(bucketStartMs, bucketMs, spanMs) {
-  const d = new Date(bucketStartMs);
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  // Honest about the real granularity (M7). Whole-day buckets never need a
-  // time component. Otherwise, ambiguity depends on the TOTAL SPAN the
-  // chart covers, not the bucket width: a >=24h span can repeat the same
-  // time-of-day label across two different calendar days with sub-day
-  // buckets, so once the span could do that, include a date alongside the
-  // time to disambiguate.
-  if (bucketMs >= DAY_MS) {
-    return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
-  }
-  if (spanMs >= DAY_MS) {
-    return d.toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  }
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
-
-function renderActivityChart() {
-  const { buckets, bucketMs, spanMs } = bucketEntries(state.entries);
-  const svg = document.getElementById('activity-chart');
-  const caption = document.getElementById('chart-caption');
-  caption.textContent = `Based on the last ${state.entries.length} buffered events — not a full historical view.`;
-
-  if (buckets.length === 0) {
-    svg.innerHTML = '';
+  if (recent.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
     return;
   }
-
-  const maxCount = Math.max(...buckets.map(([, count]) => count));
-  const barWidth = 400 / buckets.length;
-  const chartHeight = 140;
-
-  svg.innerHTML = buckets.map(([bucketStart, count], i) => {
-    const barHeight = maxCount > 0 ? (count / maxCount) * chartHeight : 0;
-    const x = i * barWidth + barWidth * 0.15;
-    const w = barWidth * 0.7;
-    const y = chartHeight - barHeight + 10;
-    const label = formatBucketLabel(bucketStart, bucketMs, spanMs);
-    return `
-      <rect class="chart-bar" x="${x}" y="${y}" width="${w}" height="${barHeight}" rx="4"></rect>
-      <text class="chart-value-label" x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${count}</text>
-      <text class="chart-bar-label" x="${x + w / 2}" y="${chartHeight + 24}" text-anchor="middle">${escapeHTML(label)}</text>
-    `;
-  }).join('');
+  empty.hidden = true;
+  tbody.innerHTML = recent.map((e) => `
+    <tr>
+      <td>${escapeHTML(e.Identity)}</td>
+      <td>${escapeHTML(e.Tool)}</td>
+      <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
+      <td>${e.LatencyMS}ms</td>
+    </tr>
+  `).join('');
 }
 
 function renderNeedsReview() {
@@ -719,9 +661,13 @@ function wireLivePulseToggle() {
 }
 
 function renderOverview() {
+  const subtitle = document.getElementById('overview-subtitle');
+  if (subtitle) {
+    subtitle.textContent = `${state.entries.length.toLocaleString()} buffered event${state.entries.length === 1 ? '' : 's'} — not a full historical view`;
+  }
   renderStatusBand();
   renderKPIs();
-  renderActivityChart();
+  renderOverviewRecentTable();
   renderNeedsReview();
   updateLivePulse();
 }
