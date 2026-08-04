@@ -525,7 +525,14 @@ function renderStatusBand() {
     newText = `${state.anomalies.length} anomal${state.anomalies.length === 1 ? 'y' : 'ies'} need review`;
   } else {
     newState = 'nominal';
-    newText = 'All systems nominal';
+    // "0 unreviewed anomalies" is real, not decoration: this branch is
+    // only reached when state.anomalies.length === 0, so the number is
+    // always accurate, never a stand-in. Deliberately NOT adding a
+    // "config synced Xm ago" clause here to match the reference
+    // prototype further -- this branch has no real hot-reload/config-sync
+    // concept yet (see progress.md), and fabricating a timestamp would be
+    // dishonest telemetry on a security console.
+    newText = 'All systems nominal — 0 unreviewed anomalies';
   }
 
   text.textContent = newText;
@@ -662,12 +669,38 @@ function renderNeedsReview() {
 
 let pulsePaused = false;
 
+// pulseHistory holds the last PULSE_HISTORY_LEN real req/s samples (one
+// per updateLivePulse tick) driving .pulse-chart's sparkline -- a real
+// trend, not a decorative placeholder, so it starts empty and only grows
+// as actual polls happen.
+const PULSE_HISTORY_LEN = 20;
+let pulseHistory = [];
+
+function renderPulseChart() {
+  const line = document.getElementById('pulse-chart-line');
+  if (pulseHistory.length < 2) {
+    line.setAttribute('points', '');
+    return;
+  }
+  const maxRate = Math.max(...pulseHistory, 0.1);
+  const stepX = 240 / (pulseHistory.length - 1);
+  const points = pulseHistory.map((rate, i) => {
+    const x = i * stepX;
+    const y = 6 + (1 - rate / maxRate) * 44;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  line.setAttribute('points', points);
+}
+
 function updateLivePulse() {
   if (pulsePaused) return;
   const now = Date.now();
   const windowEntries = state.entries.filter((e) => new Date(e.Timestamp).getTime() >= now - 10000);
   const rate = windowEntries.length / 10;
   document.getElementById('pulse-rate').innerHTML = `${rate.toFixed(1)} <span class="pulse-unit">req/s</span>`;
+  pulseHistory.push(rate);
+  if (pulseHistory.length > PULSE_HISTORY_LEN) pulseHistory.shift();
+  renderPulseChart();
 }
 
 function wireLivePulseToggle() {
