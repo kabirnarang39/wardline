@@ -1098,14 +1098,19 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
 .kpi-value { font-family: var(--font-data); font-size: 24px; font-weight: 700; color: var(--text); }
 
-.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+/* 2fr:1.3fr:1fr, not equal thirds: "Recent activity" holds a real 4-column
+   table (Identity/Tool/Decision/Latency) that needs real room, matching
+   the reference prototype's own .cols-3 ratio for this exact row. */
+.card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; }
+@media (max-width: 1100px) {
+  .card-grid { grid-template-columns: 1fr; }
+}
 
 /* Now always nested in .panel-title-bar (Task 5), which already supplies
    the strip's padding/border/vertical centering — no margin of its own
    needed, that 12px bottom margin was only for the old inline-in-card-body
    layout and would just add unwanted height inside the title bar now. */
 .card-title { font-size: 15px; font-weight: 600; margin: 0; color: var(--text); }
-.card-caption { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
 
 @media (hover: hover) and (pointer: fine) {
   .card {
@@ -1155,11 +1160,6 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   .pulse-toggle:active { transform: none; }
 }
-
-#activity-chart { width: 100%; height: auto; }
-.chart-bar { fill: var(--brand); }
-.chart-bar-label { font-family: var(--font-body); font-size: 10px; fill: var(--muted); }
-.chart-value-label { font-family: var(--font-body); font-size: 10px; font-weight: 600; fill: var(--text); }
 
 /* Page-load stagger -- Overview cards only, once per load, never per-poll-tick */
 .stagger-in {
