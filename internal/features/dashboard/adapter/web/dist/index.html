@@ -141,6 +141,9 @@
           <div class="card card-dark panel" id="live-pulse-card">
             <div class="panel-title-bar"><h2 class="card-title">Live pulse</h2></div>
             <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
+            <svg class="pulse-chart" id="pulse-chart" viewBox="0 0 240 56" preserveAspectRatio="none" aria-hidden="true">
+              <polyline id="pulse-chart-line" fill="none" stroke="var(--status-info)" stroke-width="1.6" points=""></polyline>
+            </svg>
             <button class="pulse-toggle" id="pulse-toggle" aria-label="Pause live updates">
               <span data-icon="pause" aria-hidden="true"></span>
             </button>
