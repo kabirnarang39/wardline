@@ -821,7 +821,18 @@ func runServe(logger *slog.Logger, args []string) {
 			reloadAuth = newReloadAuthorizer(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer)
+		// callerInfoResolver backs the topbar's identity display (GET
+		// /dashboard/api/status's CallerIdentity/CallerCanConfigEdit) --
+		// purely a display concern, wired the same "nil when rbac is off"
+		// way as every other resolver above; it grants no access itself
+		// (reloadAuth/unblockAuthorizer/scopeResolver already own every
+		// access decision, independently).
+		var callerInfoResolver dashboardadapter.CallerInfoResolver
+		if rbacEnabled {
+			callerInfoResolver = newCallerInfoResolver(identityAuth, rbacChecker)
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1132,6 +1143,30 @@ func (f reloadAuthorizerFunc) Authorize(r *http.Request) (string, bool) { return
 type tenantScopeResolverFunc func(r *http.Request) string
 
 func (f tenantScopeResolverFunc) TenantFilter(r *http.Request) string { return f(r) }
+
+// callerInfoResolverFunc adapts a plain function to
+// dashboardadapter.CallerInfoResolver, matching tenantScopeResolverFunc's
+// pattern immediately above.
+type callerInfoResolverFunc func(r *http.Request) (identity string, canConfigEdit bool)
+
+func (f callerInfoResolverFunc) CallerInfo(r *http.Request) (string, bool) { return f(r) }
+
+// newCallerInfoResolver builds the dashboardadapter.CallerInfoResolver
+// wired into the dashboard route's topbar identity display when rbac is
+// on -- purely a display concern (see CallerInfoResolver's own doc
+// comment): it grants no access itself, only resolves who the topbar
+// should name and whether to show the config:edit pill, mirroring
+// newReloadAuthorizer's own config:edit check exactly but never denying
+// the request over it.
+func newCallerInfoResolver(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.CallerInfoResolver {
+	return callerInfoResolverFunc(func(r *http.Request) (string, bool) {
+		who, callerTenant, err := identityAuth.Authenticate(r)
+		if err != nil || who == "" {
+			return "", false
+		}
+		return who, checker.Check(who, callerTenant, rbacdomain.PermissionConfigEdit)
+	})
+}
 
 // dashboardFailClosedTenantFilter is returned when the dashboard's
 // tenant-scope resolver hits an authentication error -- verified

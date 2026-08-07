@@ -851,6 +851,64 @@ func TestNewReloadAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails(t 
 	}
 }
 
+// TestNewCallerInfoResolver_ReturnsIdentityAndConfigEditWhenResolved mirrors
+// TestNewReloadAuthorizer_GrantsWhenIdentityResolvesAndCheckerGrants's setup,
+// but CallerInfoResolver is display-only: it must still return the
+// resolved identity even though this call carries no access decision of
+// its own.
+func TestNewCallerInfoResolver_ReturnsIdentityAndConfigEditWhenResolved(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "alice", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: true})
+
+	resolver := newCallerInfoResolver(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	identity, canConfigEdit := resolver.CallerInfo(req)
+	if identity != "alice" {
+		t.Errorf("expected resolved identity %q, got %q", "alice", identity)
+	}
+	if !canConfigEdit {
+		t.Error("expected canConfigEdit true when the checker grants config:edit")
+	}
+}
+
+// TestNewCallerInfoResolver_IdentityWithoutConfigEdit covers a caller who
+// resolves but lacks config:edit -- the topbar must still show their
+// identity (a read-only viewer), just without the config:edit pill.
+func TestNewCallerInfoResolver_IdentityWithoutConfigEdit(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{identity: "viewer", tenant: "acme"}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, stubAuthorizer{verdict: false})
+
+	resolver := newCallerInfoResolver(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	identity, canConfigEdit := resolver.CallerInfo(req)
+	if identity != "viewer" {
+		t.Errorf("expected resolved identity %q, got %q", "viewer", identity)
+	}
+	if canConfigEdit {
+		t.Error("expected canConfigEdit false when the checker denies config:edit")
+	}
+}
+
+// TestNewCallerInfoResolver_EmptyWhenIdentityResolutionFails mirrors
+// TestNewReloadAuthorizer_DeniesAndSkipsCheckerWhenIdentityResolutionFails:
+// an unresolved caller must never get a displayed identity -- a wrong
+// displayed name is a trust problem for an operator console even though
+// this resolver drives no access decision.
+func TestNewCallerInfoResolver_EmptyWhenIdentityResolutionFails(t *testing.T) {
+	var identityAuth proxyadapter.IdentityAuthenticator = fakeRevokeIdentityAuth{err: errors.New("no identity")}
+	checker := rbacusecase.NewChecker(alwaysOnFlags{}, panicIfCalledAuthorizer{})
+
+	resolver := newCallerInfoResolver(identityAuth, checker)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	identity, canConfigEdit := resolver.CallerInfo(req)
+	if identity != "" {
+		t.Errorf("expected empty identity when identity resolution fails, got %q", identity)
+	}
+	if canConfigEdit {
+		t.Error("expected canConfigEdit false when identity resolution fails")
+	}
+}
+
 // TestRunExportEvidence_NoFeaturesBlock_ManifestFeaturesIsEmptyMapNotNull
 // covers a real operator-facing bug: a wardline.yaml with no top-level
 // features: key decodes cfg.Features as a nil map (yaml.v3's behavior for

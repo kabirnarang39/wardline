@@ -135,6 +135,21 @@ type TenantScopeResolver interface {
 	TenantFilter(r *http.Request) string
 }
 
+// CallerInfoResolver resolves the caller's own identity string and
+// whether they hold config:edit, purely for the dashboard topbar's
+// identity display -- never used for any authorization decision
+// (TenantScopeResolver/UnblockAuthorizer/ReloadAuthorizer already own
+// that, independently). identity == "" means unresolved (no identity
+// header, or rbac off), in which case the topbar shows no name/initials
+// -- this must never be a display-only guess or placeholder value,
+// since a wrong displayed identity is a trust problem for an operator
+// console even though it drives no access decision. nil means "not
+// wired" (rbac off): the topbar then shows only the generic icon,
+// identical to today's behavior before this field existed.
+type CallerInfoResolver interface {
+	CallerInfo(r *http.Request) (identity string, canConfigEdit bool)
+}
+
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
 // limit query parameter: a missing or invalid value defaults to 100; any
 // requested value above 1000 (the ring buffer's own capacity — see
@@ -163,6 +178,7 @@ type Handler struct {
 	reloadCoordinator *reload.ReloadCoordinator
 	reloadAuth        ReloadAuthorizer
 	reloadHistory     ReloadHistorySource
+	callerInfo        CallerInfoResolver
 	mux               *http.ServeMux
 }
 
@@ -192,9 +208,13 @@ type Handler struct {
 // same dashboard:view permission wrapping this whole handler (see
 // main.go), never config:edit. nil (dashboard enabled without the reload
 // buffer wired) answers 404, the same "not wired" posture as every other
-// nil-source route above.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory}
+// nil-source route above. callerInfo backs the topbar's identity display
+// (GET /dashboard/api/status's CallerIdentity/CallerCanConfigEdit
+// fields) -- nil (rbac off) leaves both fields zero-valued, and the
+// topbar falls back to its generic icon, identical to behavior before
+// this field existed.
+func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -542,22 +562,31 @@ func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, h.policy)
 }
 
-// statusResponse wraps domain.StatusInfo with one per-request field
-// (CallerTenant) StatusInfo itself cannot carry -- StatusInfo is a
-// process-wide value cached by StatusProvider, computed once, identical
-// for every caller; CallerTenant is derived fresh per request from
-// h.tenantFilter, the same RBAC-resolved scoping every other route in
-// this file already uses.
+// statusResponse wraps domain.StatusInfo with per-request fields
+// StatusInfo itself cannot carry -- StatusInfo is a process-wide value
+// cached by StatusProvider, computed once, identical for every caller;
+// CallerTenant/CallerIdentity/CallerCanConfigEdit are derived fresh per
+// request from h.tenantFilter/h.callerInfo, the same RBAC-resolved
+// scoping every other route in this file already uses. CallerIdentity
+// is "" (and CallerCanConfigEdit false) whenever callerInfo is nil or
+// the identity doesn't resolve -- the topbar must never display a
+// fabricated name for an unresolved caller.
 type statusResponse struct {
 	domain.StatusInfo
-	CallerTenant string
+	CallerTenant        string
+	CallerIdentity      string
+	CallerCanConfigEdit bool
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowed(w, r) {
 		return
 	}
-	writeJSON(w, statusResponse{StatusInfo: h.status.Status(), CallerTenant: h.tenantFilter(r)})
+	resp := statusResponse{StatusInfo: h.status.Status(), CallerTenant: h.tenantFilter(r)}
+	if h.callerInfo != nil {
+		resp.CallerIdentity, resp.CallerCanConfigEdit = h.callerInfo.CallerInfo(r)
+	}
+	writeJSON(w, resp)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
