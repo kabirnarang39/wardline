@@ -136,6 +136,39 @@ func (l *InMemoryLimiter) ToolOverrides() []domain.OverrideInfo {
 	return out
 }
 
+// SetDefaultLimit updates the global (non-override) rate limit in place,
+// without resetting any identity's already-tracked usage -- mirrors
+// SetTenantLimit/SetToolLimit's own "update the threshold, preserve live
+// state" contract, applied to the base default instead of a per-tenant/
+// per-tool override. Called during a reload; existing buckets keep
+// counting against the new threshold rather than starting fresh.
+func (l *InMemoryLimiter) SetDefaultLimit(requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.requestsPerWindow = requestsPerWindow
+	l.window = window
+}
+
+// ClearTenantLimit removes tenantName's override, reverting it to the
+// global default. Called during a reload for every tenant that had an
+// override in the PREVIOUS config but not in the new one -- SetTenantLimit
+// alone can only add or update an override, never remove one.
+func (l *InMemoryLimiter) ClearTenantLimit(tenantName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.tenantLimits, tenantName)
+	delete(l.tenantBuckets, tenantName)
+}
+
+// ClearToolLimit mirrors ClearTenantLimit exactly, for the tool-tier
+// override.
+func (l *InMemoryLimiter) ClearToolLimit(toolName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.toolLimits, toolName)
+	delete(l.toolBuckets, toolName)
+}
+
 // Allow requires the identity bucket, the tenant bucket (if tenant has a
 // configured override), AND the tool bucket (if tool has a configured
 // override) to all admit the request -- an AND, not an OR. The tool check

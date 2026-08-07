@@ -494,3 +494,142 @@ func TestPostgresLimiter_CrossInstanceBudgetIsShared(t *testing.T) {
 		t.Errorf("expected exactly 3 of 5 calls fanned across two replicas to be admitted (shared budget), got %d -- if this is 3 per replica (6 total possible), the replicas are NOT sharing state", admitted)
 	}
 }
+
+// TestPostgresLimiter_SetDefaultLimit_UpdatesThresholdWithoutResettingCounters
+// mirrors the InMemoryLimiter test of the same shape: a reload that raises
+// the default limit must not reset the identity's already-consumed count
+// in budget_buckets -- proof the reload updates the threshold in place
+// rather than reconstructing the limiter (which would zero every counter).
+func TestPostgresLimiter_SetDefaultLimit_UpdatesThresholdWithoutResettingCounters(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 2, time.Minute, nil) // 2 requests per minute
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	now := time.Now()
+	l.Allow("alice", "acme", "read_file", now)
+	l.Allow("alice", "acme", "read_file", now)
+	if v := l.Allow("alice", "acme", "read_file", now); v.Allowed {
+		t.Fatalf("expected 3rd call to be denied before any reload")
+	}
+
+	l.SetDefaultLimit(5, time.Minute)
+
+	allowedAfterReload := 0
+	for i := 0; i < 5; i++ {
+		if l.Allow("alice", "acme", "read_file", now).Allowed {
+			allowedAfterReload++
+		}
+	}
+	if allowedAfterReload != 3 {
+		t.Errorf("allowed %d more calls after raising the limit to 5 with 2 already consumed, want exactly 3", allowedAfterReload)
+	}
+}
+
+// TestPostgresLimiter_ClearTenantLimit_RevertsToGlobalDefault mirrors
+// InMemoryLimiter's equivalent test: a tenant override removed by a reload
+// must actually stop being enforced, not survive as a stale leftover.
+func TestPostgresLimiter_ClearTenantLimit_RevertsToGlobalDefault(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetTenantLimit("acme", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("alice", "acme", "read_file", now); !v.Allowed {
+		t.Fatal("first call in acme should be allowed")
+	}
+	if v := l.Allow("bob", "acme", "read_file", now); v.Allowed {
+		t.Fatal("second distinct identity in the SAME over-limit tenant should be throttled by the tenant override")
+	}
+
+	l.ClearTenantLimit("acme")
+
+	if v := l.Allow("bob", "acme", "read_file", now); !v.Allowed {
+		t.Fatal("expected acme to revert to the global default after ClearTenantLimit, but it's still throttled")
+	}
+}
+
+// TestPostgresLimiter_ClearToolLimit_RevertsToGlobalDefault mirrors
+// TestPostgresLimiter_ClearTenantLimit_RevertsToGlobalDefault exactly, for
+// the tool-tier override.
+func TestPostgresLimiter_ClearToolLimit_RevertsToGlobalDefault(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("alice", "acme", "expensive_tool", now); !v.Allowed {
+		t.Fatal("first call to expensive_tool should be allowed")
+	}
+	if v := l.Allow("bob", "widgets-inc", "expensive_tool", now); v.Allowed {
+		t.Fatal("second call to the SAME over-limit tool should be throttled by the tool override")
+	}
+
+	l.ClearToolLimit("expensive_tool")
+
+	if v := l.Allow("bob", "widgets-inc", "expensive_tool", now); !v.Allowed {
+		t.Fatal("expected expensive_tool to revert to the global default after ClearToolLimit, but it's still throttled")
+	}
+}
+
+// TestPostgresLimiter_ClearTenantLimit_ThenReintroduce_StartsFreshNotFrozen
+// is the regression test for the stale-row finding: ClearTenantLimit must
+// delete the tenant's budget_buckets row, not just its in-memory
+// tenantLimits entry, so that a LATER reload reintroducing the same
+// tenant override -- still within the same window the cleared override
+// last touched -- starts a fresh count rather than resuming whatever
+// count/window_start was frozen in the row when the override was
+// removed. Without the row delete, this reintroduced override would be
+// throttled against usage from a period when, by design, the tenant tier
+// wasn't even being checked.
+func TestPostgresLimiter_ClearTenantLimit_ThenReintroduce_StartsFreshNotFrozen(t *testing.T) {
+	dsn := budgetTestDSN(t)
+	dropBudgetBucketsTable(t, dsn)
+
+	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	if err != nil {
+		t.Fatalf("NewPostgresLimiter: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	l.SetTenantLimit("acme", 1, time.Minute)
+
+	now := time.Now()
+	if v := l.Allow("alice", "acme", "read_file", now); !v.Allowed {
+		t.Fatal("first call in acme should be allowed")
+	}
+	// acme's tenant bucket is now at 1/1 -- fully consumed for this window.
+	if v := l.Allow("bob", "acme", "read_file", now); v.Allowed {
+		t.Fatal("expected acme's tenant bucket to already be exhausted")
+	}
+
+	l.ClearTenantLimit("acme")
+	// While the override is absent, calls fall through to the (generous)
+	// identity/global tier and never touch the tenant row at all.
+	if v := l.Allow("carol", "acme", "read_file", now); !v.Allowed {
+		t.Fatal("expected acme to be unthrottled while its override is cleared")
+	}
+
+	// Reintroduce the SAME override, same window (now unchanged): if the
+	// old row survived, its frozen count=1 would immediately deny this
+	// call. It must instead be treated as a fresh bucket and admit.
+	l.SetTenantLimit("acme", 1, time.Minute)
+	if v := l.Allow("dave", "acme", "read_file", now); !v.Allowed {
+		t.Fatal("expected the reintroduced tenant override to start with a fresh bucket, not resume the frozen pre-clear count")
+	}
+}

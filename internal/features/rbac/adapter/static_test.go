@@ -36,11 +36,17 @@ bindings:
 	if !a.Authorize("alice", "default", domain.PermissionCredentialRevoke) {
 		t.Error("expected alice (admin, cluster-scoped) to have credential:revoke")
 	}
+	if !a.Authorize("alice", "default", domain.PermissionConfigEdit) {
+		t.Error("expected alice (admin, cluster-scoped) to have config:edit")
+	}
 	if !a.Authorize("bob", "default", domain.PermissionDashboardView) {
 		t.Error("expected bob (viewer, cluster-scoped) to have dashboard:view")
 	}
 	if a.Authorize("bob", "default", domain.PermissionCredentialRevoke) {
 		t.Error("expected bob (viewer) to NOT have credential:revoke")
+	}
+	if a.Authorize("bob", "default", domain.PermissionConfigEdit) {
+		t.Error("expected bob (viewer) to NOT have config:edit")
 	}
 }
 

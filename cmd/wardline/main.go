@@ -56,6 +56,7 @@ import (
 	scimusecase "github.com/kabirnarang39/wardline/internal/features/scim/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
 	"github.com/kabirnarang39/wardline/internal/platform/version"
 )
@@ -144,6 +145,8 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("failed to load policy", "error", err)
 		os.Exit(1)
 	}
+	policyHolder := reload.NewReloadableEngine(&engine)
+	policyReload := newPolicyReloadFn(policyHolder, *configPath)
 
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 	webUIEnabled := featureFlags.Enabled("web_ui")
@@ -401,7 +404,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDecider(engine)
+	decider := proxyusecase.NewDeciderWithHolder(policyHolder)
 
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
@@ -447,6 +450,7 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 	budgetChecker := budgetusecase.NewChecker(featureFlags, limiter)
+	budgetReload := newBudgetReloadFn(limiter, *configPath, cfg.Budget.Tenants, cfg.Budget.Tools)
 
 	tracingProvider, err := buildTracingProvider(logger, featureFlags, cfg.Tracing)
 	if err != nil {
@@ -491,6 +495,12 @@ func runServe(logger *slog.Logger, args []string) {
 	// rbacChecker) so the scim block below can rewrap it in a
 	// CompositeAuthorizer without reloading rbac.config_file.
 	var rbacAuthorizer *rbacadapter.StaticAuthorizer
+	// rbacHolder holds whichever domain.Authorizer rbacChecker currently
+	// delegates to (the bare StaticAuthorizer, or -- once the scim block
+	// below runs -- a CompositeAuthorizer wrapping it). A hot reload
+	// swaps this holder rather than rebuilding rbacChecker, so the SAME
+	// Checker instance observes the new authorizer on its very next call.
+	var rbacHolder *reload.ReloadableEngine[rbacdomain.Authorizer]
 	if rbacEnabled {
 		authorizer, err := rbacadapter.LoadAuthorizer(cfg.RBAC.ConfigFile)
 		if err != nil {
@@ -498,7 +508,9 @@ func runServe(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 		rbacAuthorizer = authorizer
-		rbacChecker = rbacusecase.NewChecker(featureFlags, authorizer)
+		var initialAuthorizer rbacdomain.Authorizer = authorizer
+		rbacHolder = reload.NewReloadableEngine(&initialAuthorizer)
+		rbacChecker = rbacusecase.NewCheckerWithHolder(featureFlags, rbacHolder)
 		logger.Info("rbac enabled", "config_file", cfg.RBAC.ConfigFile)
 	}
 
@@ -507,12 +519,10 @@ func runServe(logger *slog.Logger, args []string) {
 	// narrow method set both scimusecase.ProvisioningService.SetBindingStore
 	// and rbacusecase.NewCompositeAuthorizer's dynamic source expect --
 	// their own bindingSink/dynamicBindingSource types are unexported, so
-	// this package can't reference them by name.
-	var scimBindingStore interface {
-		SetGroupMembers(groupName string, memberUserNames []string)
-		RemoveGroup(groupName string)
-		Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
-	}
+	// this package can't reference them by name. Named (rather than an
+	// inline interface literal) so newRBACReloadFn's signature below can
+	// reference the exact same shape.
+	var scimBindingStore scimDynamicBindingSource
 	var scimHandler http.Handler
 	var bindingStoreCloser io.Closer
 	if scimEnabled {
@@ -532,11 +542,12 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Warn("scim-provisioned bindings are in-process only; safe for exactly one replica -- enable scim.persist_postgres to share across replicas")
 		}
 		if rbacEnabled {
-			rbacChecker = rbacusecase.NewChecker(featureFlags, rbacusecase.NewCompositeAuthorizer(
+			var composite rbacdomain.Authorizer = rbacusecase.NewCompositeAuthorizer(
 				rbacAuthorizer,
 				scimBindingStore,
 				rbacAuthorizer.RoleHasPermission,
-			))
+			)
+			rbacHolder.Swap(&composite)
 		}
 
 		// config.Config.validate() only requires scim.bearer_token_env to
@@ -554,6 +565,8 @@ func runServe(logger *slog.Logger, args []string) {
 		scimHandler = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
 		logger.Info("scim enabled", "path", "/scim/v2/")
 	}
+
+	rbacReload := newRBACReloadFn(rbacHolder, *configPath, rbacEnabled, scimEnabled, scimBindingStore)
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
 	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
@@ -762,7 +775,53 @@ func runServe(logger *slog.Logger, args []string) {
 			budgetSource = limiter
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource)
+		// reloadBuffer gives operators visibility into every reload attempt
+		// (success or rejection), independent of the audit/domain.Entry
+		// stream -- see reload.ReloadEventBuffer's doc comment for why a
+		// reload event gets its own purpose-built buffer rather than
+		// reusing the general audit log. Capacity: reload events are rare
+		// (operator-triggered), 100 is generous headroom, not a tuned
+		// figure.
+		reloadBuffer := reload.NewReloadEventBuffer(100)
+
+		// reloadCoordinator dispatches POST /dashboard/api/reload/{domain} to
+		// the Task 2/3/4 hot-reload closures built earlier in runServe
+		// (policyReload, rbacReload, budgetReload -- see their own
+		// declarations above). OnAudit logs the outcome (Info on success,
+		// Warn on rejection -- a rejected reload is exactly as important to
+		// surface as an accepted one) and records it into reloadBuffer for
+		// GET /dashboard/api/reload/history.
+		reloadCoordinator := &reload.ReloadCoordinator{
+			Reloaders: map[string]func() error{
+				"policy": policyReload,
+				"rbac":   rbacReload,
+				"budget": budgetReload,
+			},
+			OnAudit: func(result reload.ReloadResult) {
+				if result.OK {
+					logger.Info("config reload applied", "domain", result.Domain, "applied_by", result.AppliedBy)
+				} else {
+					logger.Warn("config reload rejected", "domain", result.Domain, "applied_by", result.AppliedBy, "error", result.Error)
+				}
+				reloadBuffer.Add(result)
+			},
+		}
+
+		// reloadAuth gates POST /dashboard/api/reload/{domain} the same way
+		// unblockAuthorizer just above gates DELETE
+		// /dashboard/api/anomalies/blocked/{identity} -- via an injected
+		// Authorizer requiring a specific permission (config:edit here,
+		// credential:revoke there), never via a second top-level
+		// rbacadapter.RequirePermission wrap around the whole /dashboard/
+		// tree (that would only ever let dashboard:view gate it). nil when
+		// rbac is off, matching unblockAuthorizer's own nil posture: this
+		// mutation is unavailable entirely without rbac, not merely ungated.
+		var reloadAuth dashboardadapter.ReloadAuthorizer
+		if rbacEnabled {
+			reloadAuth = newReloadAuthorizer(identityAuth, rbacChecker)
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1059,6 +1118,13 @@ func (f unblockAuthorizerFunc) AllowedFor(r *http.Request, targetTenant string) 
 	return f(r, targetTenant)
 }
 
+// reloadAuthorizerFunc adapts a plain function to
+// dashboardadapter.ReloadAuthorizer, mirroring unblockAuthorizerFunc's
+// exact pattern immediately above.
+type reloadAuthorizerFunc func(r *http.Request) (identity string, ok bool)
+
+func (f reloadAuthorizerFunc) Authorize(r *http.Request) (string, bool) { return f(r) }
+
 // tenantScopeResolverFunc adapts a plain function to
 // dashboardadapter.TenantScopeResolver, matching revokeAuthorizerFunc's
 // pattern immediately above -- the scopeResolver closure built in
@@ -1127,6 +1193,32 @@ func newUnblockAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, check
 		// Cross-tenant authority must come from THIS permission (the one
 		// this mutation actually exercises), never from dashboard:view.
 		return targetTenant == "" || targetTenant == callerTenant || checker.IsGlobal(who, rbacdomain.PermissionCredentialRevoke)
+	})
+}
+
+// newReloadAuthorizer builds the dashboardadapter.ReloadAuthorizer wired
+// into POST /dashboard/api/reload/{domain} when rbac is on: a caller is
+// allowed through only if identity resolves and the resolved identity
+// holds config:edit -- the new, stricter permission tier for hot-reload
+// mutations (see rbacdomain.PermissionConfigEdit's doc comment), gated
+// separately from the read-only dashboard:view permission the rest of
+// the dashboard route relies on. Reload is not tenant-scoped (policy/
+// rbac/budget config applies cluster-wide, there is no per-tenant reload
+// target to check cross-tenant authority against), so this mirrors
+// newUnblockAuthorizer's identity-resolution/permission-check shape but
+// has no cross-tenant escape-hatch check to make. Returns the resolved
+// identity on success so ReloadResult.AppliedBy can carry it into the
+// audit trail.
+func newReloadAuthorizer(identityAuth proxyadapter.IdentityAuthenticator, checker *rbacusecase.Checker) dashboardadapter.ReloadAuthorizer {
+	return reloadAuthorizerFunc(func(r *http.Request) (string, bool) {
+		who, callerTenant, err := identityAuth.Authenticate(r)
+		if err != nil {
+			return "", false
+		}
+		if !checker.Check(who, callerTenant, rbacdomain.PermissionConfigEdit) {
+			return "", false
+		}
+		return who, true
 	})
 }
 
@@ -1316,6 +1408,151 @@ func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
 		return policyadapter.LoadFile(path)
 	default:
 		return nil, fmt.Errorf("unknown policy backend %q (want \"yaml\", \"opa\", or \"cedar\")", backend)
+	}
+}
+
+// newPolicyReloadFn builds the policy hot-reload closure: it re-reads the
+// config file at configPath and re-runs loadPolicyEngine -- the exact same
+// construction path runServe used at startup -- against whatever
+// policy_file/policy_backend that config currently names. It only calls
+// policyHolder.Swap when construction fully succeeds: a config-load,
+// parse, or validation error is returned to the caller and Swap is never
+// reached, so the previously-loaded engine keeps enforcing every request
+// completely untouched. This closure is what a later task registers with
+// the ReloadCoordinator under reloaders["policy"].
+func newPolicyReloadFn(policyHolder *reload.ReloadableEngine[policydomain.Engine], configPath string) func() error {
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload policy: %w", err)
+		}
+		newEngine, err := loadPolicyEngine(newCfg.PolicyBackend, newCfg.PolicyFile)
+		if err != nil {
+			return fmt.Errorf("reload policy: %w", err)
+		}
+		policyHolder.Swap(&newEngine)
+		return nil
+	}
+}
+
+// scimDynamicBindingSource is the narrow method set both
+// scimusecase.ProvisioningService.SetBindingStore and
+// rbacusecase.NewCompositeAuthorizer's dynamic source expect -- named so
+// runServe's scimBindingStore variable and newRBACReloadFn's parameter
+// below share the exact same type instead of two separately-spelled
+// interface literals.
+type scimDynamicBindingSource interface {
+	SetGroupMembers(groupName string, memberUserNames []string)
+	RemoveGroup(groupName string)
+	Bindings(identity string) ([]rbacdomain.ClusterRoleBinding, []rbacdomain.RoleBinding)
+}
+
+// newRBACReloadFn builds the RBAC hot-reload closure: it re-reads the
+// config file at configPath and re-runs rbacadapter.LoadAuthorizer --
+// the exact same construction path runServe used at startup -- against
+// whatever rbac.config_file that config currently names.
+//
+// Critical: this reloads ONLY the static, YAML-sourced half of the
+// authorizer. When scim was enabled at startup, the freshly loaded
+// StaticAuthorizer is re-wrapped in a NEW CompositeAuthorizer around the
+// SAME scimBindingStore instance already running -- scimBindingStore
+// holds live role-binding state mutated by real SCIM provisioning calls
+// and is never itself reconstructed or reset here. Reloading RBAC must
+// never discard a live SCIM-provisioned binding.
+//
+// It only calls rbacHolder.Swap when construction fully succeeds: a
+// config-load, parse, or validation error is returned to the caller and
+// Swap is never reached, so the previously-loaded authorizer (and its
+// SCIM composition, if any) keeps enforcing every request completely
+// untouched. This closure is what a later task registers with the
+// ReloadCoordinator under reloaders["rbac"].
+//
+// When rbac itself is disabled (rbacEnabled false), rbacHolder is nil
+// and there is nothing to reload -- the returned closure is a no-op that
+// always succeeds.
+func newRBACReloadFn(rbacHolder *reload.ReloadableEngine[rbacdomain.Authorizer], configPath string, rbacEnabled, scimEnabled bool, scimBindingStore scimDynamicBindingSource) func() error {
+	if !rbacEnabled {
+		return func() error { return nil }
+	}
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload rbac: %w", err)
+		}
+		newStaticAuthorizer, err := rbacadapter.LoadAuthorizer(newCfg.RBAC.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("reload rbac: %w", err)
+		}
+		var newAuthorizer rbacdomain.Authorizer = newStaticAuthorizer
+		if scimEnabled {
+			// CRITICAL: reuse the SAME scimBindingStore already running --
+			// do NOT reconstruct it, that would discard every live
+			// SCIM-provisioned binding.
+			newAuthorizer = rbacusecase.NewCompositeAuthorizer(
+				newStaticAuthorizer,
+				scimBindingStore,
+				newStaticAuthorizer.RoleHasPermission,
+			)
+		}
+		rbacHolder.Swap(&newAuthorizer)
+		return nil
+	}
+}
+
+// newBudgetReloadFn builds the budget hot-reload closure. Unlike
+// newPolicyReloadFn/newRBACReloadFn, it never constructs a new Limiter or
+// calls any ReloadableEngine.Swap -- InMemoryLimiter and PostgresLimiter
+// both hold live, in-flight per-identity/tenant/tool request counters, and
+// swapping the whole instance would silently reset every currently-tracked
+// counter to zero, letting a caller briefly burst past their real limit at
+// the exact moment a reload happens. Instead this re-reads the config file
+// at configPath and updates the SAME running limiter's thresholds in
+// place via SetDefaultLimit/SetTenantLimit/SetToolLimit.
+//
+// initialTenants/initialTools seed the closure's own before/after diff
+// (config.BudgetConfig is Budget.Tenants/Budget.Tools's real map value
+// type) with the config the process actually started with, so the very
+// first reload can already tell whether an override was removed.
+// SetTenantLimit/SetToolLimit alone can only add or update an override,
+// never remove one -- a tenant/tool present in the PREVIOUS config but
+// absent from the new one is explicitly cleared via
+// ClearTenantLimit/ClearToolLimit so a removed override doesn't survive as
+// a stale leftover forever. config.Load's own validate() already rejects
+// a negative/zero RequestsPerWindow/WindowSeconds before this closure ever
+// runs, so no extra defense-in-depth check is needed here.
+func newBudgetReloadFn(limiter budgetdomain.Limiter, configPath string, initialTenants, initialTools map[string]config.BudgetConfig) func() error {
+	previousBudgetTenants := initialTenants
+	previousBudgetTools := initialTools
+	return func() error {
+		newCfg, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reload budget: %w", err)
+		}
+		limiter.SetDefaultLimit(newCfg.Budget.RequestsPerWindow, time.Duration(newCfg.Budget.WindowSeconds)*time.Second)
+
+		// Clear overrides present in the OLD config but absent from the
+		// new one, so a removed override doesn't survive as a stale
+		// leftover.
+		for tenantName := range previousBudgetTenants {
+			if _, stillPresent := newCfg.Budget.Tenants[tenantName]; !stillPresent {
+				limiter.ClearTenantLimit(tenantName)
+			}
+		}
+		for tenantName, tenantCfg := range newCfg.Budget.Tenants {
+			limiter.SetTenantLimit(tenantName, tenantCfg.RequestsPerWindow, time.Duration(tenantCfg.WindowSeconds)*time.Second)
+		}
+		for toolName := range previousBudgetTools {
+			if _, stillPresent := newCfg.Budget.Tools[toolName]; !stillPresent {
+				limiter.ClearToolLimit(toolName)
+			}
+		}
+		for toolName, toolCfg := range newCfg.Budget.Tools {
+			limiter.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
+		}
+
+		previousBudgetTenants = newCfg.Budget.Tenants // update tracking for the NEXT reload's diff
+		previousBudgetTools = newCfg.Budget.Tools
+		return nil
 	}
 }
 

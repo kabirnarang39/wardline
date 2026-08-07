@@ -87,3 +87,18 @@ type BudgetOverrideEntry struct {
 	RequestsPerWindow int    `json:"requests_per_window"`
 	WindowSeconds     int    `json:"window_seconds"`
 }
+
+// ReloadEntry is the dashboard's JSON view of one hot-reload attempt --
+// deliberately its own type (not a reuse of reload.ReloadEvent), same
+// rationale as AnomalyEntry/CorrelatedAlertEntry above: the dashboard's
+// JSON wire shape must not silently change if platform/reload's internal
+// type changes for its own reasons, and it gets a snake_case wire shape
+// consistent with every other dashboard endpoint.
+type ReloadEntry struct {
+	ID        int64  `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Domain    string `json:"domain"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	AppliedBy string `json:"applied_by"`
+}
