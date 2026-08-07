@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget } from './api.js';
+import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, fetchReloadHistory } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -16,12 +16,22 @@ const state = {
   blocked: [],
   federationAlerts: [],
   lastFederationID: 0,
+  reloadLog: [],
+  lastReloadLogID: 0,
 };
 
 function escapeHTML(s) {
   const div = document.createElement('div');
   div.textContent = s ?? '';
   return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// formatTool renders "*" for an empty Tool field -- real backend
+// semantics (an auto-block/deny-all decision applies to every tool, not
+// one specific call), matching the Activity view's own convention for
+// a wildcard-scoped entry rather than showing a confusing blank cell.
+function formatTool(tool) {
+  return tool || '*';
 }
 
 function formatTime(iso) {
@@ -271,7 +281,7 @@ function renderActivity() {
         <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron"></span></td>
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
         <td>${escapeHTML(e.Identity)}</td>
-        <td>${escapeHTML(e.Tool)}</td>
+        <td>${escapeHTML(formatTool(e.Tool))}</td>
         <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
         <td>${e.LatencyMS}ms</td>
         <td title="${escapeHTML(e.TraceID)}">${escapeHTML(e.TraceID ? e.TraceID.slice(0, 8) : '')}</td>
@@ -442,6 +452,67 @@ async function pollFederation() {
   }
 }
 
+// formatTimeAgo mirrors formatExpiry's shape exactly but for a past
+// timestamp -- "config synced Xm ago" on Overview's status band reads
+// this off the most recent successful entry in state.reloadLog, real
+// operator-triggered reload history (see pollReloadLog), never a
+// fabricated or decorative value.
+function formatTimeAgo(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const diffMs = Date.now() - d.getTime();
+  if (diffMs < 60000) return 'just now';
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function renderReloadLog() {
+  const tbody = document.getElementById('reload-log-rows');
+  const empty = document.getElementById('reload-log-empty');
+  if (!tbody) return; // reload log isn't wired server-side (h.reloadHistory nil) -- nothing to render
+  const entries = state.reloadLog;
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = entries.slice().reverse().map((e) => `
+    <tr>
+      <td>${escapeHTML(formatTime(e.timestamp))}</td>
+      <td>${escapeHTML(e.domain)}</td>
+      <td><span class="pill" data-decision="${e.ok ? 'allow' : 'deny'}">${e.ok ? 'applied' : 'rejected'}</span></td>
+      <td>${escapeHTML(e.applied_by)}</td>
+      <td class="reason-cell" title="${escapeHTML(e.error || '')}">${escapeHTML(e.ok ? '' : e.error)}</td>
+    </tr>
+  `).join('');
+}
+
+async function pollReloadLog() {
+  try {
+    const fresh = await fetchReloadHistory(state.lastReloadLogID, 1000);
+    if (fresh.length > 0) {
+      state.reloadLog.push(...fresh);
+      if (state.reloadLog.length > MAX_CLIENT_ROWS) {
+        state.reloadLog = state.reloadLog.slice(state.reloadLog.length - MAX_CLIENT_ROWS);
+      }
+      state.lastReloadLogID = fresh[fresh.length - 1].id;
+    }
+    renderReloadLog();
+  } catch (err) {
+    // Same "not wired" posture as pollFederation/pollAnomalies: a 404
+    // just means this instance has no reloadHistory source configured,
+    // so this view's empty state shows instead of erroring.
+    console.error('reload log poll failed:', err);
+    renderReloadLog();
+  }
+}
+
 function formatExpiry(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -527,12 +598,16 @@ function renderStatusBand() {
     newState = 'nominal';
     // "0 unreviewed anomalies" is real, not decoration: this branch is
     // only reached when state.anomalies.length === 0, so the number is
-    // always accurate, never a stand-in. Deliberately NOT adding a
-    // "config synced Xm ago" clause here to match the reference
-    // prototype further -- this branch has no real hot-reload/config-sync
-    // concept yet (see progress.md), and fabricating a timestamp would be
-    // dishonest telemetry on a security console.
-    newText = 'All systems nominal — 0 unreviewed anomalies';
+    // always accurate, never a stand-in. The "config synced Xm ago"
+    // clause is likewise real: it reads the most recent SUCCESSFUL entry
+    // in state.reloadLog (real ReloadCoordinator history, see
+    // pollReloadLog), and is omitted entirely -- not shown as "never" or
+    // any other placeholder -- when no successful reload has happened yet
+    // (reloadHistory not wired, or simply no edits made this session).
+    const lastSynced = state.reloadLog.slice().reverse().find((e) => e.ok);
+    newText = lastSynced
+      ? `All systems nominal — 0 unreviewed anomalies, config synced ${formatTimeAgo(lastSynced.timestamp)}`
+      : 'All systems nominal — 0 unreviewed anomalies';
   }
 
   text.textContent = newText;
@@ -547,13 +622,52 @@ function renderStatusBand() {
   }
 }
 
+// kpiBaseline snapshots Requests/Deny rate/Anomalies the first time
+// renderKPIs runs with real data, giving each KPI tile's delta arrow a
+// genuine "change since this dashboard was opened" comparison -- real
+// and honest (unlike a fabricated "vs yesterday" figure this client has
+// no data to actually compute), just a different, clearly-real basis
+// than the reference prototype's own 24h-window framing.
+let kpiBaseline = null;
+
+function renderDelta(elementID, delta, opts = {}) {
+  const el = document.getElementById(elementID);
+  if (!el || kpiBaseline === null || delta === 0) {
+    if (el) el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  const up = delta > 0;
+  const magnitude = opts.decimals ? Math.abs(delta).toFixed(opts.decimals) : Math.abs(delta);
+  el.textContent = `${up ? '↑' : '↓'} ${magnitude}`;
+  // tone: 'good' when up means better (more traffic is neutral/positive
+  // info, a falling deny-rate is genuinely good); 'bad' for a rising
+  // deny-rate (status-critical red); 'warn' for a rising anomaly count
+  // (status-warn amber -- elevated attention, not yet a red-alert state).
+  const tone = opts.tone === 'invert' ? (up ? 'bad' : 'good') : opts.tone === 'warn' ? (up ? 'warn' : 'good') : (up ? 'good' : 'neutral');
+  el.classList.remove('is-good', 'is-bad', 'is-warn', 'is-neutral');
+  el.classList.add(`is-${tone}`);
+}
+
 function renderKPIs() {
-  document.getElementById('kpi-total-requests').textContent = String(state.entries.length);
   const denies = state.entries.filter((e) => e.Decision === 'deny' || e.Decision === 'error').length;
-  const denyRate = state.entries.length > 0 ? Math.round((denies / state.entries.length) * 100) : 0;
-  document.getElementById('kpi-deny-rate').textContent = `${denyRate}%`;
+  const denyRate = state.entries.length > 0 ? (denies / state.entries.length) * 100 : 0;
+
+  document.getElementById('kpi-total-requests').textContent = String(state.entries.length);
+  document.getElementById('kpi-deny-rate').textContent = `${Math.round(denyRate)}%`;
   document.getElementById('kpi-anomalies').textContent = String(state.anomalies.length);
   document.getElementById('kpi-blocked').textContent = String(state.blocked.length);
+
+  const blockedActive = document.getElementById('kpi-blocked-active');
+  if (blockedActive) blockedActive.hidden = state.blocked.length === 0;
+
+  if (kpiBaseline === null) {
+    kpiBaseline = { requests: state.entries.length, denyRate, anomalies: state.anomalies.length };
+  } else {
+    renderDelta('kpi-total-requests-delta', state.entries.length - kpiBaseline.requests);
+    renderDelta('kpi-deny-rate-delta', denyRate - kpiBaseline.denyRate, { decimals: 1, tone: 'invert' });
+    renderDelta('kpi-anomalies-delta', state.anomalies.length - kpiBaseline.anomalies, { tone: 'warn' });
+  }
 
   // Sidebar nav-count badges reuse these exact same counts (state.anomalies
   // .length / state.blocked.length) -- sourced once here, not recomputed
@@ -594,7 +708,7 @@ function renderOverviewRecentTable() {
   tbody.innerHTML = recent.map((e) => `
     <tr>
       <td>${escapeHTML(e.Identity)}</td>
-      <td>${escapeHTML(e.Tool)}</td>
+      <td>${escapeHTML(formatTool(e.Tool))}</td>
       <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
       <td>${e.LatencyMS}ms</td>
     </tr>
@@ -618,6 +732,12 @@ let pulsePaused = false;
 const PULSE_HISTORY_LEN = 20;
 let pulseHistory = [];
 
+// lastKnownRate mirrors the most recent updateLivePulse() computation --
+// setLive's sidebar footer reads it directly rather than recomputing
+// from state.entries, since updateLivePulse already owns that math and
+// runs every poll tick regardless of which view is active.
+let lastKnownRate = 0;
+
 function renderPulseChart() {
   const line = document.getElementById('pulse-chart-line');
   if (pulseHistory.length < 2) {
@@ -639,6 +759,7 @@ function updateLivePulse() {
   const now = Date.now();
   const windowEntries = state.entries.filter((e) => new Date(e.Timestamp).getTime() >= now - 10000);
   const rate = windowEntries.length / 10;
+  lastKnownRate = rate;
   document.getElementById('pulse-rate').innerHTML = `${rate.toFixed(1)} <span class="pulse-unit">req/s</span>`;
   pulseHistory.push(rate);
   if (pulseHistory.length > PULSE_HISTORY_LEN) pulseHistory.shift();
@@ -729,7 +850,7 @@ function setLive(ok) {
   const label = document.getElementById('live-label');
   if (ok) {
     dot.classList.remove('is-stale');
-    label.textContent = 'Live';
+    label.textContent = `Live · ${lastKnownRate.toFixed(1)} req/s`;
   } else {
     dot.classList.add('is-stale');
     label.textContent = 'Reconnecting…';
@@ -777,9 +898,49 @@ async function loadStatus() {
     } else {
       tenantBadge.hidden = true;
     }
+
+    renderCallerIdentity(status.CallerIdentity, status.CallerCanConfigEdit);
   } catch {
     document.getElementById('status-grid').textContent = 'Failed to load status — try refreshing.';
   }
+}
+
+// renderCallerIdentity fills the topbar's identity block from
+// GET /dashboard/api/status's CallerIdentity/CallerCanConfigEdit --
+// identity is "" whenever rbac is off or the caller doesn't resolve, in
+// which case the topbar falls back to the plain generic-icon avatar
+// (never a fabricated name/initials).
+function renderCallerIdentity(identity, canConfigEdit) {
+  const avatar = document.getElementById('identity-avatar');
+  const text = document.getElementById('identity-text');
+  const nameEl = document.getElementById('identity-name');
+  const pill = document.getElementById('config-edit-pill');
+
+  if (identity) {
+    avatar.removeAttribute('data-icon');
+    avatar.textContent = initials(identity);
+    avatar.classList.add('identity-avatar-initials');
+    text.hidden = false;
+    nameEl.textContent = identity;
+  } else {
+    avatar.setAttribute('data-icon', 'user');
+    mountIcons(avatar.parentElement);
+    avatar.classList.remove('identity-avatar-initials');
+    text.hidden = true;
+  }
+  pill.hidden = !canConfigEdit;
+}
+
+// initials derives a 1-2 letter avatar label from an identity string --
+// "r.narang@acme" -> "RN" (first letter of each dot/space-separated
+// segment before the @, uppercased), "alice" -> "A" for a bare
+// single-segment identity. Display-only, never used for any comparison.
+function initials(identity) {
+  const local = identity.split('@')[0];
+  const parts = local.split(/[.\s_-]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 // renderRBAC populates the read-only RBAC screen's two panels from a
@@ -933,7 +1094,11 @@ function applyTheme(theme) {
   localStorage.setItem('wardline-theme', theme);
   const btn = document.getElementById('theme-toggle-btn');
   btn.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
-  btn.innerHTML = `<span data-icon="${theme === 'light' ? 'moon' : 'sun'}" aria-hidden="true"></span>`;
+  // Icon depicts the CURRENT theme (moon showing = dark is active), not
+  // the theme a click switches to -- matches the reference prototype's
+  // convention; aria-label above stays target-phrased since that's what
+  // announces the action a click performs, a separate concern.
+  btn.innerHTML = `<span data-icon="${theme === 'light' ? 'sun' : 'moon'}" aria-hidden="true"></span>`;
   mountIcons(btn);
 }
 
@@ -982,10 +1147,12 @@ function init() {
   pollAnomalies();
   pollFederation();
   pollBlocked();
+  pollReloadLog();
   renderOverview();
   setInterval(pollAudit, POLL_INTERVAL_MS);
   setInterval(pollAnomalies, POLL_INTERVAL_MS);
   setInterval(pollFederation, POLL_INTERVAL_MS);
+  setInterval(pollReloadLog, POLL_INTERVAL_MS);
   setInterval(pollBlocked, POLL_INTERVAL_MS);
 }
 

@@ -9,7 +9,7 @@
 <body>
   <div id="app">
     <nav class="sidebar" aria-label="Dashboard sections">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">│</span>Wardline</div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-word">Wardline</span></div>
 
       <div class="sidebar-group">
         <div class="sidebar-group-label">Overview</div>
@@ -43,10 +43,6 @@
 
       <div class="sidebar-group">
         <div class="sidebar-group-label">Configuration</div>
-        <button class="nav-item" data-view="credentials">
-          <span class="nav-icon" data-icon="credentials"></span>
-          <span>Credentials</span>
-        </button>
         <button class="nav-item" data-view="policy">
           <span class="nav-icon" data-icon="policy"></span>
           <span>Policy</span>
@@ -59,6 +55,10 @@
           <span class="nav-icon" data-icon="budget"></span>
           <span>Budget</span>
         </button>
+        <button class="nav-item" data-view="credentials">
+          <span class="nav-icon" data-icon="credentials"></span>
+          <span>Credentials</span>
+        </button>
       </div>
 
       <div class="sidebar-group">
@@ -66,6 +66,10 @@
         <button class="nav-item" data-view="status">
           <span class="nav-icon" data-icon="status"></span>
           <span>Status</span>
+        </button>
+        <button class="nav-item" data-view="reload-log">
+          <span class="nav-icon" data-icon="reload-log"></span>
+          <span>Reload log</span>
         </button>
       </div>
 
@@ -82,6 +86,10 @@
           <input type="search" id="global-search" placeholder="Search..." aria-label="Search current view">
         </div>
         <div class="topbar-right">
+          <span class="role-pill" id="config-edit-pill" role="status" hidden>
+            <span data-icon="lock" aria-hidden="true"></span>
+            <span>config:edit</span>
+          </span>
           <button class="topbar-icon-btn" id="theme-toggle-btn" aria-label="Switch to light theme">
             <span data-icon="moon" aria-hidden="true"></span>
           </button>
@@ -90,8 +98,11 @@
             <span class="notification-badge" id="notification-badge" hidden>0</span>
           </button>
           <div class="topbar-identity" id="topbar-identity">
-            <span class="identity-avatar" data-icon="user" aria-hidden="true"></span>
-            <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+            <span class="identity-avatar" id="identity-avatar" data-icon="user" aria-hidden="true"></span>
+            <span class="identity-text" id="identity-text" hidden>
+              <span class="identity-name" id="identity-name"></span>
+              <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+            </span>
           </div>
         </div>
       </header>
@@ -112,19 +123,19 @@
         <div class="kpi-row">
           <div class="kpi-tile">
             <div class="kpi-label">Requests</div>
-            <div class="kpi-value" id="kpi-total-requests">—</div>
+            <div class="kpi-value"><span id="kpi-total-requests">—</span> <span class="kpi-delta" id="kpi-total-requests-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
             <div class="kpi-label">Deny rate</div>
-            <div class="kpi-value" id="kpi-deny-rate">—</div>
+            <div class="kpi-value"><span id="kpi-deny-rate">—</span> <span class="kpi-delta" id="kpi-deny-rate-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
             <div class="kpi-label">Anomalies</div>
-            <div class="kpi-value" id="kpi-anomalies">—</div>
+            <div class="kpi-value"><span id="kpi-anomalies">—</span> <span class="kpi-delta" id="kpi-anomalies-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
-            <div class="kpi-label">Blocked</div>
-            <div class="kpi-value" id="kpi-blocked">—</div>
+            <div class="kpi-label">Blocked identities</div>
+            <div class="kpi-value"><span id="kpi-blocked">—</span> <span class="kpi-delta-active" id="kpi-blocked-active" hidden>active</span></div>
           </div>
         </div>
 
@@ -354,6 +365,30 @@
         <dl class="status-grid" id="status-grid"></dl>
         <h2 class="status-subheading">Features</h2>
         <ul class="feature-list" id="feature-list"></ul>
+      </section>
+
+      <section id="view-reload-log" class="view" aria-labelledby="view-reload-log-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-reload-log-heading">Reload log</h1>
+            <p class="view-sub">Every config-edit attempt, accepted or rejected</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Domain</th>
+                <th scope="col">Result</th>
+                <th scope="col">Applied by</th>
+                <th scope="col">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="reload-log-rows"></tbody>
+          </table>
+          <p id="reload-log-empty" class="empty-state" hidden>No config-reload attempts yet.</p>
+        </div>
       </section>
     </main>
   </div>

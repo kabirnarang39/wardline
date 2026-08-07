@@ -59,6 +59,15 @@ export async function fetchBudget() {
   return res.json();
 }
 
+export async function fetchReloadHistory(afterID, limit) {
+  const url = `api/reload/history?after=${afterID}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`reload history fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchBlocked() {
   const res = await fetch('api/anomalies/blocked');
   if (!res.ok) {
