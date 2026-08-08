@@ -16,7 +16,9 @@ func TestKey_DistinguishesTenants(t *testing.T) {
 	if tenant.Key("acme", "alice") == tenant.Key("widgets-inc", "alice") {
 		t.Fatal("Key(acme, alice) must not equal Key(widgets-inc, alice)")
 	}
-	if tenant.Key("acme", "alice") != tenant.Key("acme", "alice") {
+	first := tenant.Key("acme", "alice")
+	second := tenant.Key("acme", "alice")
+	if first != second {
 		t.Fatal("Key must be deterministic for the same (tenant, identity)")
 	}
 }
