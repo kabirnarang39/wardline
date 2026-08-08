@@ -115,6 +115,28 @@ export async function fetchBudget() {
   return res.json();
 }
 
+// fetchCompliance queries the live compliance-evidence manifest preview
+// for [from, to) (both RFC3339 strings) -- same error-shape convention
+// as writePolicy/writeBudget (ok:false + status + message on a
+// non-200), since a bad range or an unreachable store are both real
+// failure modes here, not just "not wired" (404, still ok:false).
+export async function fetchCompliance(from, to) {
+  const url = `api/compliance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const res = await fetch(url);
+  if (res.status === 200) {
+    return { ok: true, manifest: await res.json() };
+  }
+  if (res.status === 404) {
+    return { ok: false, status: res.status, message: 'Compliance evidence is not queryable on this server.' };
+  }
+  let message = `query failed: ${res.status}`;
+  try {
+    const body = await res.text();
+    if (body) message = body;
+  } catch { /* non-text error body, keep the generic message */ }
+  return { ok: false, status: res.status, message };
+}
+
 export async function fetchReloadHistory(afterID, limit) {
   const url = `api/reload/history?after=${afterID}&limit=${limit}`;
   const res = await fetch(url);

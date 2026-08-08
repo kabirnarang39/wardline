@@ -1469,6 +1469,43 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 }
 .budget-default-fields input:focus { border-color: var(--status-info); outline: none; }
 
+.compliance-range-picker {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.compliance-range-picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.compliance-range-picker input {
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.compliance-range-picker input:focus { border-color: var(--status-info); outline: none; }
+.compliance-range-picker .btn-secondary { min-height: 44px; }
+
+#compliance-error {
+  color: var(--status-critical);
+  margin-bottom: 16px;
+}
+
 .budget-override-input,
 .budget-override-select {
   width: 100%;
