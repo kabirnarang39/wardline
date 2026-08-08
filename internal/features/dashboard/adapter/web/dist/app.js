@@ -364,15 +364,29 @@ function renderAnomalies() {
 
   // Newest first for scanning.
   withScrollAnchor(tbody, () => {
-    const rows = state.anomalies.slice().reverse().map((a) => `
+    const rows = state.anomalies.slice().reverse().map((a) => {
+      // Severity is real, not decorative: "critical" means this exact
+      // anomaly caused a live auto-block (a.auto_block_seconds > 0, see
+      // anomalydomain.Anomaly.AutoBlockSeconds's doc comment) -- every
+      // other anomaly, regardless of kind, is "warn". a.score is nil for
+      // a kind with no real magnitude (novel_tool) -- rendered as "—",
+      // never a fabricated 0.
+      const severity = a.auto_block_seconds > 0 ? 'critical' : 'warn';
+      const score = a.score == null ? '—' : a.score.toFixed(2);
+      const autoBlock = a.auto_block_seconds > 0 ? `${a.auto_block_seconds}s` : '—';
+      return `
       <tr data-row-id="${escapeHTML(String(a.id))}">
         <td>${escapeHTML(formatTime(a.timestamp))}</td>
         <td>${escapeHTML(a.identity)}</td>
         <td>${escapeHTML(a.tenant)}</td>
         <td>${escapeHTML(a.kind)}</td>
+        <td><span class="pill" data-decision="${severity === 'critical' ? 'deny' : 'throttled'}">${severity}</span></td>
+        <td>${score}</td>
+        <td>${autoBlock}</td>
         <td title="${escapeHTML(a.detail)}">${escapeHTML(a.detail)}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
     tbody.innerHTML = rows;
   });
   updateNotificationBadge();

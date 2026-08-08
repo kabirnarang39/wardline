@@ -318,13 +318,15 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	entries := make([]domain.AnomalyEntry, 0, len(alerts))
 	for _, a := range alerts {
 		entries = append(entries, domain.AnomalyEntry{
-			ID:        a.ID,
-			Timestamp: a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			Identity:  a.Identity,
-			Tenant:    a.Tenant,
-			Kind:      string(a.Kind),
-			Detail:    a.Detail,
-			Tool:      a.Entry.Tool,
+			ID:               a.ID,
+			Timestamp:        a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Identity:         a.Identity,
+			Tenant:           a.Tenant,
+			Kind:             string(a.Kind),
+			Detail:           a.Detail,
+			Tool:             a.Entry.Tool,
+			Score:            a.Score,
+			AutoBlockSeconds: a.AutoBlockSeconds,
 		})
 	}
 	writeJSON(w, entries)

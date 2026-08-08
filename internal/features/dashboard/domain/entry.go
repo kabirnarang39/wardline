@@ -29,6 +29,14 @@ type AnomalyEntry struct {
 	Kind      string `json:"kind"`
 	Detail    string `json:"detail"`
 	Tool      string `json:"tool,omitempty"`
+	// Score is the detector's own magnitude, omitted (not zero) for a
+	// kind with no real score to report -- see anomalydomain.Anomaly.Score's
+	// own doc comment for why nil must never become a fabricated 0.
+	Score *float64 `json:"score,omitempty"`
+	// AutoBlockSeconds is real auto-block duration if THIS anomaly caused
+	// one, 0 otherwise -- omitted from JSON at 0 via omitempty, same
+	// "absence over a fabricated placeholder" posture as Score.
+	AutoBlockSeconds int `json:"auto_block_seconds,omitempty"`
 }
 
 // CorrelatedAlertEntry is the dashboard's JSON view of one cross-instance
