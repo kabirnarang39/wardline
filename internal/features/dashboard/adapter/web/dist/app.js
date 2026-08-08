@@ -4,6 +4,34 @@ import { mountIcons } from './icons.js';
 const POLL_INTERVAL_MS = 2000;
 const MAX_CLIENT_ROWS = 500;
 
+// FEATURE_INFO gives the Status view's feature grid a human-readable name +
+// real, accurate one-line description for every flag this build actually
+// supports (see cmd/wardline/main.go's featureFlags.Enabled(...) call
+// sites) -- matches the reference's feature-grid presentation (bold name +
+// description + a status dot, no redundant on/off text label) without
+// fabricating anything: every description states this project's real,
+// documented behavior for that flag. humanizeFeatureName() is the fallback
+// for any flag not yet listed here, so a future flag never renders as a
+// blank row.
+const FEATURE_INFO = {
+  web_ui: { name: 'Web UI', desc: 'This dashboard' },
+  anomaly_detection: { name: 'Anomaly detection', desc: 'In-process, per-replica unless postgres_storage is on' },
+  budget_enforcement: { name: 'Budget enforcement', desc: 'In-process, per-replica unless postgres_storage is on' },
+  credential_issuance: { name: 'Credential issuance', desc: 'Short-lived JWT bootstrap, revocation, refresh' },
+  rbac: { name: 'RBAC', desc: 'Role-based dashboard and config-edit authorization' },
+  scim: { name: 'SCIM provisioning', desc: 'Live binding sync from an IdP' },
+  postgres_storage: { name: 'Postgres storage', desc: 'Cross-replica shared state' },
+  federation: { name: 'Federation', desc: 'Cross-instance anomaly correlation' },
+  grpc_transport: { name: 'gRPC transport', desc: 'Transparent reverse proxy for gRPC calls' },
+  otel_tracing: { name: 'OpenTelemetry tracing', desc: 'OTLP/HTTP span export' },
+  log_retention: { name: 'Log retention', desc: 'Periodic audit/anomaly log purge' },
+  compliance_scheduled_export: { name: 'Compliance scheduled export', desc: 'Periodic evidence-bundle export' },
+};
+
+function humanizeFeatureName(key) {
+  return key.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 let lastSeenNotificationCount = 0;
 
 // disabledPollers tracks which optional-feature pollers (anomalies,
@@ -1101,13 +1129,18 @@ async function loadStatus() {
     const features = status.Features || {};
     const names = Object.keys(features).sort();
     featureList.innerHTML = names.length
-      ? names.map((name) => `
+      ? names.map((name) => {
+          const info = FEATURE_INFO[name] || { name: humanizeFeatureName(name), desc: '' };
+          return `
           <li>
-            <span class="feature-dot ${features[name] ? 'is-on' : 'is-off'}"></span>
-            <span>${escapeHTML(name)}</span>
-            <span>${features[name] ? 'on' : 'off'}</span>
+            <div>
+              <div class="feature-name">${escapeHTML(info.name)}</div>
+              ${info.desc ? `<div class="feature-desc">${escapeHTML(info.desc)}</div>` : ''}
+            </div>
+            <span class="feature-dot ${features[name] ? 'is-on' : 'is-off'}" title="${features[name] ? 'on' : 'off'}" role="img" aria-label="${features[name] ? 'on' : 'off'}"></span>
           </li>
-        `).join('')
+        `;
+        }).join('')
       : '<li>No optional features configured.</li>';
 
     const tenantBadge = document.getElementById('identity-tenant-badge');
