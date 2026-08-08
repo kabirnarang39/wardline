@@ -197,6 +197,45 @@ tracked as a future improvement, not solved by this cycle.
 ./wardline validate-policy --file policy.cedar.example --backend cedar
 ```
 
+## gRPC transport
+
+Alongside the HTTP/MCP reverse proxy, Wardline can front a gRPC upstream
+on a second listener, gated by the `grpc_transport` feature flag. It is a
+transparent raw-bytes passthrough proxy — it needs no `.proto` files or
+generated stubs for the services it fronts, so any gRPC API works
+unchanged behind it.
+
+```yaml
+features:
+  grpc_transport: true
+grpc_listen: ":8081"        # host:port to accept gRPC on (required when flag on)
+grpc_upstream: "localhost:50051"  # upstream gRPC target (required when flag on)
+```
+
+Both `grpc_listen` and `grpc_upstream` are required when the flag is on;
+`validate-config` rejects the config otherwise. Each call is subject to
+the same control plane as the HTTP path:
+
+- **Identity** is read from the `x-wardline-identity` (and optional
+  `x-wardline-tenant`) gRPC metadata, exactly as the HTTP path reads the
+  `X-Wardline-Identity`/`X-Wardline-Tenant` headers. When
+  `credential_issuance` is on, a Bearer token in the `authorization`
+  metadata is verified instead, same as HTTP.
+- **Policy** evaluates under the method namespace `grpc`, with the full
+  gRPC method name (e.g. `/pkg.Service/Method`) as the `tool`. A rule
+  therefore reads `method: grpc`, `tool: /pkg.Service/Method`:
+
+  ```yaml
+  - identity: agent-abc123
+    method: grpc
+    tool: /grpc.health.v1.Health/Check
+    effect: allow
+  ```
+
+- **Budget**, **audit**, and **auto-block** apply identically to the HTTP
+  path — the gRPC method is the budget/audit key, and a denied or
+  auto-blocked call returns a `PermissionDenied` gRPC status.
+
 ## Framework integrations
 
 Wardline works as a drop-in reverse proxy for any framework's MCP
@@ -392,8 +431,8 @@ Modeled directly on Kubernetes RBAC: a `Role` is a named set of
 permissions; a `ClusterRoleBinding` grants a subject a role globally,
 a `RoleBinding` grants it scoped to one tenant. Two built-in roles are
 always available regardless of `rbac.yaml`'s content — `viewer`
-(`dashboard:view`) and `admin` (`dashboard:view`, `credential:revoke`) —
-and a custom role may not reuse either name.
+(`dashboard:view`) and `admin` (`dashboard:view`, `credential:revoke`,
+`config:edit`) — and a custom role may not reuse either name.
 
 When on, every dashboard request must resolve an identity (via whichever
 `IdentityAuthenticator` `credential_issuance` has selected — the raw
@@ -445,10 +484,15 @@ Group's `displayName` encodes the RBAC grant it provisions:
 `wardline:tenant-<tenant>:role-<role>` makes every **`active`** member a
 `RoleBinding{Tenant: tenant}`; `wardline:role-<role>` (no tenant
 segment) makes every active member a `ClusterRoleBinding` (a global
-grant). Deactivating a user (`PATCH {"op":"replace","path":"active","value":false}`)
-or deleting one revokes any binding derived from their membership
+grant). Deactivating a user (`PATCH
+{"Operations":[{"op":"replace","path":"active","value":false}]}`) or
+deleting one revokes any binding derived from their membership
 immediately — the primary offboarding signal from every IdP this
-feature targets. In-memory by default; set `scim.persist_postgres: true`
+feature targets. The PATCH body must be a SCIM 2.0 `Operations` array as
+shown (RFC 7644 §3.5.2); a body missing the `Operations` wrapper, or one
+whose operations the handler doesn't support (only `replace` of `active`
+is), is rejected with `400` rather than silently accepted — a
+deactivation must never report success without applying. In-memory by default; set `scim.persist_postgres: true`
 (requires `features.postgres_storage` also on) to persist across
 restarts and share across replicas. See the [SCIM docs
 page](https://kabirnarang39.github.io/wardline/docs/features/scim/) for

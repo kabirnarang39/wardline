@@ -100,3 +100,45 @@ func TestVerifyChecksums_MalformedLine(t *testing.T) {
 		t.Fatal("expected an error for a malformed checksums.txt line")
 	}
 }
+
+func TestUnexpectedFiles_NoneForAnUntamperedBundle(t *testing.T) {
+	path := writeTestBundle(t)
+	files, err := adapter.ReadBundle(path)
+	if err != nil {
+		t.Fatalf("ReadBundle: %v", err)
+	}
+	unexpected, err := adapter.UnexpectedFiles(files["checksums.txt"], files)
+	if err != nil {
+		t.Fatalf("UnexpectedFiles: %v", err)
+	}
+	if len(unexpected) != 0 {
+		t.Errorf("expected no unexpected files for an untampered bundle, got %v", unexpected)
+	}
+}
+
+func TestUnexpectedFiles_DetectsInjectedFile(t *testing.T) {
+	path := writeTestBundle(t)
+	files, err := adapter.ReadBundle(path)
+	if err != nil {
+		t.Fatalf("ReadBundle: %v", err)
+	}
+	// An injected file passes VerifyChecksums (every listed file still
+	// matches) but must be caught as outside the bundle's integrity manifest.
+	files["smuggled.txt"] = []byte("rides along unverified")
+
+	mismatches, err := adapter.VerifyChecksums(files["checksums.txt"], files)
+	if err != nil {
+		t.Fatalf("VerifyChecksums: %v", err)
+	}
+	if len(mismatches) != 0 {
+		t.Fatalf("VerifyChecksums should not flag an injected file, got %v", mismatches)
+	}
+
+	unexpected, err := adapter.UnexpectedFiles(files["checksums.txt"], files)
+	if err != nil {
+		t.Fatalf("UnexpectedFiles: %v", err)
+	}
+	if len(unexpected) != 1 || unexpected[0] != "smuggled.txt" {
+		t.Errorf("expected exactly [smuggled.txt], got %v", unexpected)
+	}
+}

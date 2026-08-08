@@ -222,13 +222,28 @@ func (h *Handler) handleUserItem(w http.ResponseWriter, r *http.Request) {
 			writeSCIMError(w, http.StatusBadRequest, "invalid PATCH body")
 			return
 		}
+		// RFC 7644 §3.5.2 requires at least one operation. A body missing the
+		// Operations wrapper (e.g. a flat {"op":...,"path":"active"}) decodes to
+		// an empty slice here; without this guard the loop below would no-op yet
+		// still return 204, silently reporting a deactivation that never happened
+		// -- a real offboarding footgun.
+		if len(req.Operations) == 0 {
+			writeSCIMError(w, http.StatusBadRequest, "PATCH body must contain a non-empty Operations array")
+			return
+		}
+		applied := false
 		for _, op := range req.Operations {
 			if strings.EqualFold(op.Op, "replace") && op.Path == "active" {
 				if err := h.users.PatchUserActive(id, op.Value); err != nil {
 					writeSCIMError(w, http.StatusNotFound, "not found")
 					return
 				}
+				applied = true
 			}
+		}
+		if !applied {
+			writeSCIMError(w, http.StatusBadRequest, "no supported operation in PATCH; only replace of \"active\" is supported")
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:

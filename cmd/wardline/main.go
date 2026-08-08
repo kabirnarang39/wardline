@@ -2328,6 +2328,17 @@ func runVerifyEvidence(logger *slog.Logger, args []string) {
 		}
 		os.Exit(1)
 	}
+	unexpected, err := complianceadapter.UnexpectedFiles(checksums, files)
+	if err != nil {
+		logger.Error("failed to parse checksums.txt", "error", err)
+		os.Exit(1)
+	}
+	if len(unexpected) > 0 {
+		for _, name := range unexpected {
+			logger.Error("unexpected file in bundle -- not covered by checksums.txt", "file", name)
+		}
+		os.Exit(1)
+	}
 	logger.Info("checksums verified", "files", len(files)-1)
 
 	if *publicKeyPath == "" {

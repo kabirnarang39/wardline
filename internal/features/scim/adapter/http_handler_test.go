@@ -333,6 +333,46 @@ func TestHandler_PatchActive_NotFound_Returns404(t *testing.T) {
 	}
 }
 
+// TestHandler_PatchActive_FlatBody_Returns400_NoSilentNoOp is the
+// regression for the offboarding footgun: a PATCH missing the Operations
+// wrapper (a flat {"op":...,"path":"active"}) must be rejected with 400,
+// NOT silently 204'd while leaving the user active -- an operator
+// deactivating a user must never see success without the change applying.
+func TestHandler_PatchActive_FlatBody_Returns400_NoSilentNoOp(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	created, _ := svc.GetUserByName("alice")
+
+	body := `{"op":"replace","path":"active","value":false}`
+	rec := doRequest(h, http.MethodPatch, "/scim/v2/Users/"+created.ID, body, "secret-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("flat PATCH body: got %d, want 400, body %s", rec.Code, rec.Body.String())
+	}
+	if u, ok := svc.GetUserByName("alice"); !ok || !u.Active {
+		t.Fatalf("alice must remain active after a rejected PATCH: %+v, ok=%v", u, ok)
+	}
+}
+
+// TestHandler_PatchActive_UnsupportedOp_Returns400 rejects a well-formed
+// Operations array that contains no operation this handler supports (only
+// replace of "active" is), rather than 204'ing a no-op the client believes
+// took effect.
+func TestHandler_PatchActive_UnsupportedOp_Returns400(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	created, _ := svc.GetUserByName("alice")
+
+	body := `{"Operations":[{"op":"replace","path":"displayName","value":false}]}`
+	rec := doRequest(h, http.MethodPatch, "/scim/v2/Users/"+created.ID, body, "secret-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported op: got %d, want 400, body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestNewHandler_EmptyBearerTokenPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
