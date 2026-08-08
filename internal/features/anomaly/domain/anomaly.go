@@ -32,4 +32,19 @@ type Anomaly struct {
 	Kind      Kind
 	Detail    string
 	Entry     auditdomain.Entry
+
+	// Score is the detector's own magnitude for this anomaly, nil for a
+	// kind that has no real magnitude to report (novel_tool is a binary
+	// "first time seen" signal, not a graded score) -- nil must never be
+	// papered over with a fabricated 0 or placeholder value, since that
+	// would misrepresent "no real score exists" as "scored exactly zero."
+	// Only checkMLScore populates it today.
+	Score *float64
+
+	// AutoBlockSeconds is the real configured auto-block duration, set
+	// only when THIS anomaly is the one that actually triggered a live
+	// Block() call (see checkMLScore) -- zero means "did not cause a
+	// block," never a guess about what a block *would* have lasted had
+	// auto_block been enabled.
+	AutoBlockSeconds int
 }
