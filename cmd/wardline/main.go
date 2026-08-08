@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"google.golang.org/grpc"
 	"gopkg.in/yaml.v3"
 
 	anomalyadapter "github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
@@ -47,6 +49,7 @@ import (
 	federationadapter "github.com/kabirnarang39/wardline/internal/features/federation/adapter"
 	federationdomain "github.com/kabirnarang39/wardline/internal/features/federation/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	grpcadapter "github.com/kabirnarang39/wardline/internal/features/grpcproxy/adapter"
 	healthadapter "github.com/kabirnarang39/wardline/internal/features/health/adapter"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	cedaradapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/cedar"
@@ -524,6 +527,12 @@ func runServe(logger *slog.Logger, args []string) {
 
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
+	// The gRPC transport resolves identity from request metadata rather than
+	// HTTP headers, so it needs its own resolver -- but backed by the same
+	// credential verification service, so both transports authenticate a
+	// bearer token identically. Defaults to unauthenticated metadata, mirroring
+	// identityAuth's HeaderIdentity default.
+	var grpcIdentity grpcadapter.IdentityResolver = grpcadapter.MetadataIdentity{}
 
 	var healthPinger func(ctx context.Context) error
 	var healthDB *sql.DB
@@ -750,6 +759,10 @@ func runServe(logger *slog.Logger, args []string) {
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.
 		identityAuth = proxyadapter.NewBearerIdentity(verification)
+		// verification also satisfies grpcadapter.TokenAuthenticator (same
+		// token -> identity/tenant contract), so the gRPC transport shares the
+		// exact same bearer verification path.
+		grpcIdentity = grpcadapter.NewBearerIdentity(verification)
 	}
 
 	// Declared as the interface type and left at its zero value (a true
@@ -1099,6 +1112,36 @@ func runServe(logger *slog.Logger, args []string) {
 		serveErr <- srv.ListenAndServe()
 	}()
 
+	// gRPC transport: a second listener running the same enforcement pipeline
+	// (policy/budget/auto-block/audit) as the HTTP proxy, reusing the very same
+	// decider/budgetChecker/autoBlockChecker/recorder instances so both
+	// transports share one policy engine, one budget, and one audit trail. A
+	// fatal Serve error shares the HTTP path's serveErr channel; graceful
+	// shutdown GracefulStops it alongside srv.Shutdown below.
+	var grpcServer *grpc.Server
+	var grpcUpstreamConn *grpc.ClientConn
+	if featureFlags.Enabled("grpc_transport") {
+		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream)
+		if err != nil {
+			logger.Error("gRPC upstream dial failed", "error", err, "upstream", cfg.GRPCUpstream)
+			os.Exit(1)
+		}
+		grpcUpstreamConn = conn
+		grpcProxy := grpcadapter.NewProxy(decider, budgetChecker, autoBlockChecker, recorder, grpcIdentity, conn, logger)
+		grpcServer = grpc.NewServer(grpcProxy.ServerOptions()...)
+		lis, err := net.Listen("tcp", cfg.GRPCListen)
+		if err != nil {
+			logger.Error("gRPC listen failed", "error", err, "addr", cfg.GRPCListen)
+			os.Exit(1)
+		}
+		go func() {
+			logger.Info("wardline gRPC listening", "addr", cfg.GRPCListen, "upstream", cfg.GRPCUpstream)
+			if err := grpcServer.Serve(lis); err != nil {
+				serveErr <- err
+			}
+		}()
+	}
+
 	select {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -1212,6 +1255,9 @@ func runServe(logger *slog.Logger, args []string) {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
 		}
+		if grpcServer != nil {
+			grpcServer.GracefulStop()
+		}
 	}
 
 	tracingShutdownCtx, tracingCancel := context.WithTimeout(context.Background(), tracingShutdownTimeout)
@@ -1276,6 +1322,11 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	if federationGCStop != nil {
 		close(federationGCStop)
+	}
+	if grpcUpstreamConn != nil {
+		if err := grpcUpstreamConn.Close(); err != nil {
+			logger.Error("gRPC upstream connection shutdown failed", "error", err)
+		}
 	}
 }
 

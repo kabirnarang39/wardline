@@ -136,9 +136,21 @@ policy-pack marketplace, HA deployment.
   pipeline. Docs:
   `docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md`.
 
-## v2.0 (planned, not yet shipped)
+- **gRPC transport support** — a second listener (feature
+  `grpc_transport`, `grpc_listen` + `grpc_upstream`) runs the exact same
+  identity → auto-block → policy → budget → audit pipeline as the HTTP
+  proxy, reusing the same policy engine, budget, and audit trail. It's a
+  transparent reverse proxy: a raw passthrough codec relays message bytes
+  verbatim, so Wardline needs no relayed service's protobuf schema, and the
+  gRPC full method (`/pkg.Service/Method`) is the audited/policy-keyed
+  "tool" under a new policy method namespace `grpc` (a blank-method rule
+  still means `tools/call`, so no existing MCP rule accidentally matches a
+  gRPC call). Deliberately out of scope for this cut: TLS to the upstream
+  (plaintext today; terminate at ingress), and per-message policy
+  evaluation (one decision per RPC at stream start, mirroring the HTTP
+  transport's one-decision-per-request).
 
-- **gRPC transport support** — enabling gRPC as a transport layer alongside HTTP.
+## v2.0 (planned, not yet shipped)
 
 A hosted cloud tier has been explicitly named as a possible future
 direction, but is a business/infrastructure decision outside this
