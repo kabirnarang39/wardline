@@ -111,6 +111,24 @@ wardline:
   tracing:
     otlpEndpoint: ""
     serviceName: ""
+  # RBAC config, rendered into wardline.yaml verbatim only when set (mirrors
+  # config.RBACConfig). rbac.config_file must point at a roles/bindings file
+  # you mount via extraVolumes/extraVolumeMounts, the same pattern as
+  # credentialIdentitiesFile above. Also set features.rbac: true.
+  rbac: {}
+    # config_file: /etc/wardline-rbac/rbac.yaml
+  # Anomaly-detection config, rendered verbatim only when set (mirrors
+  # config.AnomalyConfig's full nested shape). anomaly.output must be a
+  # writable path distinct from audit.output. Also set
+  # features.anomaly_detection: true. See README "Anomaly detection".
+  anomaly: {}
+    # output: /var/lib/wardline/anomaly.jsonl
+    # window_seconds: 60
+    # rate_spike: { enabled: true, rate_multiplier: 3.0, min_calls: 10 }
+    # novel_tool: { enabled: true }
+    # deny_rate_spike: { enabled: true, threshold: 0.5, min_calls: 5 }
+    # ml_score: { enabled: true, score_threshold: 3.0, min_calls: 5 }
+    # auto_block: { enabled: true, score_threshold: 4.0, block_duration_seconds: 300 }
 
 ingress:
   enabled: false
