@@ -4,4 +4,4 @@
 // no such step exists yet in this repo.
 package version
 
-const Version = "0.5.0"
+const Version = "2.0.0"
