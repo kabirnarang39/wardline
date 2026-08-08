@@ -106,8 +106,15 @@
           <tr><td><a href="docs/features/credential-issuance/">Credential issuance</a></td><td>Short-lived RS256 JWT bearer tokens</td><td><code>credentials</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/rbac/">RBAC</a></td><td>Kubernetes-shaped Role/RoleBinding tenant isolation</td><td><code>rbac</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/budget-enforcement/">Budget enforcement</a></td><td>Per-identity spend limits</td><td><code>budget</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/features/anomaly-detection/">Anomaly detection</a></td><td>Rate-spike, novel-tool, deny-rate heuristics</td><td><code>anomaly</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/features/compliance-evidence-export/">Compliance export</a></td><td>Checksum-verified evidence bundle</td><td><code>export-evidence</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/anomaly-detection/">Anomaly detection</a></td><td>Rate-spike, novel-tool, deny-rate, ML z-score heuristics + auto-block</td><td><code>anomaly</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/sso/">SSO</a></td><td>OIDC-bootstrapped identity</td><td><code>credentials</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/mtls-bootstrap/">mTLS/SPIFFE bootstrap</a></td><td>Identity from a verified SPIFFE ID</td><td><code>credentials</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/scim/">SCIM</a></td><td>IdP-provisioned RBAC bindings</td><td><code>scim</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/web-dashboard/">Web dashboard</a></td><td>Read-only ops view of policy, audit, anomalies</td><td><code>web_ui</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/federation/">Federation</a></td><td>Cross-instance anomaly correlation over signed peers</td><td><code>federation</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/grpc-transport/">gRPC transport</a></td><td>Same control plane on a gRPC listener</td><td><code>grpc_transport</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/deployment/observability/">Tracing</a></td><td>OpenTelemetry OTLP spans</td><td><code>otel_tracing</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/compliance-evidence-export/">Compliance export</a></td><td>Checksum-verified, optionally signed evidence bundle</td><td><code>export-evidence</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/policy-pack-marketplace/">Policy-pack marketplace</a></td><td>Embedded starter policy templates</td><td><code>policy-pack</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/deployment/high-availability/">HA deployment</a></td><td>Shared signing key, Postgres revocation, PDB</td><td><code>ha</code></td><td>shipped</td></tr>
         </tbody>
