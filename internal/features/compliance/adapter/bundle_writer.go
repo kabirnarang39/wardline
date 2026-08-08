@@ -4,9 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"sort"
@@ -25,10 +28,11 @@ type bundleFile struct {
 }
 
 // WriteBundle serializes manifest, auditEntries, anomalies (optional),
-// policySource, and rbacSource (optional) into a single gzip+tar stream
-// written to w, in a fixed order (manifest.json, audit.jsonl,
-// anomalies.jsonl, policy_snapshot, policy_backend.txt, rbac_snapshot,
-// checksums.txt) so two exports of identical inputs produce
+// policySource, rbacSource (optional), and identities (optional) into a
+// single gzip+tar stream written to w, in a fixed order (manifest.json,
+// audit.jsonl, anomalies.jsonl, policy_snapshot, policy_backend.txt,
+// rbac_snapshot, identities.json, checksums.txt[, checksums.txt.sig,
+// public_key.pem]) so two exports of identical inputs produce
 // byte-identical archives. "Identical inputs" includes manifest, whose
 // GeneratedAt differs on every real run -- two live `wardline
 // export-evidence` invocations over the same data are therefore NOT
@@ -40,6 +44,17 @@ type bundleFile struct {
 // directly (writing into an in-memory buffer instead of a file) so the
 // bundle's wire format can never drift from what those existing types
 // already produce.
+//
+// signingKey is optional (nil -- the default -- omits both
+// checksums.txt.sig and public_key.pem, producing byte-for-byte the same
+// unsigned bundle this function always produced). When non-nil,
+// checksums.txt's own bytes are signed (RSA-PSS/SHA256, see signer.go) --
+// since checksums.txt already covers every other file's integrity,
+// signing it transitively authenticates the whole bundle without a
+// second digest pass. identities is optional (nil/empty omits
+// identities.json entirely, matching every other optional file's
+// "omit, don't emit empty" convention already established for
+// anomalies.jsonl/rbac_snapshot).
 func WriteBundle(
 	w io.Writer,
 	manifest domain.Manifest,
@@ -48,6 +63,8 @@ func WriteBundle(
 	policySource []byte,
 	policyBackend string,
 	rbacSource []byte,
+	identities []domain.RedactedIdentity,
+	signingKey *rsa.PrivateKey,
 ) error {
 	var files []bundleFile
 
@@ -93,7 +110,31 @@ func WriteBundle(
 		files = append(files, bundleFile{"rbac_snapshot", rbacSource})
 	}
 
-	files = append(files, bundleFile{"checksums.txt", checksumsFile(files)})
+	if len(identities) > 0 {
+		identitiesJSON, err := json.MarshalIndent(identities, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal identities: %w", err)
+		}
+		files = append(files, bundleFile{"identities.json", identitiesJSON})
+	}
+
+	checksums := checksumsFile(files)
+	files = append(files, bundleFile{"checksums.txt", checksums})
+
+	if signingKey != nil {
+		sig, err := Sign(checksums, signingKey)
+		if err != nil {
+			return fmt.Errorf("sign checksums: %w", err)
+		}
+		files = append(files, bundleFile{"checksums.txt.sig", sig})
+
+		pubDER, err := x509.MarshalPKIXPublicKey(&signingKey.PublicKey)
+		if err != nil {
+			return fmt.Errorf("marshal public key: %w", err)
+		}
+		pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+		files = append(files, bundleFile{"public_key.pem", pubPEM})
+	}
 
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
+	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 	proxydomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -1025,6 +1027,175 @@ func TestRunExportEvidence_MissingAnomalyFileIsZeroAnomaliesAndBundleIsOwnerOnly
 	}
 	if !bytes.Contains(manifestJSON, []byte(`"unparsable_anomaly_lines_skipped": 0`)) {
 		t.Errorf("expected the anomaly skip counter in manifest.json, got:\n%s", manifestJSON)
+	}
+}
+
+func TestRunGenerateSigningKey_WritesValidKeypair(t *testing.T) {
+	dir := t.TempDir()
+	privPath := filepath.Join(dir, "priv.pem")
+	pubPath := filepath.Join(dir, "pub.pem")
+
+	runGenerateSigningKey(testLogger(), []string{
+		"-private-key", privPath,
+		"-public-key", pubPath,
+	})
+
+	privInfo, err := os.Stat(privPath)
+	if err != nil {
+		t.Fatalf("expected private key file to exist: %v", err)
+	}
+	if perm := privInfo.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected the private key to be owner-only (0600), got %04o", perm)
+	}
+
+	key, err := loadSigningKey(privPath)
+	if err != nil {
+		t.Fatalf("expected the generated private key to parse cleanly: %v", err)
+	}
+
+	pubPEM, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatalf("expected public key file to exist: %v", err)
+	}
+	pubKey, err := complianceadapter.ParsePublicKeyPEM(pubPEM)
+	if err != nil {
+		t.Fatalf("expected the generated public key to parse cleanly: %v", err)
+	}
+	if key.N.Cmp(pubKey.N) != 0 {
+		t.Error("expected the private key's public half to match the separately-written public key file")
+	}
+}
+
+// TestRunExportEvidence_SignKey_ProducesVerifiableSignedBundle proves
+// export-evidence -sign-key actually reaches WriteBundle: the resulting
+// bundle's checksums.txt.sig verifies against the embedded
+// public_key.pem, and that public key matches the private key's public
+// half exactly.
+func TestRunExportEvidence_SignKey_ProducesVerifiableSignedBundle(t *testing.T) {
+	dir := t.TempDir()
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	privPath := filepath.Join(dir, "priv.pem")
+	runGenerateSigningKey(testLogger(), []string{"-private-key", privPath, "-public-key", filepath.Join(dir, "pub.pem")})
+
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+	runExportEvidence(testLogger(), []string{
+		"-config", configPath,
+		"-from", "2020-01-01T00:00:00Z",
+		"-to", "2030-01-01T00:00:00Z",
+		"-output", outputPath,
+		"-sign-key", privPath,
+	})
+
+	files, err := complianceadapter.ReadBundle(outputPath)
+	if err != nil {
+		t.Fatalf("ReadBundle: %v", err)
+	}
+	sig, ok := files["checksums.txt.sig"]
+	if !ok {
+		t.Fatal("expected checksums.txt.sig to be present when -sign-key is given")
+	}
+	pubKey, err := complianceadapter.ParsePublicKeyPEM(files["public_key.pem"])
+	if err != nil {
+		t.Fatalf("parse embedded public key: %v", err)
+	}
+	if !complianceadapter.Verify(files["checksums.txt"], sig, pubKey) {
+		t.Error("expected the signature to verify against the embedded public key")
+	}
+
+	privKey, err := loadSigningKey(privPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privKey.N.Cmp(pubKey.N) != 0 {
+		t.Error("expected the embedded public key to match the signing private key's public half")
+	}
+}
+
+// TestRunExportEvidence_Identities_RedactsSecretAndSpiffeID proves the
+// bundle's identities.json carries Name/Tenant only -- a raw "secret:"
+// value from credentials.yaml must never appear anywhere in the bundle.
+func TestRunExportEvidence_Identities_RedactsSecretAndSpiffeID(t *testing.T) {
+	dir := t.TempDir()
+
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte("rules: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const topSecretValue = "sekrit-registration-value-must-never-leak"
+	identitiesPath := filepath.Join(dir, "credentials.yaml")
+	identitiesBody := "identities:\n" +
+		"  - name: agent-abc123\n" +
+		"    secret: " + topSecretValue + "\n" +
+		"    tenant: acme\n" +
+		"  - name: agent-def456\n" +
+		"    secret: another-secret\n"
+	if err := os.WriteFile(identitiesPath, []byte(identitiesBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(dir, "wardline.yaml")
+	configBody := "listen: \"127.0.0.1:0\"\n" +
+		"upstream: \"http://127.0.0.1:1\"\n" +
+		"policy_file: \"" + policyPath + "\"\n" +
+		"audit:\n  output: \"" + auditPath + "\"\n" +
+		"features:\n  credential_issuance: true\n" +
+		"credential:\n  identities_file: \"" + identitiesPath + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(dir, "evidence.tar.gz")
+	runExportEvidence(testLogger(), []string{
+		"-config", configPath,
+		"-from", "2020-01-01T00:00:00Z",
+		"-to", "2030-01-01T00:00:00Z",
+		"-output", outputPath,
+	})
+
+	files, err := complianceadapter.ReadBundle(outputPath)
+	if err != nil {
+		t.Fatalf("ReadBundle: %v", err)
+	}
+	identitiesJSON, ok := files["identities.json"]
+	if !ok {
+		t.Fatal("expected identities.json to be present when credential_issuance is on and identities_file is set")
+	}
+	var got []compliancedomain.RedactedIdentity
+	if err := json.Unmarshal(identitiesJSON, &got); err != nil {
+		t.Fatalf("identities.json is not valid JSON: %v", err)
+	}
+	want := []compliancedomain.RedactedIdentity{
+		{Name: "agent-abc123", Tenant: "acme"},
+		{Name: "agent-def456", Tenant: "default"},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("expected redacted identities %+v, got %+v", want, got)
+	}
+	for name, content := range files {
+		if bytes.Contains(content, []byte(topSecretValue)) {
+			t.Errorf("secret value leaked into bundle file %q", name)
+		}
 	}
 }
 

@@ -45,9 +45,11 @@ directly against `internal/features/`:
   and a `Correlator` raises an alert once the same fingerprint is seen by
   multiple instances. See [Federation](#federation).
 - **A compliance evidence bundle command** — `wardline export-evidence`
-  assembles a checksummed `.tar.gz` of the audit trail, anomaly log, and
-  policy snapshot for an auditor, in one offline CLI invocation. See
-  [Compliance evidence export](#compliance-evidence-export).
+  assembles a checksummed, optionally RSA-signed `.tar.gz` of the audit
+  trail, anomaly log, redacted identity list, and policy snapshot for an
+  auditor, plus periodic scheduled export, configurable log retention,
+  and a live manifest-preview API/dashboard view. See [Compliance
+  evidence export](#compliance-evidence-export).
 
 None of this is claimed as "the best" of anything — see the comparison
 below for what a claim like that would actually need to survive.
@@ -699,12 +701,81 @@ The bundle is a `.tar.gz` containing:
   unauthenticated via the dashboard, so this discloses nothing new).
 - `rbac_snapshot` — `rbac.yaml`'s raw source, when `rbac` is on (no
   secrets live in that file's schema).
+- `identities.json` — every registered identity's name and tenant only,
+  when `credential_issuance` is on and `credential.identities_file` is
+  set (omitted otherwise). **Never** the identity's secret or SPIFFE ID
+  — those two fields are read from `credentials.yaml`'s underlying bytes
+  and never even parsed into memory on this codepath, let alone bundled.
 - `checksums.txt` — a `sha256sum`-compatible listing of every other
   file in the bundle; verify with `sha256sum -c checksums.txt`.
+- `checksums.txt.sig` and `public_key.pem` — present only when
+  `-sign-key` is given (see "Signing and verifying bundles" below).
 
-**Never included:** `credentials.yaml` or any credential-issuance
-material in any form, the full parsed config, or any DSN. Only the
-files listed above.
+**Never included:** `credentials.yaml`'s raw secrets/SPIFFE IDs in any
+form, the full parsed config, or any DSN. Only the files listed above.
+
+### Signing and verifying bundles
+
+`wardline generate-signing-key [-private-key <path>] [-public-key <path>]`
+writes a fresh 2048-bit RSA keypair (PEM, PKCS8/PKIX) — an operator with
+an existing compliant key from their own PKI never needs this, it just
+saves a first-time user a trip to `openssl`.
+
+`export-evidence -sign-key <path>` signs the bundle's `checksums.txt`
+(RSA-PSS/SHA-256, the same scheme this project's federation feature
+already uses) — since `checksums.txt` already covers every other
+bundled file's integrity, signing it transitively authenticates the
+whole bundle without a second digest pass. The bundle then carries its
+own `public_key.pem`, so casual verification needs no out-of-band key
+distribution; an operator wanting real non-repudiation still pins the
+key by fingerprint out-of-band, the same trust model as any self-signed
+artifact.
+
+`wardline verify-evidence -bundle <path> [-public-key <path>]` re-checks
+every file's SHA-256 against `checksums.txt` (works on any bundle,
+signed or not) and, when `-public-key` is given, additionally verifies
+`checksums.txt.sig` against that key. Exits non-zero on any failure —
+a missing signature when `-public-key` is asked for is reported
+distinctly ("bundle is not signed") from a signature that fails to
+verify, so you can tell "nothing to check" apart from "check failed".
+
+### Log retention
+
+`audit.retention_days`/`anomaly.retention_days` (both default `0`, keep
+forever) plus `features.log_retention: true` and, optionally,
+`retention.check_interval_seconds` (default 86400 / 24h) run a periodic
+background job that purges audit/anomaly entries older than their
+configured window from whichever backend is active (JSONL rewrite, or a
+Postgres `DELETE`, under `features.postgres_storage`). A line that fails
+to parse is always kept, never dropped — retention must never destroy
+data it can't confidently place in time. Meaningless (and rejected by
+config validation) when the corresponding output is `stdout`. This does
+not touch bundles already exported — only the live backing store.
+
+### Scheduled export
+
+`features.compliance_scheduled_export: true` plus
+`compliance.scheduled_export_interval_seconds`,
+`compliance.scheduled_export_output_dir`, and optionally
+`compliance.signing_key_file` run the exact same export logic
+`export-evidence` uses on a periodic ticker, writing a bundle into the
+output directory every interval — no cron, no external scheduler. A
+failed tick logs and retries the same range next tick rather than
+silently skipping it, so a transient failure (disk full, a Postgres
+blip) never opens a permanent gap in coverage. Requires the same
+queryable-audit-trail precondition as `export-evidence`.
+
+### Live query API
+
+`GET /dashboard/api/compliance?from=<RFC3339>&to=<RFC3339>` (also
+surfaced in the dashboard's Compliance view) returns the same
+`manifest.json` shape a real export would produce — counts and
+decision/kind histograms, built live from the active audit/anomaly
+readers — **never raw entries**. It's a preview to sanity-check a range
+before running the real CLI export, not a replacement for it; gated
+identically to every other read-only dashboard route (`dashboard:view`
+when RBAC is on). 404s when the audit trail isn't queryable, same
+precondition as `export-evidence`.
 
 The bundle is written `0600`, and every file inside it carries mode
 `0600` too — it aggregates the whole audit trail into one artifact, so
@@ -724,8 +795,13 @@ separate read-only DSN field to make it useful) is a future cycle.
 nothing to read back — point `audit.output` at a file, or turn on
 `features.postgres_storage`, to use this command. See
 `docs/superpowers/specs/2026-07-28-compliance-evidence-export-design.md`
-for the full design, including what's deliberately deferred (bundle
-signing, a live evidence-browsing API, redacted identity inclusion).
+for the original design and
+`docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md`
+for signing/retention/scheduled-export/live-query/redacted-identities —
+still deliberately deferred: a full raw-entry evidence browser, cron-
+expression scheduling, and cross-replica coordination for retention/
+scheduled-export in an HA deployment (each replica runs its own
+independent ticker today).
 
 ## Policy packs
 
