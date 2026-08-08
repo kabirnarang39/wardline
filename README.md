@@ -1359,15 +1359,19 @@ helm install my-wardline charts/wardline \
   --set-file wardline.policy=./policy.yaml
 ```
 
-Most of `internal/platform/config.Config` is exposed under `values.yaml`'s
-`wardline:` key — feature flags, budget limits, tracing, Postgres
-storage, and (as of the HA-deployment cycle) `credential.signing_key_file`
-/ `credential.identities_file` and `shutdown_delay_seconds` all work the
-same way they do outside Kubernetes. The `rbac:` and `anomaly:` blocks are
-also exposed: set `wardline.rbac` / `wardline.anomaly` to their full config
-maps (rendered into `wardline.yaml` verbatim) and set the matching feature
-flags — for `rbac`, mount the roles/bindings file via
-`extraVolumes`/`extraVolumeMounts` and point `rbac.config_file` at it.
+The whole of `internal/platform/config.Config` is exposed under
+`values.yaml`'s `wardline:` key — feature flags, budget limits, tracing,
+Postgres storage, `credential.signing_key_file` /
+`credential.identities_file`, and `shutdown_delay_seconds` all work the
+same way they do outside Kubernetes. The richer blocks —
+`wardline.rbac`, `wardline.anomaly`, `wardline.scim`,
+`wardline.federation`, `wardline.compliance`, `wardline.retention`, and
+`wardline.credential` (its `bootstrap_source`/`oidc`/`mtls` sub-blocks),
+plus `wardline.grpcListen` / `wardline.grpcUpstream` — are each rendered
+into `wardline.yaml` verbatim when set (and omitted when empty), so any
+config the binary accepts is reachable from the chart. Set the matching
+feature flags too, and mount any files a block references (roles/bindings,
+peers, signing keys) via `extraVolumes`/`extraVolumeMounts`.
 
 **Mounting a signing key or identities file:** `wardline.credentialSigningKeyFile`
 and `wardline.credentialIdentitiesFile` only set the config *paths* — you

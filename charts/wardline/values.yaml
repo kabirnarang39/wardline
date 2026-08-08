@@ -101,6 +101,22 @@ wardline:
   policy: |
     rules: []
     default: deny
+  # gRPC transport (features.grpc_transport). Both required when that flag
+  # is on. See README "gRPC transport".
+  grpcListen: ""       # e.g. ":8081"
+  grpcUpstream: ""     # e.g. "your-grpc-upstream:50051"
+  # Extra credential.* fields beyond signing_key_file/identities_file above,
+  # rendered verbatim (mirrors config.CredentialConfig): bootstrap_source
+  # and the oidc/mtls sub-blocks. Mount any referenced files via
+  # extraVolumes/extraVolumeMounts.
+  credential: {}
+    # bootstrap_source: oidc
+    # oidc:
+    #   issuer: "https://idp.example.com/"
+    #   jwks_uri: "https://idp.example.com/.well-known/jwks.json"
+    #   audience: "wardline"
+    # mtls:
+    #   header: "X-Wardline-Verified-Spiffe-Id"
   features: {}
   audit:
     output: stdout
@@ -129,6 +145,29 @@ wardline:
     # deny_rate_spike: { enabled: true, threshold: 0.5, min_calls: 5 }
     # ml_score: { enabled: true, score_threshold: 3.0, min_calls: 5 }
     # auto_block: { enabled: true, score_threshold: 4.0, block_duration_seconds: 300 }
+  # SCIM provisioning config (features.scim), rendered verbatim (mirrors
+  # config.ScimConfig). Also set features.scim: true.
+  scim: {}
+    # bearer_token_env: WARDLINE_SCIM_TOKEN
+    # persist_postgres: false
+  # Federation config (features.federation, requires anomaly_detection),
+  # rendered verbatim (mirrors config.FederationConfig). Mount the signing
+  # key / shared secret / peers file via extraVolumes/extraVolumeMounts.
+  federation: {}
+    # instance_id: "eu-cluster-1"
+    # peers_file: /etc/wardline-fed/peers.yaml
+    # signing_key_file: /etc/wardline-fed/signing-key.pem
+    # shared_secret_file: /etc/wardline-fed/shared-secret
+    # min_instances_for_correlation: 2
+  # Scheduled compliance export (features.compliance_scheduled_export),
+  # rendered verbatim (mirrors config.ComplianceConfig).
+  compliance: {}
+    # scheduled_export_interval_seconds: 86400
+    # scheduled_export_output_dir: /var/lib/wardline/evidence
+  # Log retention (features.log_retention), rendered verbatim (mirrors
+  # config.RetentionConfig). Set audit.retention_days / anomaly.retention_days too.
+  retention: {}
+    # check_interval_seconds: 3600
 
 ingress:
   enabled: false
