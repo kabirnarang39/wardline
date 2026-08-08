@@ -3539,6 +3539,159 @@ default: deny
 	}
 }
 
+// policyInfoResponse mirrors dashboarddomain.PolicyInfo's JSON shape for
+// GET/successful-PUT /dashboard/api/policy.
+type policyInfoResponse struct {
+	Backend string
+	Source  string
+}
+
+// putPolicy PUTs the dashboard Rule editor's exact wire shape to
+// /dashboard/api/policy as identity, returning the raw response so both
+// the success case (200, a policyInfoResponse body) and the rejection
+// case (400, an {"error": "..."} body) can assert on it directly.
+func putPolicy(t *testing.T, listenAddr, identity string, rules []map[string]string, def string) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"rules": rules, "default": def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, "http://"+listenAddr+"/dashboard/api/policy", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func getPolicyInfo(t *testing.T, listenAddr, identity string) policyInfoResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+"/dashboard/api/policy", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET policy as %s: expected 200, got %d: %s", identity, resp.StatusCode, b)
+	}
+	var got policyInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("invalid policy response: %v", err)
+	}
+	return got
+}
+
+// TestServeEndToEnd_PolicyRuleEditorWriteTakesEffectWithoutRestart proves
+// the dashboard's structured Rule editor -- PUT /dashboard/api/policy,
+// not a direct file edit + POST reload like
+// TestServeEndToEnd_PolicyReloadTakesEffectWithoutRestart above -- is a
+// real, complete write-validate-persist-reload path: the very next
+// proxied call reflects the new rules with no restart, AND the very
+// next GET /dashboard/api/policy reflects the new Source text (proving
+// policyInfoHolder, not a startup-frozen snapshot, is what GET reads).
+func TestServeEndToEnd_PolicyRuleEditorWriteTakesEffectWithoutRestart(t *testing.T) {
+	listenAddr, _, stderr := startPolicyReloadServer(t, `
+rules:
+  - identity: "bob"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+
+	deniedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if deniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for alice under the initial policy, got %d (stderr: %s)", deniedResp.StatusCode, stderr.String())
+	}
+
+	resp := putPolicy(t, listenAddr, "operator", []map[string]string{
+		{"identity": "alice", "tool": "read_file", "effect": "allow"},
+	}, "deny")
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected the rule editor write to succeed, got %d: %s (stderr: %s)", resp.StatusCode, b, stderr.String())
+	}
+	var got policyInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	if !strings.Contains(got.Source, `identity: alice`) {
+		t.Errorf("expected the write response's Source to reflect the new rule, got:\n%s", got.Source)
+	}
+
+	// Same running process, no restart: alice is now allowed.
+	allowedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for alice immediately after the rule-editor write, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// GET /dashboard/api/policy is live too, not a startup-frozen snapshot.
+	current := getPolicyInfo(t, listenAddr, "operator")
+	if !strings.Contains(current.Source, `identity: alice`) {
+		t.Errorf("expected GET /dashboard/api/policy to reflect the write immediately, got:\n%s", current.Source)
+	}
+}
+
+// TestServeEndToEnd_PolicyRuleEditorInvalidWriteRejectedFileNeverTouched
+// proves an invalid structured write (empty tool) is rejected BEFORE
+// anything is persisted: the live engine and the on-disk file are both
+// exactly as they were, mirroring
+// TestServeEndToEnd_BadPolicyReloadRejectedOldPolicyKeepsServing's claim
+// for the direct-file-edit path.
+func TestServeEndToEnd_PolicyRuleEditorInvalidWriteRejectedFileNeverTouched(t *testing.T) {
+	listenAddr, policyPath, stderr := startPolicyReloadServer(t, `
+rules:
+  - identity: "bob"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+	before, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := putPolicy(t, listenAddr, "operator", []map[string]string{
+		{"identity": "alice", "tool": "", "effect": "allow"}, // empty tool -- invalid
+	}, "deny")
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for an invalid rule, got %d: %s", resp.StatusCode, b)
+	}
+	var errBody struct{ Error string }
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("invalid error response: %v", err)
+	}
+	if errBody.Error == "" {
+		t.Error("expected a non-empty error message explaining the rejection")
+	}
+
+	after, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("expected the policy file to survive a rejected write byte-for-byte untouched, got:\n%s", after)
+	}
+
+	// bob's original rule is still the only thing in effect.
+	stillDeniedResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if stillDeniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected alice to still be denied after the rejected write, got %d (stderr: %s)", stillDeniedResp.StatusCode, stderr.String())
+	}
+}
+
 // TestServeEndToEnd_RBACReloadPreservesLiveSCIMBinding is the test the
 // Task 3 doc comment on newRBACReloadFn (cmd/wardline/main.go) warns
 // would have caught the "reconstruct instead of reuse the SCIM store" bug
