@@ -1067,19 +1067,19 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
    unstyled ~26px default height, under the 44px touch-target minimum.
    Moved here as real rules so the CSP actually allows them to apply. */
 .credentials-card { max-width: 480px; }
-.credentials-hint { margin-top: 0; color: var(--text-muted); font-size: 14px; }
-#view-credentials label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: var(--text); }
+.credentials-hint { margin-top: 0; color: var(--text-muted); font-size: 12.5px; }
+#view-credentials label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 6px; color: var(--text); }
 #revoke-identity-input {
   width: 100%;
-  min-height: 44px;
-  padding: 0 14px;
+  padding: 8px 11px;
   background: var(--ink);
   border: 1px solid var(--border);
   color: var(--text);
+  font-size: 13px;
   border-radius: var(--radius-control);
   margin-bottom: 12px;
 }
-#revoke-result { margin-top: 12px; font-size: 14px; }
+#revoke-result { margin-top: 12px; font-size: 12.5px; }
 
 .badge {
   font-family: var(--font-body);
@@ -1390,21 +1390,13 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 .policy-rule-input,
 .policy-rule-select {
   width: 100%;
-  /* 44px, not the visually-tighter 36px other editor chrome uses here --
-     an <input>/<select> can't take a ::before expanded hit area the way
-     .policy-rule-move/.policy-rule-delete just did (pseudo-elements
-     don't render on replaced/form elements in any browser), so the only
-     real way to meet this project's own touch-target commitment for a
-     genuinely tappable field is the visual box itself, matching
-     .filters input's existing 44px precedent. */
-  min-height: 44px;
-  padding: 0 10px;
+  padding: 6px 8px;
   background: var(--ink);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 13px;
+  font-family: var(--font-body);
+  font-size: 12px;
 }
 .policy-rule-input:focus,
 .policy-rule-select:focus { border-color: var(--status-info); outline: none; }
