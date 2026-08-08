@@ -255,3 +255,37 @@ type fakeTokenAuth struct{}
 func (fakeTokenAuth) Authenticate(string) (string, string, error) {
 	return "", "", errMissingBearerToken
 }
+
+// TestDialUpstream_TLSFlagEngagesTransportSecurity proves the useTLS flag
+// actually switches transport security: against one plaintext gRPC server,
+// the plaintext dial completes an RPC while the TLS dial fails the
+// handshake (a TLS client cannot talk to a plaintext server).
+func TestDialUpstream_TLSFlagEngagesTransportSecurity(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(echoHandler))
+	go func() { _ = srv.Serve(lis) }()
+	defer srv.Stop()
+	addr := lis.Addr().String()
+
+	invoke := func(conn *grpc.ClientConn) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		resp := &rawFrame{}
+		err := conn.Invoke(ctx, testMethod, &rawFrame{payload: []byte("ping")}, resp)
+		return resp.payload, err
+	}
+
+	plain, err := DialUpstream(addr, false)
+	require.NoError(t, err)
+	defer func() { _ = plain.Close() }()
+	got, err := invoke(plain)
+	require.NoError(t, err, "plaintext dial to a plaintext server should succeed")
+	assert.Equal(t, []byte("ping"), got)
+
+	secure, err := DialUpstream(addr, true)
+	require.NoError(t, err) // NewClient dials lazily; the failure surfaces on the call
+	defer func() { _ = secure.Close() }()
+	_, err = invoke(secure)
+	require.Error(t, err, "TLS dial to a plaintext server must fail the handshake")
+}

@@ -15,11 +15,19 @@ features:
   grpc_transport: true
 grpc_listen: ":8081"              # host:port to accept gRPC on (required)
 grpc_upstream: "localhost:50051" # upstream gRPC target (required)
+grpc_upstream_tls: false         # dial the upstream over TLS (default plaintext)
 ```
 
 Both `grpc_listen` and `grpc_upstream` are required when the flag is on;
 `validate-config` rejects the config otherwise. `grpc_upstream` is a plain
 gRPC target (`host:port`), not a URL.
+
+Set `grpc_upstream_tls: true` to dial the upstream over TLS, verified
+against the host's system root pool with the server name taken from
+`grpc_upstream`. For an upstream presenting a private-CA certificate, add
+that CA to the container's trust store (e.g. a mounted CA bundle) rather
+than disabling verification. The default (`false`) keeps the plaintext
+dial, which is correct when a mesh/sidecar terminates TLS to the upstream.
 
 ## The control plane, unchanged
 
@@ -50,7 +58,9 @@ buckets, and audit trail:
 
 ## Out of scope for this cut
 
-- **TLS to the upstream** — the connection to `grpc_upstream` is plaintext
-  today; terminate TLS at ingress.
+- **Custom CA / client certificates for the upstream TLS dial** —
+  `grpc_upstream_tls` verifies against the system root pool only; a
+  private CA is trusted by adding it to the container's trust store, and
+  mutual-TLS client certs to the upstream are not configured here.
 - **Per-message policy evaluation** — one decision is made per RPC at
   stream start, mirroring the HTTP transport's one-decision-per-request.

@@ -167,9 +167,9 @@ func TestBuildTopHandler_FaviconRouteWinsOverProxyCatchAll(t *testing.T) {
 
 // TestFaviconHandler_ServesEmbeddedIconWithImageContentType exercises the
 // real handler (not a stub), proving it serves actual, non-empty bytes
-// read from the dashboard's embedded web/dist/favicon.ico with an
-// explicit image content type -- not relying on the host's mime.types
-// having an .ico entry.
+// read from the dashboard's embedded web/dist/favicon.svg with an
+// explicit SVG content type -- the same mark the docs site and landing
+// page use, and not relying on the host's mime.types having an entry.
 func TestFaviconHandler_ServesEmbeddedIconWithImageContentType(t *testing.T) {
 	h := faviconHandler(testLogger())
 
@@ -179,18 +179,16 @@ func TestFaviconHandler_ServesEmbeddedIconWithImageContentType(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/x-icon" {
-		t.Errorf("expected Content-Type image/x-icon, got %q", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("expected Content-Type image/svg+xml, got %q", ct)
 	}
 	if rec.Body.Len() == 0 {
 		t.Error("expected a non-empty favicon body")
 	}
-	// ICO files start with a 2-byte reserved field (0x0000) followed by a
-	// 2-byte type field (0x0001 for icon) -- a cheap sanity check that
-	// this is a real .ico, not a placeholder blob.
-	body := rec.Body.Bytes()
-	if len(body) < 4 || body[0] != 0 || body[1] != 0 || body[2] != 1 || body[3] != 0 {
-		t.Errorf("expected ICO magic header 00 00 01 00, got % x", body[:min(4, len(body))])
+	// A cheap sanity check that this is the real SVG mark, not a
+	// placeholder blob.
+	if body := rec.Body.String(); !strings.Contains(body, "<svg") {
+		t.Errorf("expected an SVG body containing \"<svg\", got %q", body[:min(32, len(body))])
 	}
 }
 

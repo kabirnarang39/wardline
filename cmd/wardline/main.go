@@ -1123,7 +1123,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var grpcServer *grpc.Server
 	var grpcUpstreamConn *grpc.ClientConn
 	if featureFlags.Enabled("grpc_transport") {
-		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream)
+		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream, cfg.GRPCUpstreamTLS)
 		if err != nil {
 			logger.Error("gRPC upstream dial failed", "error", err, "upstream", cfg.GRPCUpstream)
 			os.Exit(1)

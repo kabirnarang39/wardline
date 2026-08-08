@@ -9,12 +9,14 @@ package adapter
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -90,11 +92,21 @@ func NewProxy(decider PolicyDecider, budget BudgetChecker, autoBlock AutoBlockCh
 // DialUpstream connects to the upstream gRPC target with the raw passthrough
 // codec forced as the default call codec, so every relayed call carries
 // message bytes verbatim and never needs the upstream's protobuf schema.
-// Plaintext today -- TLS to the upstream is a deliberate follow-up (see
-// Config.GRPCUpstream). grpc.NewClient dials lazily; the caller owns Close.
-func DialUpstream(target string) (*grpc.ClientConn, error) {
+// grpc.NewClient dials lazily; the caller owns Close.
+//
+// useTLS selects transport security: false keeps the historical plaintext
+// dial (correct when TLS to the upstream is terminated by a mesh/sidecar);
+// true uses TLS verified against the host's system root pool, with the
+// server name taken from target -- for a private CA, add it to the
+// container's trust store (a mounted CA bundle) rather than passing a
+// custom pool here.
+func DialUpstream(target string, useTLS bool) (*grpc.ClientConn, error) {
+	creds := grpc.WithTransportCredentials(insecure.NewCredentials())
+	if useTLS {
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	}
 	return grpc.NewClient(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(rawCodec{})),
 	)
 }
