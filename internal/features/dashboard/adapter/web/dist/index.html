@@ -400,13 +400,18 @@
         </div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="panel-title-bar">Default limit</div>
-          <div class="budget-default-fields">
-            <label>Requests / window
-              <input type="number" id="budget-default-requests" min="1" inputmode="numeric">
-            </label>
-            <label>Window (seconds)
-              <input type="number" id="budget-default-window" min="1" inputmode="numeric">
-            </label>
+          <div class="panel-body">
+            <div class="field-row">
+              <div class="field-label">Requests / window</div>
+              <div>
+                <input type="number" id="budget-default-requests" min="1" inputmode="numeric" class="field-row-input-sm">
+                <div class="field-hint">Applies to every identity without a tenant or tool override.</div>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field-label">Window (seconds)</div>
+              <div><input type="number" id="budget-default-window" min="1" inputmode="numeric" class="field-row-input-sm"></div>
+            </div>
           </div>
         </div>
         <div class="panel">
