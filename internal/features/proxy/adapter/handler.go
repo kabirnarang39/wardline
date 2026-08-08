@@ -188,12 +188,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !parsed.IsToolCall {
-		// Non-tools/call MCP protocol methods (initialize,
+	if !parsed.IsGated {
+		// True protocol-lifecycle/discovery MCP methods (initialize,
 		// notifications/initialized, tools/list, etc.) are forwarded to
-		// upstream without policy or budget evaluation — Wardline's policy
-		// model is scoped to tool calls, and every real MCP client performs
-		// this handshake before its first tool call. See
+		// upstream without policy or budget evaluation — every real MCP
+		// client performs this handshake before its first tool call. See
 		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
 		h.forward(w, r, span, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "")
 		return
@@ -204,14 +203,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	call.RemoteAddr = r.RemoteAddr
 	call.UserAgent = r.Header.Get("User-Agent")
 
+	// auditTool is what's recorded/traced for this request. call.Tool is
+	// "" only for an untargeted resources/prompts call (e.g.
+	// resources/list) -- falling back to the method name there keeps the
+	// audit trail from ever recording a blank Tool for a policy-evaluated
+	// entry, without changing what a policy rule actually matches against
+	// (that's still call.Tool == "", unaffected by this fallback).
+	auditTool := call.Tool
+	if auditTool == "" {
+		auditTool = call.Method
+	}
+
 	verdict := h.decider.Decide(call)
 	if !verdict.Allow {
 		// verdict.Reason may carry detailed policy-engine diagnostics (with
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.finish(span, identity, tenant, call.Tool, "deny", verdict.Reason, start)
+		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start)
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
+		return
+	}
+
+	if !parsed.IsToolCall {
+		// resources/* and prompts/* calls are policy-evaluated but not
+		// budget-checked -- budget buckets are keyed by tool name, and
+		// widening that key space to arbitrary resource URIs is a
+		// separate design question, deliberately out of scope. See
+		// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+		h.forward(w, r, span, identity, tenant, auditTool, parsed.ID, start, "allow", "")
 		return
 	}
 
@@ -219,7 +239,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.finish(span, identity, tenant, call.Tool, "throttled", budgetVerdict.Reason, start)
+		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, start)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
@@ -236,7 +256,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		successReason = budgetVerdict.Reason
 	}
 
-	h.forward(w, r, span, identity, tenant, call.Tool, parsed.ID, start, "allow", successReason)
+	h.forward(w, r, span, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
 }
 
 // forward proxies the request upstream, recording exactly one audit entry

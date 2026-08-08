@@ -15,7 +15,10 @@ func TestParseRequest_ToolsCall_Valid(t *testing.T) {
 	if !parsed.IsToolCall {
 		t.Fatal("expected IsToolCall=true for a tools/call method")
 	}
-	if parsed.Call.Identity != "agent-abc123" || parsed.Call.Tool != "read_file" || parsed.Call.Tenant != "acme" {
+	if !parsed.IsGated {
+		t.Fatal("expected IsGated=true for a tools/call method")
+	}
+	if parsed.Call.Identity != "agent-abc123" || parsed.Call.Tool != "read_file" || parsed.Call.Tenant != "acme" || parsed.Call.Method != "tools/call" {
 		t.Errorf("unexpected call: %+v", parsed.Call)
 	}
 	if parsed.Method != "tools/call" {
@@ -49,7 +52,11 @@ func TestParseRequest_MissingMethodField(t *testing.T) {
 }
 
 func TestParseRequest_NonToolCallMethodPassesThrough(t *testing.T) {
-	for _, method := range []string{"initialize", "notifications/initialized", "tools/list", "resources/list", "ping"} {
+	// Deliberately excludes resources/*/prompts/* methods -- those are
+	// gated now (see TestParseRequest_ResourcesAndPromptsMethodsAreGated
+	// below), this test guards the true protocol-lifecycle/discovery set
+	// that must stay ungated.
+	for _, method := range []string{"initialize", "notifications/initialized", "tools/list", "ping"} {
 		t.Run(method, func(t *testing.T) {
 			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{}}`)
 			parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
@@ -59,10 +66,75 @@ func TestParseRequest_NonToolCallMethodPassesThrough(t *testing.T) {
 			if parsed.IsToolCall {
 				t.Errorf("expected IsToolCall=false for method %q", method)
 			}
+			if parsed.IsGated {
+				t.Errorf("expected IsGated=false for method %q", method)
+			}
 			if parsed.Method != method {
 				t.Errorf("expected Method %q, got %q", method, parsed.Method)
 			}
 		})
+	}
+}
+
+// TestParseRequest_ResourcesAndPromptsMethodsAreGated is the widening
+// feature's core proof: resources/* and prompts/* methods are now
+// policy-evaluated (IsGated=true), but never budget-checked
+// (IsToolCall=false) -- see
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestParseRequest_ResourcesAndPromptsMethodsAreGated(t *testing.T) {
+	cases := []struct {
+		name       string
+		method     string
+		params     string
+		wantTarget string
+	}{
+		{"resources/read with uri", "resources/read", `{"uri":"file:///data/report.csv"}`, "file:///data/report.csv"},
+		{"resources/list untargeted", "resources/list", `{}`, ""},
+		{"resources/list no params at all", "resources/list", ``, ""},
+		{"prompts/get with name", "prompts/get", `{"name":"summarize","arguments":{"x":1}}`, "summarize"},
+		{"prompts/list untargeted", "prompts/list", `{}`, ""},
+		{"resources/subscribe (prefix match, not enumerated)", "resources/subscribe", `{"uri":"file:///x"}`, "file:///x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `","params":` + func() string {
+				if tc.params == "" {
+					return "null"
+				}
+				return tc.params
+			}() + `}`)
+			parsed, err := usecase.ParseRequest("agent-abc123", "acme", body)
+			if err != nil {
+				t.Fatalf("unexpected error for method %q: %v", tc.method, err)
+			}
+			if !parsed.IsGated {
+				t.Errorf("expected IsGated=true for method %q", tc.method)
+			}
+			if parsed.IsToolCall {
+				t.Errorf("expected IsToolCall=false for method %q (budget must not widen)", tc.method)
+			}
+			if parsed.Call.Tool != tc.wantTarget {
+				t.Errorf("method %q: got target %q, want %q", tc.method, parsed.Call.Tool, tc.wantTarget)
+			}
+			if parsed.Call.Method != tc.method {
+				t.Errorf("method %q: Call.Method = %q, want %q", tc.method, parsed.Call.Method, tc.method)
+			}
+			if parsed.Call.Identity != "agent-abc123" || parsed.Call.Tenant != "acme" {
+				t.Errorf("method %q: unexpected identity/tenant: %+v", tc.method, parsed.Call)
+			}
+		})
+	}
+}
+
+// TestParseRequest_ResourcesReadMalformedParamsIsParseError proves a
+// gated resources/prompts method still hard-errors on genuinely
+// unparsable params, same as tools/call does today -- widening what's
+// evaluated must not widen what counts as malformed.
+func TestParseRequest_ResourcesReadMalformedParamsIsParseError(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":"oops"}`)
+	_, err := usecase.ParseRequest("agent-abc123", "acme", body)
+	if err == nil {
+		t.Fatal("expected error for non-object params on a gated resources/prompts method")
 	}
 }
 

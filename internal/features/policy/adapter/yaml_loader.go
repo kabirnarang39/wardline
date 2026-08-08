@@ -17,6 +17,11 @@ type ruleYAML struct {
 	Tool     string `yaml:"tool"`
 	Effect   string `yaml:"effect"`
 	Tenant   string `yaml:"tenant"`
+	// Method is optional; omitted/"" means "tools/call" (see
+	// domain.Rule.Method). yaml.v3 omits an empty string on marshal
+	// automatically only with `omitempty` -- added on MarshalYAML's side
+	// via ruleYAML construction, not needed here on the read path.
+	Method string `yaml:"method,omitempty"`
 }
 
 type policyYAML struct {
@@ -84,7 +89,10 @@ func ParseRules(data []byte) ([]domain.Rule, domain.Effect, error) {
 		if r.Tool == "" {
 			problems = append(problems, fmt.Sprintf("rule %d: tool must not be empty", i))
 		}
-		rules = append(rules, domain.Rule{Identity: r.Identity, Tool: r.Tool, Effect: effect, Tenant: r.Tenant})
+		if r.Method != "" && !isValidRuleMethod(r.Method) {
+			problems = append(problems, fmt.Sprintf("rule %d: method %q must be \"tools/call\" or start with \"resources/\" or \"prompts/\"", i, r.Method))
+		}
+		rules = append(rules, domain.Rule{Identity: r.Identity, Tool: r.Tool, Effect: effect, Tenant: r.Tenant, Method: r.Method})
 	}
 
 	def, err := parseEffect(raw.Default)
@@ -97,6 +105,14 @@ func ParseRules(data []byte) ([]domain.Rule, domain.Effect, error) {
 	}
 
 	return rules, def, nil
+}
+
+// isValidRuleMethod matches proxy/usecase/parse.go's isGatedMethod set --
+// a rule targeting any other method string could never match a real
+// request, silently becoming dead config, so it's rejected at load/write
+// time rather than left to fail confusingly at request time.
+func isValidRuleMethod(method string) bool {
+	return method == "tools/call" || strings.HasPrefix(method, "resources/") || strings.HasPrefix(method, "prompts/")
 }
 
 func parseEffect(s string) (domain.Effect, error) {

@@ -4,8 +4,13 @@ weight: 20
 ---
 
 Every request to Wardline must carry an `X-Wardline-Identity` header.
-Policy rules match on this identity plus the MCP tool name
-(`params.name` in a `tools/call` JSON-RPC request).
+Policy rules match on this identity plus a target: the MCP tool name
+(`params.name` in a `tools/call` request) by default, or — via a rule's
+optional `method:` key — a resource URI (`params.uri` in a
+`resources/read` request) or prompt name (`params.name` in a
+`prompts/get` request). Omitting `method:` (or leaving it blank) means
+`tools/call`, so every rule written before this existed keeps matching
+exactly what it matched before.
 
 A rule can also carry an optional `tenant:` key, scoping it to a single
 tenant; omitting it (or leaving it empty) keeps the rule global, matching
@@ -33,13 +38,14 @@ Every request produces exactly one decision, recorded in the audit log:
   there's no hardcoded fallback); not forwarded.
 - **`throttled`** — budget enforcement rejected the call (see
   [Budget Enforcement](/features/budget-enforcement/)); not forwarded.
-- **`passthrough`** — protocol-level MCP methods that aren't `tools/call`
-  (the `initialize` handshake, `notifications/initialized`, `tools/list`,
-  and, if your upstream exposes them, `resources/*`/`prompts/*`) are
-  forwarded to the upstream without a policy or budget check, recorded
-  as `passthrough` so they're visible but distinguishable from a real
-  `allow`. If your upstream server exposes sensitive resources or
-  prompts, be aware they are not currently gated by policy.
+- **`passthrough`** — true protocol-lifecycle MCP methods (the
+  `initialize` handshake, `notifications/initialized`, `tools/list`) are
+  forwarded to the upstream without a policy or budget check, recorded as
+  `passthrough` so they're visible but distinguishable from a real
+  `allow`. `resources/*`/`prompts/*` methods are NOT in this category —
+  they're policy-evaluated like `tools/call` (see above), just never
+  budget-checked; a matching request there produces a real `allow`/`deny`,
+  not `passthrough`.
 - **`error`** — malformed request (unparseable JSON-RPC, missing
   identity header, etc.).
 - **`blocked`** — the identity is currently auto-blocked by anomaly

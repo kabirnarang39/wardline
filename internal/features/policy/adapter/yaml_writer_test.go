@@ -90,6 +90,31 @@ func TestWriteFile_InvalidRule_NeverTouchesDisk(t *testing.T) {
 	}
 }
 
+func TestWriteFile_MethodScopedRule_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.yaml")
+	rules := []domain.Rule{
+		{Identity: "agent-abc123", Tool: "file:///data/report.csv", Effect: domain.EffectAllow, Method: "resources/read"},
+		{Identity: "agent-abc123", Tool: "read_file", Effect: domain.EffectAllow},
+	}
+	if err := adapter.WriteFile(path, rules, domain.EffectDeny); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m, err := adapter.LoadFile(path)
+	if err != nil {
+		t.Fatalf("expected the written file to reload cleanly, got: %v", err)
+	}
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "resources/read"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for the round-tripped resources/read rule, got %q", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Method: "tools/call"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for the round-tripped tools/call rule (empty Method), got %q", got.Effect)
+	}
+}
+
 func TestWriteFile_InvalidDefault_NeverTouchesDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.yaml")

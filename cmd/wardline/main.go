@@ -1573,7 +1573,7 @@ func buildPolicyInfo(backend, path string) (dashboarddomain.PolicyInfo, error) {
 		if rules, def, parseErr := policyadapter.ParseRules(data); parseErr == nil {
 			info.Rules = make([]dashboarddomain.PolicyRuleEntry, len(rules))
 			for i, r := range rules {
-				info.Rules[i] = dashboarddomain.PolicyRuleEntry{Identity: r.Identity, Tool: r.Tool, Tenant: r.Tenant, Effect: string(r.Effect)}
+				info.Rules[i] = dashboarddomain.PolicyRuleEntry{Identity: r.Identity, Tool: r.Tool, Tenant: r.Tenant, Effect: string(r.Effect), Method: r.Method}
 			}
 			info.Default = string(def)
 		}

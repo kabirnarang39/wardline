@@ -16,7 +16,7 @@ import (
 func MarshalYAML(rules []domain.Rule, def domain.Effect) ([]byte, error) {
 	out := make([]ruleYAML, len(rules))
 	for i, r := range rules {
-		out[i] = ruleYAML{Identity: r.Identity, Tool: r.Tool, Tenant: r.Tenant, Effect: string(r.Effect)}
+		out[i] = ruleYAML{Identity: r.Identity, Tool: r.Tool, Tenant: r.Tenant, Effect: string(r.Effect), Method: r.Method}
 	}
 	data, err := yaml.Marshal(policyYAML{Rules: out, Default: string(def)})
 	if err != nil {
