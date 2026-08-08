@@ -20,6 +20,21 @@ func (alwaysDenyLimiter) Allow(identity, tenant, tool string, now time.Time) dom
 	return domain.Verdict{Allowed: false, Reason: "always denies"}
 }
 
+func (alwaysDenyLimiter) DefaultLimit() domain.LimitInfo         { return domain.LimitInfo{} }
+func (alwaysDenyLimiter) TenantOverrides() []domain.OverrideInfo { return nil }
+func (alwaysDenyLimiter) ToolOverrides() []domain.OverrideInfo   { return nil }
+
+// The methods below are no-op stubs satisfying domain.Limiter's
+// hot-reload setter/clear methods -- this fake only exercises Allow, not
+// reload behavior (see the InMemoryLimiter/PostgresLimiter tests for that).
+func (alwaysDenyLimiter) SetDefaultLimit(requestsPerWindow int, window time.Duration) {}
+func (alwaysDenyLimiter) SetTenantLimit(tenantName string, requestsPerWindow int, window time.Duration) {
+}
+func (alwaysDenyLimiter) ClearTenantLimit(tenantName string) {}
+func (alwaysDenyLimiter) SetToolLimit(toolName string, requestsPerWindow int, window time.Duration) {
+}
+func (alwaysDenyLimiter) ClearToolLimit(toolName string) {}
+
 func TestChecker_FlagOffAlwaysAllows(t *testing.T) {
 	c := usecase.NewChecker(stubFlags{enabled: false}, alwaysDenyLimiter{})
 	got := c.Check("agent-abc123", "acme", "some_tool", time.Now())
@@ -41,6 +56,19 @@ func (r *recordingLimiter) Allow(identity, tenant, tool string, now time.Time) d
 	r.calledWithTool = tool
 	return r.verdict
 }
+
+func (r *recordingLimiter) DefaultLimit() domain.LimitInfo         { return domain.LimitInfo{} }
+func (r *recordingLimiter) TenantOverrides() []domain.OverrideInfo { return nil }
+func (r *recordingLimiter) ToolOverrides() []domain.OverrideInfo   { return nil }
+
+// No-op stubs, same rationale as alwaysDenyLimiter's above.
+func (r *recordingLimiter) SetDefaultLimit(requestsPerWindow int, window time.Duration) {}
+func (r *recordingLimiter) SetTenantLimit(tenantName string, requestsPerWindow int, window time.Duration) {
+}
+func (r *recordingLimiter) ClearTenantLimit(tenantName string) {}
+func (r *recordingLimiter) SetToolLimit(toolName string, requestsPerWindow int, window time.Duration) {
+}
+func (r *recordingLimiter) ClearToolLimit(toolName string) {}
 
 func TestChecker_FlagOnDelegatesToLimiter(t *testing.T) {
 	limiter := &recordingLimiter{verdict: domain.Verdict{Allowed: false, Reason: "over budget"}}

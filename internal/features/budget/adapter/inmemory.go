@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -100,6 +101,72 @@ func (l *InMemoryLimiter) SetToolLimit(toolName string, requestsPerWindow int, w
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.toolLimits[toolName] = tenantLimit{requestsPerWindow: requestsPerWindow, window: window}
+}
+
+// DefaultLimit returns the global (non-override) rate limit.
+func (l *InMemoryLimiter) DefaultLimit() domain.LimitInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return domain.LimitInfo{RequestsPerWindow: l.requestsPerWindow, Window: l.window}
+}
+
+// TenantOverrides returns every configured tenant-scoped override, sorted
+// by name for stable output.
+func (l *InMemoryLimiter) TenantOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.tenantLimits))
+	for name, lim := range l.tenantLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tenant", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ToolOverrides returns every configured tool-scoped override, sorted by
+// name for stable output.
+func (l *InMemoryLimiter) ToolOverrides() []domain.OverrideInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]domain.OverrideInfo, 0, len(l.toolLimits))
+	for name, lim := range l.toolLimits {
+		out = append(out, domain.OverrideInfo{Scope: "tool", Name: name, LimitInfo: domain.LimitInfo{RequestsPerWindow: lim.requestsPerWindow, Window: lim.window}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// SetDefaultLimit updates the global (non-override) rate limit in place,
+// without resetting any identity's already-tracked usage -- mirrors
+// SetTenantLimit/SetToolLimit's own "update the threshold, preserve live
+// state" contract, applied to the base default instead of a per-tenant/
+// per-tool override. Called during a reload; existing buckets keep
+// counting against the new threshold rather than starting fresh.
+func (l *InMemoryLimiter) SetDefaultLimit(requestsPerWindow int, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.requestsPerWindow = requestsPerWindow
+	l.window = window
+}
+
+// ClearTenantLimit removes tenantName's override, reverting it to the
+// global default. Called during a reload for every tenant that had an
+// override in the PREVIOUS config but not in the new one -- SetTenantLimit
+// alone can only add or update an override, never remove one.
+func (l *InMemoryLimiter) ClearTenantLimit(tenantName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.tenantLimits, tenantName)
+	delete(l.tenantBuckets, tenantName)
+}
+
+// ClearToolLimit mirrors ClearTenantLimit exactly, for the tool-tier
+// override.
+func (l *InMemoryLimiter) ClearToolLimit(toolName string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.toolLimits, toolName)
+	delete(l.toolBuckets, toolName)
 }
 
 // Allow requires the identity bucket, the tenant bucket (if tenant has a

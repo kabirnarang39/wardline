@@ -558,10 +558,15 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		}
 	}
 
+	// autoBlockSeconds stays 0 unless THIS anomaly is the one that actually
+	// triggers a live Block() call below -- never a guess about what a
+	// block *would* last had auto_block been enabled/threshold different.
+	var autoBlockSeconds int
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil && blockScore > d.cfg.AutoBlock.ScoreThreshold {
 		d.blocker.Block(e.Identity, e.Tenant, fmt.Sprintf(
 			"ml_score %.2f (feature: %s) exceeded auto-block threshold %.2f",
 			blockScore, blockFeature, d.cfg.AutoBlock.ScoreThreshold))
+		autoBlockSeconds = d.cfg.AutoBlock.BlockDurationSeconds
 	}
 
 	if !anomalous {
@@ -582,7 +587,9 @@ func (d *Detector) checkMLScore(e auditdomain.Entry, st *identityState) (domain.
 		Detail: fmt.Sprintf(
 			"combined z-score %.2f (driving feature: %s) exceeded threshold %.2f",
 			score, feature, d.cfg.MLScore.ScoreThreshold),
-		Entry: e,
+		Entry:            e,
+		Score:            &score,
+		AutoBlockSeconds: autoBlockSeconds,
 	}, true
 }
 

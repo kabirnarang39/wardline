@@ -101,6 +101,14 @@ func TestBlockChecker_List_ReturnsCurrentlyBlockedEntries(t *testing.T) {
 	if entries[0].Reason == "" {
 		t.Error("expected a non-empty reason")
 	}
+	// BlockedSince backs the dashboard Blocked view's "Since" column --
+	// must be the real moment Block() was called, not zero-valued.
+	if !entries[0].BlockedSince.Equal(now) {
+		t.Errorf("expected BlockedSince = %v (the real block time), got %v", now, entries[0].BlockedSince)
+	}
+	if !entries[0].BlockedUntil.Equal(now.Add(300 * time.Second)) {
+		t.Errorf("expected BlockedUntil = %v, got %v", now.Add(300*time.Second), entries[0].BlockedUntil)
+	}
 }
 
 // TestBlockChecker_List_FiltersExpiredEntriesWithoutGC proves List()

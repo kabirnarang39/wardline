@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/budget/adapter"
+	"github.com/kabirnarang39/wardline/internal/features/budget/domain"
 )
 
 func TestInMemoryLimiter_AllowsUpToLimit(t *testing.T) {
@@ -131,6 +132,55 @@ func TestInMemoryLimiter_ToolOverrideThrottlesIndependentlyOfIdentityAndTenant(t
 	}
 }
 
+// TestInMemoryLimiter_DefaultLimitReflectsConstructor proves DefaultLimit
+// returns exactly what the constructor was given, unaffected by any
+// override configured afterward.
+func TestInMemoryLimiter_DefaultLimitReflectsConstructor(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(25, time.Minute)
+	l.SetTenantLimit("acme", 10, 30*time.Second)
+
+	got := l.DefaultLimit()
+	want := domain.LimitInfo{RequestsPerWindow: 25, Window: time.Minute}
+	if got != want {
+		t.Errorf("DefaultLimit() = %+v, want %+v", got, want)
+	}
+}
+
+// TestInMemoryLimiter_TenantAndToolOverridesReturnSortedSets proves
+// TenantOverrides/ToolOverrides return every configured override, sorted
+// by name, and an empty slice (not nil) when none are configured.
+func TestInMemoryLimiter_TenantAndToolOverridesReturnSortedSets(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(25, time.Minute)
+
+	if got := l.TenantOverrides(); len(got) != 0 {
+		t.Fatalf("expected no tenant overrides before any are set, got %+v", got)
+	}
+	if got := l.ToolOverrides(); len(got) != 0 {
+		t.Fatalf("expected no tool overrides before any are set, got %+v", got)
+	}
+
+	l.SetTenantLimit("widgets-inc", 10, 30*time.Second)
+	l.SetTenantLimit("acme", 5, 60*time.Second)
+	l.SetToolLimit("run_query", 15, 30*time.Second)
+
+	tenants := l.TenantOverrides()
+	want := []domain.OverrideInfo{
+		{Scope: "tenant", Name: "acme", LimitInfo: domain.LimitInfo{RequestsPerWindow: 5, Window: 60 * time.Second}},
+		{Scope: "tenant", Name: "widgets-inc", LimitInfo: domain.LimitInfo{RequestsPerWindow: 10, Window: 30 * time.Second}},
+	}
+	if len(tenants) != len(want) || tenants[0] != want[0] || tenants[1] != want[1] {
+		t.Errorf("TenantOverrides() = %+v, want %+v (sorted by name)", tenants, want)
+	}
+
+	tools := l.ToolOverrides()
+	wantTools := []domain.OverrideInfo{
+		{Scope: "tool", Name: "run_query", LimitInfo: domain.LimitInfo{RequestsPerWindow: 15, Window: 30 * time.Second}},
+	}
+	if len(tools) != len(wantTools) || tools[0] != wantTools[0] {
+		t.Errorf("ToolOverrides() = %+v, want %+v", tools, wantTools)
+	}
+}
+
 // TestInMemoryLimiter_ConcurrentAccessIsSafe proves the limiter is safe
 // under contention (run with -race to catch data races) and doesn't
 // over-admit: with requestsPerWindow=10, exactly 10 of 50 concurrent
@@ -157,5 +207,87 @@ func TestInMemoryLimiter_ConcurrentAccessIsSafe(t *testing.T) {
 
 	if allowed != requestsPerWindow {
 		t.Errorf("expected exactly %d allowed calls out of %d concurrent callers, got %d", requestsPerWindow, goroutines, allowed)
+	}
+}
+
+// TestInMemoryLimiter_SetDefaultLimit_UpdatesThresholdWithoutResettingCounters
+// is the load-bearing proof that a budget reload updates the limiter IN
+// PLACE rather than reconstructing it: reconstructing would zero every
+// identity's live count, letting a caller briefly burst past their real
+// limit at the exact moment of reload.
+func TestInMemoryLimiter_SetDefaultLimit_UpdatesThresholdWithoutResettingCounters(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(2, time.Minute) // 2 requests per minute
+	now := time.Now()
+
+	// Consume the full default budget for identity "alice".
+	l.Allow("alice", "", "", now)
+	l.Allow("alice", "", "", now)
+	if v := l.Allow("alice", "", "", now); v.Allowed {
+		t.Fatalf("expected 3rd call to be denied before any reload")
+	}
+
+	// Reload: raise the default limit to 5.
+	l.SetDefaultLimit(5, time.Minute)
+
+	// alice's ALREADY-CONSUMED 2 requests must still count -- she should
+	// get 3 more allowed calls (5 total), not 5 fresh ones. This is the
+	// assertion that would fail if a reload reconstructed the limiter
+	// instead of updating it in place.
+	allowedAfterReload := 0
+	for i := 0; i < 5; i++ {
+		if l.Allow("alice", "", "", now).Allowed {
+			allowedAfterReload++
+		}
+	}
+	if allowedAfterReload != 3 {
+		t.Errorf("allowed %d more calls after raising the limit to 5 with 2 already consumed, want exactly 3", allowedAfterReload)
+	}
+}
+
+// TestInMemoryLimiter_ClearTenantLimit_RevertsToGlobalDefault proves a
+// tenant override removed by a reload (present in the OLD config, absent
+// from the new one) actually stops being enforced, rather than surviving
+// as a stale leftover forever -- SetTenantLimit alone can only add or
+// update an override, never remove one.
+func TestInMemoryLimiter_ClearTenantLimit_RevertsToGlobalDefault(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(1000, time.Minute) // generous global default
+	l.SetTenantLimit("acme", 1, time.Minute)
+	now := time.Now()
+
+	if v := l.Allow("alice", "acme", "", now); !v.Allowed {
+		t.Fatal("first call in acme should be allowed")
+	}
+	if v := l.Allow("bob", "acme", "", now); v.Allowed {
+		t.Fatal("second distinct identity in the SAME over-limit tenant should be throttled by the tenant override")
+	}
+
+	l.ClearTenantLimit("acme")
+
+	// acme now falls through to the generous global default -- bob's call,
+	// previously denied by the tenant bucket, must now be admitted.
+	if v := l.Allow("bob", "acme", "", now); !v.Allowed {
+		t.Fatal("expected acme to revert to the global default after ClearTenantLimit, but it's still throttled")
+	}
+}
+
+// TestInMemoryLimiter_ClearToolLimit_RevertsToGlobalDefault mirrors
+// TestInMemoryLimiter_ClearTenantLimit_RevertsToGlobalDefault exactly, for
+// the tool-tier override.
+func TestInMemoryLimiter_ClearToolLimit_RevertsToGlobalDefault(t *testing.T) {
+	l := adapter.NewInMemoryLimiter(1000, time.Minute) // generous global default
+	l.SetToolLimit("expensive_tool", 1, time.Minute)
+	now := time.Now()
+
+	if v := l.Allow("alice", "acme", "expensive_tool", now); !v.Allowed {
+		t.Fatal("first call to expensive_tool should be allowed")
+	}
+	if v := l.Allow("bob", "widgets-inc", "expensive_tool", now); v.Allowed {
+		t.Fatal("second call to the SAME over-limit tool should be throttled by the tool override")
+	}
+
+	l.ClearToolLimit("expensive_tool")
+
+	if v := l.Allow("bob", "widgets-inc", "expensive_tool", now); !v.Allowed {
+		t.Fatal("expected expensive_tool to revert to the global default after ClearToolLimit, but it's still throttled")
 	}
 }

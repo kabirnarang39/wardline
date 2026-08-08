@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
+	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
 // AuditSource is the subset of RingBuffer's behavior Handler depends on —
@@ -54,6 +59,24 @@ type BlockedSource interface {
 	Unblock(identity, tenantName string) bool
 }
 
+// RBACSource is the subset of rbacadapter.StaticAuthorizer's behavior
+// Handler depends on -- read-only, matching every other Source
+// interface's narrow-slice pattern in this file.
+type RBACSource interface {
+	Roles() []rbacdomain.Role
+	ClusterRoleBindings() []rbacdomain.ClusterRoleBinding
+	RoleBindings() []rbacdomain.RoleBinding
+}
+
+// BudgetSource is the subset of budgetdomain.Limiter's behavior Handler
+// depends on -- read-only, matching every other Source interface's narrow
+// pattern in this file.
+type BudgetSource interface {
+	DefaultLimit() budgetdomain.LimitInfo
+	TenantOverrides() []budgetdomain.OverrideInfo
+	ToolOverrides() []budgetdomain.OverrideInfo
+}
+
 // UnblockAuthorizer decides whether a caller may clear an active
 // auto-block, within targetTenant specifically, before its TTL expires --
 // mirrors credentialadapter.RevokeAuthorizer's shape and posture exactly,
@@ -72,6 +95,34 @@ type UnblockAuthorizer interface {
 	AllowedFor(r *http.Request, targetTenant string) bool
 }
 
+// ReloadAuthorizer decides whether a caller may trigger a hot-reload of
+// policy/rbac/budget configuration via POST
+// /dashboard/api/reload/{domain}, gating that mutation the same way
+// UnblockAuthorizer gates handleUnblock -- via an injected Authorizer
+// requiring a specific permission (config:edit here, credential:revoke
+// there), separately from the read-only dashboard:view permission the
+// rest of this file's routes rely on. Unlike UnblockAuthorizer, Authorize
+// also returns the resolved caller identity: ReloadResult.AppliedBy needs
+// it for the audit trail, and a bare AllowedFor(r) bool has nowhere to
+// carry that value back out. nil means "not wired" (rbac off) --
+// handleReload then answers 404, the same posture as every other
+// nil-source route in this file.
+type ReloadAuthorizer interface {
+	Authorize(r *http.Request) (identity string, ok bool)
+}
+
+// ReloadHistorySource is the subset of reload.ReloadEventBuffer's
+// behavior Handler depends on -- same one-method pattern as
+// AnomalySource/FederationSource. handleReloadHistory converts to this
+// package's own domain.ReloadEntry before writing, so the endpoint's
+// wire shape is not tied to reload.ReloadEvent. Gated on
+// PermissionDashboardView like every other read route in this file, NOT
+// config:edit -- viewing history is a read, not a mutation, unlike
+// POST /dashboard/api/reload/{domain} itself.
+type ReloadHistorySource interface {
+	Since(afterID int64, limit int) []reload.ReloadEvent
+}
+
 // TenantScopeResolver derives the effective tenant filter for the
 // caller of a request: empty string means "no filter" (a global,
 // ClusterRoleBinding-scoped caller, or rbac off entirely); a non-empty
@@ -84,6 +135,68 @@ type UnblockAuthorizer interface {
 // tenant's data (IDOR).
 type TenantScopeResolver interface {
 	TenantFilter(r *http.Request) string
+}
+
+// PolicySource resolves the dashboard's current view of the active
+// policy engine's backend/source -- Current() re-reads live state on
+// every call, never a snapshot frozen at construction time. This matters
+// once a policy write-and-reload can happen at runtime (see
+// PolicyWriter below): a plain domain.PolicyInfo field, fixed at
+// startup, would silently keep serving pre-reload content forever
+// after a hot-reload. See domain.PolicyInfo.Current for the trivial
+// "a fixed value is its own current state" implementation every test
+// (and any single-snapshot caller) keeps using unchanged.
+type PolicySource interface {
+	Current() domain.PolicyInfo
+}
+
+// PolicyWriter writes a new rule set to the yaml policy backend's
+// configured file and reloads the live engine from it -- the structured
+// half of Policy view's "Rule editor" (Source tab edits raw text
+// instead, but both paths funnel through the same POST
+// /dashboard/api/reload/policy machinery so a rejected rule set surfaces
+// through the exact same Reload log every other reload does). nil for
+// any non-yaml backend (opa/cedar have no such structured rule
+// representation) or when rbac is off -- WriteAndReload then answers 404,
+// matching every other "not wired" route in this file.
+type PolicyWriter interface {
+	// WriteAndReload validates rules/def, writes them to the policy
+	// file, and reloads the live engine from the freshly written file --
+	// one atomic operation from the caller's perspective, mirroring how
+	// the reference prototype's "Validate & apply" button is a single
+	// action. appliedBy is the resolved caller identity, recorded in the
+	// same Reload log entry POST /dashboard/api/reload/policy itself
+	// would produce -- never a value the client supplies.
+	WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error
+}
+
+// BudgetWriter writes a new default limit and tenant/tool overrides to
+// the config file's budget: section and reloads the live limiter from
+// it -- the Budget view's editor equivalent of PolicyWriter, funneling
+// through the exact same reloadCoordinator.Reload("budget", ...) a raw
+// POST /dashboard/api/reload/budget would use, so a rejected edit
+// surfaces through the identical Reload log. nil when budget_enforcement
+// is off or rbac is off, matching PolicyWriter's own nil posture.
+type BudgetWriter interface {
+	// WriteAndReload validates and persists def/tenantOverrides/toolOverrides,
+	// then reloads. appliedBy is the resolved caller identity from
+	// ReloadAuthorizer.Authorize, never anything the client supplies.
+	WriteAndReload(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error
+}
+
+// CallerInfoResolver resolves the caller's own identity string and
+// whether they hold config:edit, purely for the dashboard topbar's
+// identity display -- never used for any authorization decision
+// (TenantScopeResolver/UnblockAuthorizer/ReloadAuthorizer already own
+// that, independently). identity == "" means unresolved (no identity
+// header, or rbac off), in which case the topbar shows no name/initials
+// -- this must never be a display-only guess or placeholder value,
+// since a wrong displayed identity is a trust problem for an operator
+// console even though it drives no access decision. nil means "not
+// wired" (rbac off): the topbar then shows only the generic icon,
+// identical to today's behavior before this field existed.
+type CallerInfoResolver interface {
+	CallerInfo(r *http.Request) (identity string, canConfigEdit bool)
 }
 
 // defaultAuditLimit and maxAuditLimit bound the /api/audit endpoint's
@@ -101,15 +214,23 @@ const (
 // all read-only by construction — it has no dependency on any policy,
 // budget, or proxy domain type, so it cannot influence a proxied request.
 type Handler struct {
-	audit      AuditSource
-	status     StatusSource
-	policy     domain.PolicyInfo
-	anomalies  AnomalySource
-	federation FederationSource
-	blocked    BlockedSource
-	scope      TenantScopeResolver
-	unblock    UnblockAuthorizer
-	mux        *http.ServeMux
+	audit             AuditSource
+	status            StatusSource
+	policy            PolicySource
+	policyWriter      PolicyWriter
+	anomalies         AnomalySource
+	federation        FederationSource
+	blocked           BlockedSource
+	scope             TenantScopeResolver
+	unblock           UnblockAuthorizer
+	rbac              RBACSource
+	budget            BudgetSource
+	budgetWriter      BudgetWriter
+	reloadCoordinator *reload.ReloadCoordinator
+	reloadAuth        ReloadAuthorizer
+	reloadHistory     ReloadHistorySource
+	callerInfo        CallerInfoResolver
+	mux               *http.ServeMux
 }
 
 // NewHandler expects the returned *Handler to be mounted at exactly
@@ -126,9 +247,30 @@ type Handler struct {
 // -- every view then answers unfiltered, identical to today's behavior;
 // see tenantFilter's doc comment. unblock may likewise be nil (rbac is
 // off) -- DELETE /dashboard/api/anomalies/blocked/{identity} then answers
-// 404 the same way as every other "not wired" route above.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock}
+// 404 the same way as every other "not wired" route above. rbac may
+// likewise be nil (rbac is off) -- GET /dashboard/api/rbac then answers
+// 404 the same way. budget may likewise be nil (budget_enforcement is
+// off) -- GET /dashboard/api/budget then answers 404 the same way.
+// reloadCoordinator and reloadAuth gate POST /dashboard/api/reload/{domain}
+// the same pairing as blocked/unblock above (a source plus its
+// authorizer) -- either nil answers 404 the same way. reloadHistory backs
+// GET /dashboard/api/reload/history -- unlike reloadCoordinator/reloadAuth
+// it needs no separate authorizer of its own: it's a read, gated by the
+// same dashboard:view permission wrapping this whole handler (see
+// main.go), never config:edit. nil (dashboard enabled without the reload
+// buffer wired) answers 404, the same "not wired" posture as every other
+// nil-source route above. callerInfo backs the topbar's identity display
+// (GET /dashboard/api/status's CallerIdentity/CallerCanConfigEdit
+// fields) -- nil (rbac off) leaves both fields zero-valued, and the
+// topbar falls back to its generic icon, identical to behavior before
+// this field existed. policyWriter backs the Policy view's structured
+// rule editor (PUT /dashboard/api/policy) -- nil (non-yaml backend, or
+// rbac off) leaves the editor unavailable, the Source tab's read-only
+// view still works via policy alone. budgetWriter backs the Budget
+// view's editor (PUT /dashboard/api/budget) the same way, nil when
+// budget_enforcement or rbac is off.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -138,6 +280,10 @@ func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
+	mux.HandleFunc("/dashboard/api/rbac", h.handleRBAC)
+	mux.HandleFunc("/dashboard/api/budget", h.handleBudget)
+	mux.HandleFunc("/dashboard/api/reload/history", h.handleReloadHistory)
+	mux.HandleFunc("/dashboard/api/reload/", h.handleReload)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -228,13 +374,15 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	entries := make([]domain.AnomalyEntry, 0, len(alerts))
 	for _, a := range alerts {
 		entries = append(entries, domain.AnomalyEntry{
-			ID:        a.ID,
-			Timestamp: a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			Identity:  a.Identity,
-			Tenant:    a.Tenant,
-			Kind:      string(a.Kind),
-			Detail:    a.Detail,
-			Tool:      a.Entry.Tool,
+			ID:               a.ID,
+			Timestamp:        a.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Identity:         a.Identity,
+			Tenant:           a.Tenant,
+			Kind:             string(a.Kind),
+			Detail:           a.Detail,
+			Tool:             a.Entry.Tool,
+			Score:            a.Score,
+			AutoBlockSeconds: a.AutoBlockSeconds,
 		})
 	}
 	writeJSON(w, entries)
@@ -333,29 +481,300 @@ func (h *Handler) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
+// handleRBAC serves GET /dashboard/api/rbac -- a read-only snapshot of
+// every role and binding h.rbac (the real *rbacadapter.StaticAuthorizer,
+// wired in main.go) currently holds. Gated only by the outer
+// dashboard:view RequirePermission wrap around the whole /dashboard/
+// tree in main.go -- never config:edit, since this is a read, not a
+// mutation, and no edit capability exists yet.
+func (h *Handler) handleRBAC(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowed(w, r) {
 		return
 	}
-	writeJSON(w, h.policy)
+	if h.rbac == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	clusterBindings := h.rbac.ClusterRoleBindings()
+	roleBindings := h.rbac.RoleBindings()
+	bindingCounts := map[string]int{}
+	bindings := make([]domain.BindingEntry, 0, len(clusterBindings)+len(roleBindings))
+	for _, b := range clusterBindings {
+		bindingCounts[b.RoleName]++
+		bindings = append(bindings, domain.BindingEntry{Subject: b.Subject, Role: b.RoleName})
+	}
+	for _, b := range roleBindings {
+		bindingCounts[b.RoleName]++
+		bindings = append(bindings, domain.BindingEntry{Subject: b.Subject, Role: b.RoleName, Tenant: b.Tenant})
+	}
+	roles := make([]domain.RoleEntry, 0, len(h.rbac.Roles()))
+	for _, role := range h.rbac.Roles() {
+		perms := make([]string, len(role.Permissions))
+		for i, p := range role.Permissions {
+			perms[i] = string(p)
+		}
+		roles = append(roles, domain.RoleEntry{Name: role.Name, Permissions: perms, BindingCount: bindingCounts[role.Name]})
+	}
+	writeJSON(w, struct {
+		Roles    []domain.RoleEntry    `json:"roles"`
+		Bindings []domain.BindingEntry `json:"bindings"`
+	}{roles, bindings})
 }
 
-// statusResponse wraps domain.StatusInfo with one per-request field
-// (CallerTenant) StatusInfo itself cannot carry -- StatusInfo is a
-// process-wide value cached by StatusProvider, computed once, identical
-// for every caller; CallerTenant is derived fresh per request from
-// h.tenantFilter, the same RBAC-resolved scoping every other route in
-// this file already uses.
+// handleBudget serves GET /dashboard/api/budget -- a read-only snapshot of
+// the global default rate limit and every tenant/tool override h.budget
+// (the real budgetdomain.Limiter, wired in main.go) currently holds.
+// Gated only by the outer dashboard:view RequirePermission wrap around the
+// whole /dashboard/ tree in main.go -- never config:edit, since this is a
+// read, not a mutation, and no edit capability exists yet.
+func (h *Handler) handleBudget(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleBudgetRead(w, r)
+	case http.MethodPut:
+		h.handleBudgetWrite(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) handleBudgetRead(w http.ResponseWriter, r *http.Request) {
+	if h.budget == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	def := h.budget.DefaultLimit()
+	overrides := make([]domain.BudgetOverrideEntry, 0)
+	for _, o := range h.budget.TenantOverrides() {
+		overrides = append(overrides, domain.BudgetOverrideEntry{Scope: o.Scope, Name: o.Name, RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())})
+	}
+	for _, o := range h.budget.ToolOverrides() {
+		overrides = append(overrides, domain.BudgetOverrideEntry{Scope: o.Scope, Name: o.Name, RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())})
+	}
+	writeJSON(w, struct {
+		Default   domain.BudgetDefaultEntry    `json:"default"`
+		Overrides []domain.BudgetOverrideEntry `json:"overrides"`
+	}{domain.BudgetDefaultEntry{RequestsPerWindow: def.RequestsPerWindow, WindowSeconds: int(def.Window.Seconds())}, overrides})
+}
+
+// budgetOverrideInput/budgetWriteRequest are PUT /dashboard/api/budget's
+// wire shape -- deliberately dashboard-owned JSON, not budgetdomain
+// types directly, same reasoning as policyWriteRequest.
+type budgetOverrideInput struct {
+	Scope             string `json:"scope"`
+	Name              string `json:"name"`
+	RequestsPerWindow int    `json:"requests_per_window"`
+	WindowSeconds     int    `json:"window_seconds"`
+}
+
+type budgetWriteRequest struct {
+	Default struct {
+		RequestsPerWindow int `json:"requests_per_window"`
+		WindowSeconds     int `json:"window_seconds"`
+	} `json:"default"`
+	TenantOverrides []budgetOverrideInput `json:"tenant_overrides"`
+	ToolOverrides   []budgetOverrideInput `json:"tool_overrides"`
+}
+
+// handleBudgetWrite serves PUT /dashboard/api/budget -- the Budget
+// view's editor equivalent of handlePolicyWrite, gated by the same
+// config:edit ReloadAuthorizer. appliedBy comes only from
+// ReloadAuthorizer.Authorize, never the request body.
+func (h *Handler) handleBudgetWrite(w http.ResponseWriter, r *http.Request) {
+	if h.budgetWriter == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req budgetWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	toOverrides := func(in []budgetOverrideInput) []budgetdomain.OverrideInfo {
+		out := make([]budgetdomain.OverrideInfo, len(in))
+		for i, o := range in {
+			out[i] = budgetdomain.OverrideInfo{Scope: o.Scope, Name: o.Name, LimitInfo: budgetdomain.LimitInfo{RequestsPerWindow: o.RequestsPerWindow, Window: time.Duration(o.WindowSeconds) * time.Second}}
+		}
+		return out
+	}
+	def := budgetdomain.LimitInfo{RequestsPerWindow: req.Default.RequestsPerWindow, Window: time.Duration(req.Default.WindowSeconds) * time.Second}
+
+	if err := h.budgetWriter.WriteAndReload(def, toOverrides(req.TenantOverrides), toOverrides(req.ToolOverrides), appliedBy); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: err.Error()})
+		return
+	}
+	h.handleBudgetRead(w, r)
+}
+
+// handleReload serves POST /dashboard/api/reload/{domain}, triggering a
+// hot-reload of the named domain's configuration (policy, rbac, or
+// budget -- see cmd/wardline's ReloadCoordinator wiring for the exact
+// set). This is a mutation with real operational/security weight, so it
+// is gated by ReloadAuthorizer (requiring config:edit when rbac is on)
+// separately from the read-only dashboard:view permission the rest of
+// this file's routes rely on -- same posture as handleUnblock/
+// credential:revoke. appliedBy comes from ReloadAuthorizer.Authorize,
+// the resolved caller identity, never from anything the client supplies.
+func (h *Handler) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.reloadCoordinator == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	domainName := strings.TrimPrefix(r.URL.Path, "/dashboard/api/reload/")
+	if domainName == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, h.reloadCoordinator.Reload(domainName, appliedBy))
+}
+
+// handleReloadHistory serves GET /dashboard/api/reload/history, the
+// read-only counterpart to POST /dashboard/api/reload/{domain} -- same
+// pagination/writeJSON/nil-source-404 shape as handleAnomalies, but
+// gated only by the dashboard:view permission wrapping this whole
+// handler (see main.go), never config:edit: viewing history is a read,
+// not a mutation. Registered as an exact path so it takes precedence
+// over "/dashboard/api/reload/"'s subtree match (handleReload) for this
+// one literal path -- ServeMux always prefers the more specific pattern.
+func (h *Handler) handleReloadHistory(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.reloadHistory == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	after, limit := pagination(r)
+
+	events := h.reloadHistory.Since(after, limit)
+	entries := make([]domain.ReloadEntry, 0, len(events))
+	for _, e := range events {
+		entries = append(entries, domain.ReloadEntry{
+			ID:        e.ID,
+			Timestamp: e.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Domain:    e.Domain,
+			OK:        e.OK,
+			Error:     e.Error,
+			AppliedBy: e.AppliedBy,
+		})
+	}
+	writeJSON(w, entries)
+}
+
+func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, h.policy.Current())
+	case http.MethodPut:
+		h.handlePolicyWrite(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// policyRuleInput/policyWriteRequest are PUT /dashboard/api/policy's wire
+// shape for the Rule editor's "Validate & apply" -- deliberately a
+// dashboard-owned JSON shape, not policydomain.Rule directly, same
+// reasoning as every other *Entry type in domain/entry.go: the wire
+// contract shouldn't change just because the domain type's fields do.
+type policyRuleInput struct {
+	Identity string `json:"identity"`
+	Tool     string `json:"tool"`
+	Tenant   string `json:"tenant"`
+	Effect   string `json:"effect"`
+}
+
+type policyWriteRequest struct {
+	Rules   []policyRuleInput `json:"rules"`
+	Default string            `json:"default"`
+}
+
+// handlePolicyWrite serves PUT /dashboard/api/policy -- the Rule
+// editor's "Validate & apply", writing a new rule set to the yaml
+// backend's policy file and reloading the live engine from it, gated by
+// the exact same config:edit ReloadAuthorizer POST
+// /dashboard/api/reload/{domain} uses (this is at least as sensitive a
+// mutation). appliedBy comes only from ReloadAuthorizer.Authorize, the
+// resolved caller identity -- never from anything the client's JSON
+// body supplies, mirroring handleReload exactly.
+func (h *Handler) handlePolicyWrite(w http.ResponseWriter, r *http.Request) {
+	if h.policyWriter == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req policyWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	rules := make([]policydomain.Rule, len(req.Rules))
+	for i, ri := range req.Rules {
+		rules[i] = policydomain.Rule{Identity: ri.Identity, Tool: ri.Tool, Tenant: ri.Tenant, Effect: policydomain.Effect(ri.Effect)}
+	}
+
+	if err := h.policyWriter.WriteAndReload(rules, policydomain.Effect(req.Default), appliedBy); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: err.Error()})
+		return
+	}
+	writeJSON(w, h.policy.Current())
+}
+
+// statusResponse wraps domain.StatusInfo with per-request fields
+// StatusInfo itself cannot carry -- StatusInfo is a process-wide value
+// cached by StatusProvider, computed once, identical for every caller;
+// CallerTenant/CallerIdentity/CallerCanConfigEdit are derived fresh per
+// request from h.tenantFilter/h.callerInfo, the same RBAC-resolved
+// scoping every other route in this file already uses. CallerIdentity
+// is "" (and CallerCanConfigEdit false) whenever callerInfo is nil or
+// the identity doesn't resolve -- the topbar must never display a
+// fabricated name for an unresolved caller.
 type statusResponse struct {
 	domain.StatusInfo
-	CallerTenant string
+	CallerTenant        string
+	CallerIdentity      string
+	CallerCanConfigEdit bool
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowed(w, r) {
 		return
 	}
-	writeJSON(w, statusResponse{StatusInfo: h.status.Status(), CallerTenant: h.tenantFilter(r)})
+	resp := statusResponse{StatusInfo: h.status.Status(), CallerTenant: h.tenantFilter(r)}
+	if h.callerInfo != nil {
+		resp.CallerIdentity, resp.CallerCanConfigEdit = h.callerInfo.CallerInfo(r)
+	}
+	writeJSON(w, resp)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
