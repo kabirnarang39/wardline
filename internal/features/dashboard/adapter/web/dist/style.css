@@ -549,20 +549,22 @@ button, input {
    harmless per source order, .card-dark's override still wins either
    way) and now open with a `.panel-title-bar` (its own 11px/15px
    padding + bottom border, see rule below). .card's blanket `padding:
-   24px` would double up around that title bar, so for `.card.panel`
-   specifically, the reference's own panel-body padding (15px) applies to
-   plain content -- table (.audit-table) and .empty-state are excluded
-   because each already carries its own complete padding (flush/edge-to-edge
-   for the table matching the reference's table.data exactly; 48px/20px
-   centered for the empty state), and stacking this rule's padding on top
-   of theirs would double it up the same way the old blanket 24px did.
+   24px` would double up around that title bar, so `.card.panel` cancels
+   its own padding entirely -- non-table content wraps in a real
+   `.panel-body` div instead (matches Budget's Default limit/Overrides
+   panels and the reference's own structure exactly). A previous version
+   of this rule applied `padding` directly to each non-table child
+   instead of wrapping them: padding insets a child's own *content*, not
+   its box, so a <button>'s background/border still rendered flush
+   against the card edge even though its text looked correctly inset --
+   real bug, fixed by switching to a wrapping div (see git history).
+   Table (.audit-table) and .empty-state need no such wrapper -- each
+   already carries its own complete padding (flush/edge-to-edge for the
+   table, 48px/20px centered for the empty state).
    Scoped to `.card.panel` (not bare `.card`) so Credentials' card --
    still bare `.card`, no title bar, not part of this rule -- keeps its
    original single-box padding untouched. */
 .card.panel { padding: 0; }
-.card.panel > *:not(.panel-title-bar):not(.audit-table):not(.empty-state) { padding: 0 15px; }
-.card.panel > .panel-title-bar + *:not(.audit-table):not(.empty-state) { padding-top: 15px; }
-.card.panel > *:not(.panel-title-bar):not(.audit-table):not(.empty-state):last-child { padding-bottom: 15px; }
 
 .content {
   flex: 1;
@@ -1261,7 +1263,11 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 /* 2fr:1.3fr:1fr, not equal thirds: "Recent activity" holds a real 4-column
    table (Identity/Tool/Decision/Latency) that needs real room, matching
    the reference prototype's own .cols-3 ratio for this exact row. */
-.card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; }
+/* align-items: start -- without this, grid's default `stretch` forces
+   Needs review/Live pulse to match Recent activity's (real table-driven)
+   height, leaving a large dead-space gap below their own short content.
+   Each card now sizes to its own content instead. */
+.card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; align-items: start; }
 @media (max-width: 1100px) {
   .card-grid { grid-template-columns: 1fr; }
 }
