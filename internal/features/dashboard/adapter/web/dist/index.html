@@ -175,23 +175,24 @@
             <h1 id="view-activity-heading">Activity</h1>
             <p class="view-sub" id="activity-subtitle"></p>
           </div>
-          <div class="filters">
-            <input type="text" id="filter-identity" placeholder="Filter by identity" aria-label="Filter by identity">
-            <input type="text" id="filter-tool" placeholder="Filter by tool" aria-label="Filter by tool">
-            <div class="chip-group" role="group" aria-label="Filter by decision">
-              <button class="chip" data-decision="allow" aria-pressed="false">allow</button>
-              <button class="chip" data-decision="deny" aria-pressed="false">deny</button>
-              <button class="chip" data-decision="throttled" aria-pressed="false">throttled</button>
-              <button class="chip" data-decision="error" aria-pressed="false">error</button>
-              <button class="chip" data-decision="passthrough" aria-pressed="false">passthrough</button>
-              <button class="chip" data-decision="blocked" aria-pressed="false">blocked</button>
-            </div>
+        </div>
+        <div class="filters">
+          <input type="text" id="filter-identity" placeholder="Filter by identity" aria-label="Filter by identity">
+          <input type="text" id="filter-tool" placeholder="Filter by tool" aria-label="Filter by tool">
+          <div class="chip-group" role="group" aria-label="Filter by decision">
+            <button class="chip" data-decision="allow" aria-pressed="false">allow</button>
+            <button class="chip" data-decision="deny" aria-pressed="false">deny</button>
+            <button class="chip" data-decision="throttled" aria-pressed="false">throttled</button>
+            <button class="chip" data-decision="error" aria-pressed="false">error</button>
+            <button class="chip" data-decision="passthrough" aria-pressed="false">passthrough</button>
+            <button class="chip" data-decision="blocked" aria-pressed="false">blocked</button>
           </div>
           <button class="facet-toggle" id="facet-toggle" aria-expanded="false" aria-controls="facet-panel">
             <span data-icon="chevron" aria-hidden="true"></span>
             Filter by value
           </button>
-          <div class="facet-panel" id="facet-panel" hidden>
+        </div>
+        <div class="facet-panel" id="facet-panel" hidden>
             <div class="facet-group">
               <h3>Identity</h3>
               <ul id="facet-identity"></ul>

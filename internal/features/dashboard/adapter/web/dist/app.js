@@ -792,7 +792,7 @@ function updateLivePulse() {
 function renderOverview() {
   const subtitle = document.getElementById('overview-subtitle');
   if (subtitle) {
-    subtitle.textContent = 'Live activity across all tenants';
+    subtitle.textContent = 'Last 24 hours across all tenants';
   }
   renderStatusBand();
   renderKPIs();
