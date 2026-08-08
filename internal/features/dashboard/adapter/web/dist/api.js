@@ -13,7 +13,9 @@ export async function fetchAnomalies(afterID, limit) {
   const url = `api/anomalies?after=${afterID}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`anomalies fetch failed: ${res.status}`);
+    const err = new Error(`anomalies fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -94,7 +96,9 @@ export async function fetchFederationCorrelated(afterID, limit) {
   const url = `api/federation/correlated?after=${afterID}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`federation fetch failed: ${res.status}`);
+    const err = new Error(`federation fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -141,7 +145,9 @@ export async function fetchReloadHistory(afterID, limit) {
   const url = `api/reload/history?after=${afterID}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`reload history fetch failed: ${res.status}`);
+    const err = new Error(`reload history fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -149,7 +155,9 @@ export async function fetchReloadHistory(afterID, limit) {
 export async function fetchBlocked() {
   const res = await fetch('api/anomalies/blocked');
   if (!res.ok) {
-    throw new Error(`blocked fetch failed: ${res.status}`);
+    const err = new Error(`blocked fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
