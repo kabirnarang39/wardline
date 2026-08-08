@@ -119,9 +119,25 @@ policy-pack marketplace, HA deployment.
   curated pack collection, one flag away). Docs:
   `docs/superpowers/specs/2026-08-08-policy-pack-marketplace-expansion-design.md`.
 
+- **HA distributed state + signing-key rotation** — the distributed
+  budget counters (`PostgresLimiter`) and anomaly baselines
+  (`PostgresBaselineStore`) shipped earlier in v2.0; this closes the two
+  remaining gaps. **Distributed auto-block:** a Postgres-backed
+  `PostgresBlockStore` (enabled by `postgres_storage` alongside
+  `anomaly_detection`) so a block triggered by one HA replica is honored
+  by every replica, not dodgeable by load-balancing to a different pod.
+  **Signing-key rotation:** `credential.previous_signing_key_files`
+  accepts old keys for verification-only during a rotation window (new
+  tokens sign under the new key, old-key tokens keep verifying to their
+  TTL), a `kid` header on every token, and a `GET /credentials/jwks`
+  endpoint. Deliberately **not** a live cloud KMS integration — local
+  PEM rotation is the self-hosted-proxy-appropriate default; an operator
+  wanting KMS custody sources the PEM bytes through their own Secret
+  pipeline. Docs:
+  `docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md`.
+
 ## v2.0 (planned, not yet shipped)
 
-- **HA distributed budget/anomaly state + signing-key rotation/KMS** — distributing state across HA instances with key rotation support.
 - **gRPC transport support** — enabling gRPC as a transport layer alongside HTTP.
 
 A hosted cloud tier has been explicitly named as a possible future

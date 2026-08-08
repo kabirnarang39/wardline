@@ -44,6 +44,8 @@ func NewBlockChecker(cfg domain.AutoBlockConfig, now func() time.Time) *BlockChe
 	return &BlockChecker{cfg: cfg, now: now, blocked: make(map[string]blockEntry)}
 }
 
+var _ domain.Blocker = (*BlockChecker)(nil)
+
 // Block records (identity, tenantName) as blocked for
 // cfg.BlockDurationSeconds from now, with reason recorded for both the
 // proxy's audit entry and the dashboard's blocked-list view.
