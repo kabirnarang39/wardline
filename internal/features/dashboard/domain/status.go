@@ -19,6 +19,9 @@ type PolicyRuleEntry struct {
 	Tool     string `json:"tool"`
 	Tenant   string `json:"tenant,omitempty"`
 	Effect   string `json:"effect"`
+	// Method is "" (displayed/edited as "tools/call") or an MCP
+	// resources/*/prompts/* method -- see policydomain.Rule.Method.
+	Method string `json:"method,omitempty"`
 }
 
 // PolicyInfo is the active policy engine's backend name and raw source.

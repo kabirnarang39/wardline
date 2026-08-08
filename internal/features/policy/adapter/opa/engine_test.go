@@ -306,6 +306,40 @@ func TestOPAEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T) 
 	}
 }
 
+const methodScopedSource = `package wardline.authz
+
+default allow = false
+
+allow {
+	input.identity == "agent-abc123"
+	input.method == "resources/read"
+	input.tool == "file:///data/report.csv"
+}
+`
+
+// TestOPAEngine_MethodReachesRegoInput proves domain.Context.Method is
+// wired through to input.method, letting a Rego policy distinguish a
+// tools/call from a resources/read request that happens to carry the
+// same Tool-shaped string -- the widening feature's core adapter-level
+// proof, see
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestOPAEngine_MethodReachesRegoInput(t *testing.T) {
+	e, err := opa.NewOPAEngine("method.rego", []byte(methodScopedSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "resources/read"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("resources/read: got %v, want allow", got.Effect)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("same target via tools/call: got %v, want deny (policy is method-scoped)", got.Effect)
+	}
+}
+
 func TestLoadRegoFile_MissingFile(t *testing.T) {
 	_, err := opa.LoadRegoFile("/nonexistent/policy.rego")
 	if err == nil {

@@ -707,6 +707,136 @@ func TestHandler_PassthroughRequest_SpanStatusStaysOK(t *testing.T) {
 	}
 }
 
+// TestHandler_GatedResourcesReadAllowed_SkipsBudgetButRunsPolicy is the
+// widening feature's core handler-level proof: a resources/read request
+// IS evaluated by the policy engine (unlike passthrough), but the budget
+// checker is never consulted even on allow — see
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestHandler_GatedResourcesReadAllowed_SkipsBudgetButRunsPolicy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	engine := &countingEngine{fakeEngine: fakeEngine{effect: policydomain.EffectAllow}}
+	budget := &countingBudgetChecker{}
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(engine)
+	h := adapter.NewHandler(decider, recorder, upstreamURL, budget, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///data/report.csv"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if engine.calls != 1 {
+		t.Errorf("expected policy engine to be consulted exactly once for a gated resources/read, got %d calls", engine.calls)
+	}
+	if budget.calls != 0 {
+		t.Errorf("expected budget checker to never be consulted for a resources/read, got %d calls", budget.calls)
+	}
+	if len(writer.entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(writer.entries))
+	}
+	entry := writer.entries[0]
+	if entry.Decision != "allow" {
+		t.Errorf("expected decision %q, got %q", "allow", entry.Decision)
+	}
+	if entry.Tool != "file:///data/report.csv" {
+		t.Errorf("expected Tool to hold the resource uri, got %q", entry.Tool)
+	}
+}
+
+// TestHandler_GatedResourcesReadDenied_NeverReachesUpstreamOrBudget
+// proves a policy deny on a gated resources/prompts request behaves
+// exactly like a tools/call deny: 403, never forwarded, budget never
+// consulted.
+func TestHandler_GatedResourcesReadDenied_NeverReachesUpstreamOrBudget(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	engine := &countingEngine{fakeEngine: fakeEngine{effect: policydomain.EffectDeny}}
+	budget := &countingBudgetChecker{}
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(engine)
+	h := adapter.NewHandler(decider, recorder, upstreamURL, budget, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"summarize"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if upstreamHit {
+		t.Error("expected upstream to never be reached for a denied resources/prompts call")
+	}
+	if budget.calls != 0 {
+		t.Errorf("expected budget checker to never be consulted for a denied resources/prompts call, got %d calls", budget.calls)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "deny" {
+		t.Fatalf("expected one deny audit entry, got %+v", writer.entries)
+	}
+	if writer.entries[0].Tool != "summarize" {
+		t.Errorf("expected Tool to hold the prompt name, got %q", writer.entries[0].Tool)
+	}
+}
+
+// TestHandler_GatedListCall_AuditFallsBackToMethodName proves an
+// untargeted resources/prompts call (list-style, no uri/name) records
+// the method name as the audit Tool instead of a blank string, while the
+// policy Context it was evaluated against still saw an empty Tool (that
+// distinction matters for what a rule can match — see matcher_test.go's
+// TestMatcher_UntargetedListCallOnlyMatchesWildcardOrDefault).
+func TestHandler_GatedListCall_AuditFallsBackToMethodName(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	engine := &contextRecordingEngine{}
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(engine)
+	h := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if engine.received.Tool != "" {
+		t.Errorf("expected policy Context.Tool to stay empty for an untargeted list call, got %q", engine.received.Tool)
+	}
+	if engine.received.Method != "resources/list" {
+		t.Errorf("expected policy Context.Method %q, got %q", "resources/list", engine.received.Method)
+	}
+	if len(writer.entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(writer.entries))
+	}
+	if writer.entries[0].Tool != "resources/list" {
+		t.Errorf("expected audit Tool to fall back to the method name, got %q", writer.entries[0].Tool)
+	}
+}
+
 func TestHandler_TraceIDEmptyWhenTracingDisabled(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

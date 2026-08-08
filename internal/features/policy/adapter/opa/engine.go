@@ -92,6 +92,7 @@ func LoadRegoFile(path string) (*OPAEngine, error) {
 type contextInput struct {
 	Identity   string `json:"identity"`
 	Tool       string `json:"tool"`
+	Method     string `json:"method"`
 	Params     any    `json:"params,omitempty"`
 	Timestamp  string `json:"timestamp"`
 	RemoteAddr string `json:"remote_addr"`
@@ -167,6 +168,7 @@ func buildInput(pc domain.Context) (contextInput, error) {
 	return contextInput{
 		Identity:   pc.Identity,
 		Tool:       pc.Tool,
+		Method:     pc.Method,
 		Params:     params,
 		Timestamp:  pc.Timestamp.UTC().Format(time.RFC3339),
 		RemoteAddr: pc.RemoteAddr,
