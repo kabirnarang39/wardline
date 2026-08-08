@@ -680,6 +680,9 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   }
 }
 
+/* An author display:flex rule always beats the UA [hidden]{display:none}
+   stylesheet rule regardless of selector specificity -- explicit [hidden]
+   override needed or the panel never actually hides. */
 .facet-panel {
   display: flex;
   gap: 24px;
@@ -690,6 +693,7 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
 }
+.facet-panel[hidden] { display: none; }
 
 .facet-group h3 {
   font-size: 12px;
