@@ -3,6 +3,7 @@ package adapter
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
@@ -22,6 +25,12 @@ import (
 // 2048 is the current minimum considered secure for RS256.
 const rsaKeyBits = 2048
 
+// verifyKey is one public key accepted for verification, plus its kid.
+type verifyKey struct {
+	kid    string
+	public *rsa.PublicKey
+}
+
 // JWTIssuerVerifier signs and verifies RS256 JWTs with an RSA keypair.
 // When keyPath is empty, the keypair is generated fresh at construction
 // -- restarting the process (or running a second replica) invalidates
@@ -29,24 +38,87 @@ const rsaKeyBits = 2048
 // names a PEM-encoded RSA private key (PKCS1 or PKCS8), every process
 // loading the same file signs and verifies with the identical keypair --
 // a token issued by one replica verifies correctly on another, since
-// they're mounted from the same Kubernetes Secret. See the design doc's
-// "Config" section for the full HA rationale and the operator-facing
-// warning logged when keyPath is empty (cmd/wardline/main.go).
+// they're mounted from the same Kubernetes Secret.
+//
+// previousKeyPaths (optional) names PEM files whose keys are accepted for
+// VERIFICATION ONLY, never for signing new tokens -- the key-rotation
+// window. An operator rotates by generating a new key, moving the old
+// signing_key_file into previous_signing_key_files, pointing
+// signing_key_file at the new key, and redeploying: every outstanding
+// token signed under the old key keeps verifying (up to its own TTL)
+// while every new token is signed under the new key. See the design doc
+// (docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md).
+//
+// Every issued token carries a "kid" (key ID) header -- a content hash of
+// the signing public key's DER encoding, so Verify looks up the exact
+// key rather than trying each in turn, and every replica derives an
+// identical kid for an identical key file with no operator-facing
+// identifier to keep in sync.
 type JWTIssuerVerifier struct {
 	privateKey *rsa.PrivateKey
-	tokenTTL   time.Duration
-	now        func() time.Time
+	signingKID string
+	// verifyKeys is every public key accepted for verification, keyed by
+	// kid -- always includes the signing key's own, plus every
+	// previousKeyPaths entry. Ordered (verifyOrder) for a deterministic
+	// fallback when a token carries no kid header.
+	verifyKeys  map[string]*rsa.PublicKey
+	verifyOrder []verifyKey
+	tokenTTL    time.Duration
+	now         func() time.Time
 }
 
-func NewJWTIssuerVerifier(keyPath string, tokenTTL time.Duration) (*JWTIssuerVerifier, error) {
+// NewJWTIssuerVerifier builds an issuer/verifier signing with the key at
+// keyPath (or a fresh generated key when keyPath is empty), additionally
+// accepting the keys at previousKeyPaths for verification only.
+func NewJWTIssuerVerifier(keyPath string, previousKeyPaths []string, tokenTTL time.Duration) (*JWTIssuerVerifier, error) {
+	var signingKey *rsa.PrivateKey
 	if keyPath == "" {
 		key, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
 		if err != nil {
 			return nil, fmt.Errorf("generate signing keypair: %w", err)
 		}
-		return &JWTIssuerVerifier{privateKey: key, tokenTTL: tokenTTL, now: time.Now}, nil
+		signingKey = key
+	} else {
+		key, err := loadRSAPrivateKeyFile(keyPath)
+		if err != nil {
+			return nil, err
+		}
+		signingKey = key
 	}
 
+	signingKID := publicKeyID(&signingKey.PublicKey)
+	verifyKeys := map[string]*rsa.PublicKey{signingKID: &signingKey.PublicKey}
+	verifyOrder := []verifyKey{{kid: signingKID, public: &signingKey.PublicKey}}
+
+	for _, p := range previousKeyPaths {
+		key, err := loadRSAPrivateKeyFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("previous signing key: %w", err)
+		}
+		kid := publicKeyID(&key.PublicKey)
+		if _, exists := verifyKeys[kid]; exists {
+			// The same key listed twice (or a previous key identical to
+			// the primary) is harmless -- dedupe rather than error, so an
+			// operator mid-rotation who hasn't yet dropped the now-primary
+			// key from the previous list isn't blocked from starting.
+			continue
+		}
+		verifyKeys[kid] = &key.PublicKey
+		verifyOrder = append(verifyOrder, verifyKey{kid: kid, public: &key.PublicKey})
+	}
+
+	return &JWTIssuerVerifier{
+		privateKey:  signingKey,
+		signingKID:  signingKID,
+		verifyKeys:  verifyKeys,
+		verifyOrder: verifyOrder,
+		tokenTTL:    tokenTTL,
+		now:         time.Now,
+	}, nil
+}
+
+// loadRSAPrivateKeyFile reads and parses a PEM RSA private key file.
+func loadRSAPrivateKeyFile(keyPath string) (*rsa.PrivateKey, error) {
 	data, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read signing key file %s: %w", keyPath, err)
@@ -59,7 +131,24 @@ func NewJWTIssuerVerifier(keyPath string, tokenTTL time.Duration) (*JWTIssuerVer
 	if err != nil {
 		return nil, fmt.Errorf("signing key file %s: %w", keyPath, err)
 	}
-	return &JWTIssuerVerifier{privateKey: key, tokenTTL: tokenTTL, now: time.Now}, nil
+	return key, nil
+}
+
+// publicKeyID derives a stable key ID from an RSA public key: the first
+// 16 bytes of SHA-256 over its PKIX DER encoding, hex-encoded. Every
+// process derives the identical kid for the identical key, with no
+// operator-facing identifier to configure -- the same "content, not a
+// configured name, is the identity" property cross-replica verification
+// already relies on for the key material itself.
+func publicKeyID(pub *rsa.PublicKey) string {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		// MarshalPKIXPublicKey only errors on an unsupported key type;
+		// *rsa.PublicKey is always supported, so this is unreachable.
+		return ""
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:16])
 }
 
 // parseRSAPrivateKey accepts both PKCS1 ("RSA PRIVATE KEY") and PKCS8
@@ -114,7 +203,14 @@ func (j *JWTIssuerVerifier) Issue(identity, tenantName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build token: %w", err)
 	}
-	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), j.privateKey))
+	// Embed the signing key's kid in the JWS protected header, so Verify
+	// (here or on another replica) can select the exact key rather than
+	// trying each in turn.
+	hdrs := jws.NewHeaders()
+	if err := hdrs.Set(jws.KeyIDKey, j.signingKID); err != nil {
+		return "", fmt.Errorf("set kid header: %w", err)
+	}
+	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), j.privateKey, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("sign token: %w", err)
 	}
@@ -122,7 +218,11 @@ func (j *JWTIssuerVerifier) Issue(identity, tenantName string) (string, error) {
 }
 
 func (j *JWTIssuerVerifier) Verify(token string) (domain.Claims, error) {
-	parsed, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.RS256(), &j.privateKey.PublicKey))
+	pub, err := j.verifyKeyFor(token)
+	if err != nil {
+		return domain.Claims{}, fmt.Errorf("%w: %v", domain.ErrTokenInvalid, err)
+	}
+	parsed, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.RS256(), pub))
 	if err != nil {
 		if errors.Is(err, jwt.TokenExpiredError()) {
 			return domain.Claims{}, fmt.Errorf("%w: %v", domain.ErrTokenExpired, err)
@@ -150,6 +250,66 @@ func (j *JWTIssuerVerifier) Verify(token string) (domain.Claims, error) {
 		tenantName = tenant.Default
 	}
 	return domain.Claims{Subject: sub, Tenant: tenantName, IssuedAt: iat, ExpiresAt: exp, ID: jti}, nil
+}
+
+// verifyKeyFor selects the public key to verify token against: the one
+// whose kid matches the token's "kid" header, or -- when the token
+// carries no kid (a token issued before this rotation support existed,
+// or by a non-Wardline issuer) -- a fallback that accepts any configured
+// key. The fallback tries each key in verifyOrder and returns the first
+// whose signature validates, so an old, kid-less token still verifies
+// under whichever configured key actually signed it.
+func (j *JWTIssuerVerifier) verifyKeyFor(token string) (*rsa.PublicKey, error) {
+	msg, err := jws.Parse([]byte(token))
+	if err != nil {
+		return nil, fmt.Errorf("parse jws: %w", err)
+	}
+	sigs := msg.Signatures()
+	if len(sigs) == 0 {
+		return nil, errors.New("token has no signature")
+	}
+	if kid, ok := sigs[0].ProtectedHeaders().KeyID(); ok && kid != "" {
+		if pub, found := j.verifyKeys[kid]; found {
+			return pub, nil
+		}
+		return nil, fmt.Errorf("no configured key matches token kid %q", kid)
+	}
+	// No kid header: fall back to trying each configured key. jwt.Parse
+	// does the real cryptographic verification; here we only need to find
+	// which key it accepts, so the caller can pass exactly that one.
+	for _, vk := range j.verifyOrder {
+		if _, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.RS256(), vk.public), jwt.WithValidate(false)); err == nil {
+			return vk.public, nil
+		}
+	}
+	return nil, errors.New("no configured key verifies this token")
+}
+
+// JWKS returns every currently-valid verification key (the signing key
+// plus every previous key) as a JWK set, for serving at
+// GET /credentials/jwks. Public keys only -- a JWK set never carries
+// private material.
+func (j *JWTIssuerVerifier) JWKS() (jwk.Set, error) {
+	set := jwk.NewSet()
+	for _, vk := range j.verifyOrder {
+		key, err := jwk.Import(vk.public)
+		if err != nil {
+			return nil, fmt.Errorf("import public key %s: %w", vk.kid, err)
+		}
+		if err := key.Set(jwk.KeyIDKey, vk.kid); err != nil {
+			return nil, fmt.Errorf("set kid on jwk: %w", err)
+		}
+		if err := key.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+			return nil, fmt.Errorf("set alg on jwk: %w", err)
+		}
+		if err := key.Set(jwk.KeyUsageKey, "sig"); err != nil {
+			return nil, fmt.Errorf("set use on jwk: %w", err)
+		}
+		if err := set.AddKey(key); err != nil {
+			return nil, fmt.Errorf("add key to set: %w", err)
+		}
+	}
+	return set, nil
 }
 
 func randomJTI() (string, error) {

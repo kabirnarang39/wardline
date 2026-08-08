@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
@@ -20,7 +21,7 @@ import (
 )
 
 func TestIssueAndVerify_RoundTripsTenant(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestIssueAndVerify_RoundTripsTenant(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestJWTIssuerVerifier_RoundTrip(t *testing.T) {
 // untenanted policy rules and is invisible to every tenant-scoped
 // dashboard view.
 func TestJWTIssuerVerifier_Verify_NoTenantClaimDefaultsToTenantDefault(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestJWTIssuerVerifier_Verify_NoTenantClaimDefaultsToTenantDefault(t *testin
 }
 
 func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestJWTIssuerVerifier_TwoTokensHaveDifferentJTIs(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -153,8 +154,8 @@ func TestJWTIssuerVerifier_TamperedSignatureFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
-	iv1, _ := NewJWTIssuerVerifier("", time.Hour)
-	iv2, _ := NewJWTIssuerVerifier("", time.Hour)
+	iv1, _ := NewJWTIssuerVerifier("", nil, time.Hour)
+	iv2, _ := NewJWTIssuerVerifier("", nil, time.Hour)
 	token, _ := iv1.Issue("agent-abc123", "")
 	_, err := iv2.Verify(token)
 	if !errors.Is(err, domain.ErrTokenInvalid) {
@@ -163,7 +164,7 @@ func TestJWTIssuerVerifier_SignedByDifferentKeyFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", 15*time.Minute)
+	iv, err := NewJWTIssuerVerifier("", nil, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestJWTIssuerVerifier_ExpiredTokenFails(t *testing.T) {
 }
 
 func TestJWTIssuerVerifier_MalformedTokenFails(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", time.Hour)
+	iv, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +231,7 @@ func writeTestRSAKeyPKCS1(t *testing.T, bits int) string {
 }
 
 func TestNewJWTIssuerVerifier_EmptyPathGeneratesFreshKeyAsToday(t *testing.T) {
-	j, err := NewJWTIssuerVerifier("", time.Hour)
+	j, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier(\"\"): %v", err)
 	}
@@ -246,11 +247,11 @@ func TestNewJWTIssuerVerifier_EmptyPathGeneratesFreshKeyAsToday(t *testing.T) {
 func TestNewJWTIssuerVerifier_SameKeyFile_TwoInstancesVerifyEachOthersTokens(t *testing.T) {
 	keyPath := writeTestRSAKey(t)
 
-	replicaA, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	replicaA, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	replicaB, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	replicaB, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
@@ -273,11 +274,11 @@ func TestNewJWTIssuerVerifier_DifferentKeyFiles_TokenFromOneFailsOnTheOther(t *t
 	keyPathA := writeTestRSAKey(t)
 	keyPathB := writeTestRSAKey(t)
 
-	replicaA, err := NewJWTIssuerVerifier(keyPathA, time.Hour)
+	replicaA, err := NewJWTIssuerVerifier(keyPathA, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	replicaB, err := NewJWTIssuerVerifier(keyPathB, time.Hour)
+	replicaB, err := NewJWTIssuerVerifier(keyPathB, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestNewJWTIssuerVerifier_DifferentKeyFiles_TokenFromOneFailsOnTheOther(t *t
 }
 
 func TestNewJWTIssuerVerifier_MissingKeyFileErrors(t *testing.T) {
-	_, err := NewJWTIssuerVerifier(filepath.Join(t.TempDir(), "does-not-exist.pem"), time.Hour)
+	_, err := NewJWTIssuerVerifier(filepath.Join(t.TempDir(), "does-not-exist.pem"), nil, time.Hour)
 	if err == nil {
 		t.Fatal("expected an error for a missing key file")
 	}
@@ -304,7 +305,7 @@ func TestNewJWTIssuerVerifier_MalformedKeyFileErrors(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a real key"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := NewJWTIssuerVerifier(path, time.Hour)
+	_, err := NewJWTIssuerVerifier(path, nil, time.Hour)
 	if err == nil {
 		t.Fatal("expected an error for a malformed key file")
 	}
@@ -313,7 +314,7 @@ func TestNewJWTIssuerVerifier_MalformedKeyFileErrors(t *testing.T) {
 func TestNewJWTIssuerVerifier_PKCS1KeyFile_RoundTrips(t *testing.T) {
 	keyPath := writeTestRSAKeyPKCS1(t, 2048)
 
-	iv, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	iv, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier with a PKCS1-encoded key: %v", err)
 	}
@@ -329,11 +330,11 @@ func TestNewJWTIssuerVerifier_PKCS1KeyFile_RoundTrips(t *testing.T) {
 func TestNewJWTIssuerVerifier_PKCS1SameKeyFile_TwoInstancesVerifyEachOthersTokens(t *testing.T) {
 	keyPath := writeTestRSAKeyPKCS1(t, 2048)
 
-	replicaA, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	replicaA, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	replicaB, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	replicaB, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestNewJWTIssuerVerifier_PKCS1SameKeyFile_TwoInstancesVerifyEachOthersToken
 func TestNewJWTIssuerVerifier_WeakPKCS1KeyRejected(t *testing.T) {
 	keyPath := writeTestRSAKeyPKCS1(t, 1024)
 
-	_, err := NewJWTIssuerVerifier(keyPath, time.Hour)
+	_, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
 	if err == nil {
 		t.Fatal("expected a 1024-bit PKCS1 key to be rejected as below the minimum key size")
 	}
@@ -371,7 +372,7 @@ func TestNewJWTIssuerVerifier_WeakPKCS8KeyRejected(t *testing.T) {
 		t.Fatalf("write test key: %v", err)
 	}
 
-	_, err = NewJWTIssuerVerifier(path, time.Hour)
+	_, err = NewJWTIssuerVerifier(path, nil, time.Hour)
 	if err == nil {
 		t.Fatal("expected a 1024-bit PKCS8 key to be rejected as below the minimum key size")
 	}
@@ -387,7 +388,7 @@ func TestNewJWTIssuerVerifier_WeakPKCS8KeyRejected(t *testing.T) {
 // directly would spuriously fail on this jwx precision behavior rather
 // than testing anything real -- use realistic, config-shaped values here.
 func TestJWTIssuerVerifier_IssuedTokenExpiresAtConfiguredTTL(t *testing.T) {
-	iv, err := NewJWTIssuerVerifier("", 2*time.Second)
+	iv, err := NewJWTIssuerVerifier("", nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier: %v", err)
 	}
@@ -408,11 +409,11 @@ func TestJWTIssuerVerifier_IssuedTokenExpiresAtConfiguredTTL(t *testing.T) {
 // also uses a whole-second short TTL, for the same reason (see the
 // preceding test's doc comment).
 func TestJWTIssuerVerifier_DifferentConfiguredTTLsProduceDifferentExpiryWindows(t *testing.T) {
-	short, err := NewJWTIssuerVerifier("", time.Second)
+	short, err := NewJWTIssuerVerifier("", nil, time.Second)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier (short): %v", err)
 	}
-	long, err := NewJWTIssuerVerifier("", time.Hour)
+	long, err := NewJWTIssuerVerifier("", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier (long): %v", err)
 	}
@@ -430,5 +431,122 @@ func TestJWTIssuerVerifier_DifferentConfiguredTTLsProduceDifferentExpiryWindows(
 	}
 	if _, err := long.Verify(longToken); err != nil {
 		t.Errorf("expected the long-TTL token to still verify, got %v", err)
+	}
+}
+
+func TestNewJWTIssuerVerifier_RotationWindow_OldKeyStillVerifies(t *testing.T) {
+	oldKey := writeTestRSAKey(t)
+	newKey := writeTestRSAKey(t)
+
+	// The "before rotation" issuer signs with oldKey.
+	before, err := NewJWTIssuerVerifier(oldKey, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("before: %v", err)
+	}
+	oldToken, err := before.Issue("agent-abc123", "acme")
+	if err != nil {
+		t.Fatalf("Issue with old key: %v", err)
+	}
+
+	// The "after rotation" issuer signs with newKey but still accepts
+	// oldKey for verification (moved into previous_signing_key_files).
+	after, err := NewJWTIssuerVerifier(newKey, []string{oldKey}, time.Hour)
+	if err != nil {
+		t.Fatalf("after: %v", err)
+	}
+
+	claims, err := after.Verify(oldToken)
+	if err != nil {
+		t.Fatalf("expected a token signed under the old key to still verify during the rotation window, got: %v", err)
+	}
+	if claims.Subject != "agent-abc123" || claims.Tenant != "acme" {
+		t.Errorf("unexpected claims: %+v", claims)
+	}
+
+	// A brand-new token is signed under the new key and also verifies.
+	newToken, err := after.Issue("agent-def456", "widgets")
+	if err != nil {
+		t.Fatalf("Issue with new key: %v", err)
+	}
+	if _, err := after.Verify(newToken); err != nil {
+		t.Errorf("expected a new-key token to verify, got: %v", err)
+	}
+}
+
+func TestNewJWTIssuerVerifier_TokenSignedByUnconfiguredKeyFails(t *testing.T) {
+	configuredKey := writeTestRSAKey(t)
+	strangerKey := writeTestRSAKey(t)
+
+	issuer, err := NewJWTIssuerVerifier(configuredKey, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	stranger, err := NewJWTIssuerVerifier(strangerKey, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("stranger: %v", err)
+	}
+	strangerToken, err := stranger.Issue("agent-abc123", "acme")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	if _, err := issuer.Verify(strangerToken); err == nil {
+		t.Fatal("expected a token signed by a key in neither signing_key_file nor previous_signing_key_files to fail verification")
+	}
+}
+
+func TestIssue_EmbedsKIDHeaderMatchingTheSigningKey(t *testing.T) {
+	keyPath := writeTestRSAKey(t)
+	iv, err := NewJWTIssuerVerifier(keyPath, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iv.signingKID == "" {
+		t.Fatal("expected a non-empty signing kid")
+	}
+	token, err := iv.Issue("agent-abc123", "acme")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// Parse the JWS header directly and assert the kid the token carries
+	// equals the signing key's derived kid -- proving Issue actually
+	// embeds it, not just that Verify happens to accept the token.
+	msg, err := jws.Parse([]byte(token))
+	if err != nil {
+		t.Fatalf("parse jws: %v", err)
+	}
+	kid, ok := msg.Signatures()[0].ProtectedHeaders().KeyID()
+	if !ok || kid != iv.signingKID {
+		t.Errorf("expected token kid %q, got %q (present=%v)", iv.signingKID, kid, ok)
+	}
+}
+
+func TestJWKS_ContainsEveryVerificationKeyByKID(t *testing.T) {
+	primary := writeTestRSAKey(t)
+	previous := writeTestRSAKey(t)
+	iv, err := NewJWTIssuerVerifier(primary, []string{previous}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := iv.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS: %v", err)
+	}
+	if set.Len() != 2 {
+		t.Fatalf("expected 2 keys in the JWKS (primary + previous), got %d", set.Len())
+	}
+	// The primary signing key's kid must be present, so a JWKS consumer
+	// can find the key that signed a freshly-issued token.
+	found := false
+	for i := 0; i < set.Len(); i++ {
+		key, _ := set.Key(i)
+		var kid string
+		if err := key.Get("kid", &kid); err == nil && kid == iv.signingKID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the signing kid %q to appear in the JWKS", iv.signingKID)
 	}
 }
