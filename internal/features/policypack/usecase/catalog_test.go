@@ -68,6 +68,40 @@ func TestCatalog_GetUnknownNameReturnsClearError(t *testing.T) {
 	}
 }
 
+func TestCatalog_VersionDefaultsWhenAbsentFromManifest(t *testing.T) {
+	c := usecase.NewCatalog(fakeFS())
+
+	pack, _, err := c.Get("alpha-pack")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pack.Version != "1" {
+		t.Errorf("expected an absent version: key to default to %q, got %q", "1", pack.Version)
+	}
+}
+
+func TestCatalog_VersionPassesThroughWhenPresent(t *testing.T) {
+	fsys := fstest.MapFS{
+		"versioned/pack.yaml": &fstest.MapFile{Data: []byte(`
+name: versioned
+description: "has an explicit version"
+backend: yaml
+policy_file: policy.yaml
+version: "2"
+`)},
+		"versioned/policy.yaml": &fstest.MapFile{Data: []byte("default: deny\n")},
+	}
+	c := usecase.NewCatalog(fsys)
+
+	pack, _, err := c.Get("versioned")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pack.Version != "2" {
+		t.Errorf("expected version %q to pass through unchanged, got %q", "2", pack.Version)
+	}
+}
+
 func TestCatalog_ListOnEmptyFSReturnsNoPacksNoError(t *testing.T) {
 	c := usecase.NewCatalog(fstest.MapFS{})
 
