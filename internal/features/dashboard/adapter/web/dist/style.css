@@ -1319,6 +1319,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .tab-toggle-btn.is-active { color: var(--status-info); background: var(--status-info-soft); }
 
 .btn-secondary {
+  position: relative;
   min-height: 36px;
   padding: 0 14px;
   background: var(--surface-raised);
@@ -1330,12 +1331,23 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   font-weight: 600;
   cursor: pointer;
 }
+/* Real <button>, so the same ::before expanded hit area as
+   .topbar-icon-btn/.policy-rule-move applies -- 36px visual, 44px tap
+   target (8px inset on each side). */
+.btn-secondary::before { content: ''; position: absolute; inset: -4px; }
 .btn-secondary:hover { border-color: var(--status-info); color: var(--status-info); }
 
 .policy-rule-input,
 .policy-rule-select {
   width: 100%;
-  min-height: 36px;
+  /* 44px, not the visually-tighter 36px other editor chrome uses here --
+     an <input>/<select> can't take a ::before expanded hit area the way
+     .policy-rule-move/.policy-rule-delete just did (pseudo-elements
+     don't render on replaced/form elements in any browser), so the only
+     real way to meet this project's own touch-target commitment for a
+     genuinely tappable field is the visual box itself, matching
+     .filters input's existing 44px precedent. */
+  min-height: 44px;
   padding: 0 10px;
   background: var(--ink);
   border: 1px solid var(--border);
@@ -1356,6 +1368,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 .policy-rule-move,
 .policy-rule-delete {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1368,6 +1381,22 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
+}
+/* 28px visual, matching a dense table row's row-height budget, but a
+   real 44px tap target via an invisible expanded hit area -- same
+   pattern as .topbar-icon-btn's own ::before (see the topbar section
+   above), same reasoning: this project's own established touch-target
+   commitment applies to every new interactive control, not just the
+   ones a prior audit cycle happened to cover. Disabled move buttons
+   (first/last row) get no expanded hit area of their own -- nothing to
+   tap -- but :disabled already suppresses pointer-events via cursor,
+   and an inert ::before costs nothing.
+*/
+.policy-rule-move::before,
+.policy-rule-delete::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
 }
 .policy-rule-move:hover,
 .policy-rule-delete:hover { color: var(--text); background: var(--surface-raised); }
@@ -1425,7 +1454,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   letter-spacing: 0.06em;
 }
 .budget-default-fields input {
-  min-height: 40px;
+  min-height: 44px;
   width: 140px;
   padding: 0 12px;
   background: var(--ink);
@@ -1443,7 +1472,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .budget-override-input,
 .budget-override-select {
   width: 100%;
-  min-height: 36px;
+  min-height: 44px; /* same reasoning as .policy-rule-input's own comment */
   padding: 0 10px;
   background: var(--ink);
   border: 1px solid var(--border);
