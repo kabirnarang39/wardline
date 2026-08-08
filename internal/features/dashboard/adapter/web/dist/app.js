@@ -597,6 +597,13 @@ async function confirmUnblock(identity, tenant) {
   pollBlocked();
 }
 
+// configLoadedAtMs is when the running config was put in place: the epoch of
+// the last successful reload if one has happened, otherwise process startup
+// (derived from the status endpoint's real uptime). It backs the status
+// band's "config synced Xm ago" clause with a genuine timestamp instead of
+// the reference prototype's fixed mock value -- never a placeholder.
+let configLoadedAtMs = null;
+
 function renderStatusBand() {
   const band = document.getElementById('status-band');
   const text = document.getElementById('status-text');
@@ -620,8 +627,11 @@ function renderStatusBand() {
     // any other placeholder -- when no successful reload has happened yet
     // (reloadHistory not wired, or simply no edits made this session).
     const lastSynced = state.reloadLog.slice().reverse().find((e) => e.ok);
-    newText = lastSynced
-      ? `All systems nominal — 0 unreviewed anomalies, config synced ${formatTimeAgo(lastSynced.timestamp)}`
+    const syncedISO = lastSynced
+      ? lastSynced.timestamp
+      : (configLoadedAtMs !== null ? new Date(configLoadedAtMs).toISOString() : null);
+    newText = syncedISO
+      ? `All systems nominal — 0 unreviewed anomalies, config synced ${formatTimeAgo(syncedISO)}`
       : 'All systems nominal — 0 unreviewed anomalies';
   }
 
@@ -1047,6 +1057,9 @@ function wirePolicyEditor() {
 async function loadStatus() {
   try {
     const status = await fetchStatus();
+    if (status && typeof status.UptimeSeconds === 'number') {
+      configLoadedAtMs = Date.now() - status.UptimeSeconds * 1000;
+    }
     const grid = document.getElementById('status-grid');
     grid.innerHTML = `
       <div><dt>Version</dt><dd>${escapeHTML(status.Version)}</dd></div>
