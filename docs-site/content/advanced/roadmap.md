@@ -104,9 +104,23 @@ policy-pack marketplace, HA deployment.
   Postgres `DELETE`). Docs:
   `docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md`.
 
+- **Policy-pack marketplace expansion** — OPA and Cedar variants of all
+  four existing packs (twelve packs total), a `version:` metadata field
+  on every pack manifest, `wardline policy-pack compose` (merges
+  multiple yaml-backend packs' rules into one file, warns on a
+  duplicate `(identity, tool, tenant)` grant rather than silently
+  dropping one), and `-packs-dir <path>` (merges an operator-owned
+  directory of packs with the embedded catalog, on `list`/`show`/
+  `install`/`compose`). Deliberately **not** a live network-fetched
+  registry — hosting/publishing/trust infrastructure is a business
+  decision outside this engineering roadmap, the same reasoning that
+  already excludes a hosted cloud tier (see below); `-packs-dir` is
+  this cycle's zero-hosting way to get most of that value (an org's own
+  curated pack collection, one flag away). Docs:
+  `docs/superpowers/specs/2026-08-08-policy-pack-marketplace-expansion-design.md`.
+
 ## v2.0 (planned, not yet shipped)
 
-- **Policy-pack marketplace expansion** — OPA/Cedar pack variants, a live registry, versioning, and pack composition.
 - **HA distributed budget/anomaly state + signing-key rotation/KMS** — distributing state across HA instances with key rotation support.
 - **gRPC transport support** — enabling gRPC as a transport layer alongside HTTP.
 

@@ -1,0 +1,5 @@
+name: deny-all-baseline-cedar
+description: "Cedar equivalent of deny-all-baseline: denies every call by default. The safest possible starting point -- add permit statements as you grant specific access."
+backend: cedar
+policy_file: policy.cedar
+version: "1"

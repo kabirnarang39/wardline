@@ -3064,6 +3064,119 @@ audit:
 	}
 }
 
+// TestPolicyPackEndToEnd_OPAVariantIsEnforcedByRealServe is
+// TestPolicyPackEndToEnd_InstalledPackIsEnforcedByRealServe's OPA-backend
+// analog: installs read-only-single-identity-opa, renames its placeholder
+// identity to a real one (real OPA packs, unlike the YAML ones, ship with
+// the placeholder as literal Rego source text -- renaming means editing
+// the installed file directly, exactly as the pack's own instructions
+// say to), points a real serve at it with policy_backend: opa, and proves
+// the installed Rego is genuinely enforced.
+func TestPolicyPackEndToEnd_OPAVariantIsEnforcedByRealServe(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "installed-policy.rego")
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	installCmd := exec.Command(binPath, "policy-pack", "install", "read-only-single-identity-opa", "-output", policyPath)
+	if out, err := installCmd.CombinedOutput(); err != nil {
+		t.Fatalf("policy-pack install failed: %v\n%s", err, out)
+	}
+	installed, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatalf("expected the installed policy file to exist: %v", err)
+	}
+	renamed := strings.ReplaceAll(string(installed), "REPLACE_WITH_YOUR_IDENTITY", "agent-real")
+	if err := os.WriteFile(policyPath, []byte(renamed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	realListenAddr := reserveAddr(t)
+	configPath := filepath.Join(dir, "wardline.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+policy_backend: opa
+audit:
+  output: stdout
+`, realListenAddr, upstream.URL, policyPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	serveCmd := exec.Command(binPath, "serve", "--config", configPath)
+	var serveStderr safeBuffer
+	serveCmd.Stderr = &serveStderr
+	if err := serveCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(serveCmd)
+	t.Cleanup(func() {
+		_ = serveCmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+realListenAddr)
+
+	allowedResp := postToolCall(t, realListenAddr, "agent-real", "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the pack's allowed tool, got %d (stderr: %s)", allowedResp.StatusCode, serveStderr.String())
+	}
+	deniedResp := postToolCall(t, realListenAddr, "agent-real", "delete_file")
+	if deniedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a tool the pack doesn't allow, got %d (stderr: %s)", deniedResp.StatusCode, serveStderr.String())
+	}
+	otherIdentityResp := postToolCall(t, realListenAddr, "someone-else", "read_file")
+	if otherIdentityResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a different identity (pack's default deny), got %d (stderr: %s)", otherIdentityResp.StatusCode, serveStderr.String())
+	}
+}
+
+// TestPolicyPackEndToEnd_PacksDirMergesWithEmbeddedCatalog proves
+// -packs-dir is real end-to-end: a real "policy-pack list -packs-dir
+// <tmp>" subprocess lists both a known embedded pack name and a custom
+// one placed in the operator-owned directory.
+func TestPolicyPackEndToEnd_PacksDirMergesWithEmbeddedCatalog(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	packsDir := filepath.Join(dir, "my-packs")
+	customPackDir := filepath.Join(packsDir, "acme-baseline")
+	if err := os.MkdirAll(customPackDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customPackDir, "pack.yaml"), []byte("name: acme-baseline\ndescription: \"acme's own starting policy\"\nbackend: yaml\npolicy_file: policy.yaml\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customPackDir, "policy.yaml"), []byte("default: deny\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "policy-pack", "list", "-packs-dir", packsDir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("policy-pack list -packs-dir failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "deny-all-baseline") {
+		t.Errorf("expected the embedded catalog to still be listed alongside -packs-dir, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "acme-baseline") {
+		t.Errorf("expected the custom -packs-dir pack to be listed, got:\n%s", out)
+	}
+}
+
 // TestHAEndToEnd_TwoReplicasShareSigningKeyAndRevocation is the actual
 // "does HA work" proof for this cycle: two real wardline serve
 // subprocesses, started with the SAME signing key file and the SAME
