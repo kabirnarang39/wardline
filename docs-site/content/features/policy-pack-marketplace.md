@@ -1,7 +1,7 @@
 ---
 title: "Policy-Pack Marketplace"
 weight: 70
-summary: "Curated, embedded policy pack catalog with install/list/show."
+summary: "Curated, embedded policy-pack catalog (YAML/OPA/Cedar) with list/show/install/compose and an operator-owned pack directory."
 ---
 
 A small, trusted catalog of ready-made policy packs embedded in the
@@ -14,15 +14,30 @@ full access — installable without hand-writing YAML from scratch:
 ./wardline policy-pack install <name> --output policy.yaml
 ```
 
+`install` refuses to overwrite an existing file, and warns when the pack
+it wrote still contains placeholders (an unreplaced placeholder matches
+nothing, so every call falls through to the pack's default deny).
+
+## Backends, versioning, compose, and your own packs
+
+- **Three backends.** Every posture ships in YAML, OPA/Rego, and Cedar
+  variants (e.g. `admin-viewer-split`, `admin-viewer-split-opa`,
+  `admin-viewer-split-cedar`), so a pack matches whatever
+  `policy_backend` a deployment runs.
+- **Versioning.** Every pack manifest carries a `version` field, shown in
+  `policy-pack list`.
+- **Compose.** `policy-pack compose <a> <b> --output policy.yaml` merges
+  multiple YAML-backend packs' rules into one file, warning on a
+  duplicate `(identity, tool, tenant)` grant rather than silently
+  dropping one.
+- **Your own catalog.** `-packs-dir <path>` merges an operator-owned
+  directory of packs with the embedded catalog across
+  `list`/`show`/`install`/`compose` — an org's curated collection, one
+  flag away, with zero hosting.
+
 ## Known limitations
 
-- YAML-backend packs only this cycle — Rego/Cedar equivalents of the
-  same postures are a natural, low-risk follow-on, not shipped yet.
-- No live, network-fetched registry (HTTP/OCI-hosted packs, third-party
-  contributions) — this cycle proves the format/UX with a small catalog
-  Wardline itself owns and ships.
-- No pack versioning/upgrade tooling — with packs shipped inside the
-  binary, "upgrade" today means "upgrade Wardline."
-- No merging/composing multiple packs into one policy file — `install`
-  writes one pack's policy file verbatim; combining packs is left to
-  the operator hand-editing the installed file.
+- **No live, network-fetched registry** (HTTP/OCI-hosted packs,
+  third-party contributions). Hosting/publishing/trust infrastructure is
+  a business decision outside this project's engineering roadmap;
+  `-packs-dir` is the zero-hosting way to get most of that value.

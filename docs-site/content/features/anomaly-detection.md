@@ -119,10 +119,12 @@ section.
   instance's own GC pass are deleted. Cleaning up a fully-abandoned
   instance ID's rows is a coarser, lower-priority problem left for a
   future cycle.
-- No dashboard panel for currently-blocked identities yet — only the
-  detected-anomalies view has one (see above); blocked identities still
-  ship as the `GET /dashboard/api/anomalies/blocked` JSON API only.
-  `auto_block` can be cleared early via `DELETE
-  /dashboard/api/anomalies/blocked/{identity}`, gated by the same
-  `credential:revoke` permission as credential revocation (when `rbac`
-  is on) — otherwise it simply expires once its TTL elapses.
+- Currently-blocked identities are surfaced both as the `GET
+  /dashboard/api/anomalies/blocked` JSON API and, when `web_ui` is on, a
+  dedicated **Blocked** panel in the dashboard. A block can be cleared
+  early via `DELETE /dashboard/api/anomalies/blocked/{identity}`, gated
+  by the same `credential:revoke` permission as credential revocation
+  (when `rbac` is on) — otherwise it simply expires once its TTL elapses.
+  This is a shipped capability, listed here only to note the one residual
+  gap: the block store is per-replica unless `postgres_storage` is also
+  on (see [HA deployment](/features/ha-deployment/)).

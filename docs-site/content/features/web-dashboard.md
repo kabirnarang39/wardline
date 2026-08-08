@@ -171,9 +171,10 @@ explicitly.
 ## Policy, Status
 
 Policy shows the active policy backend and raw policy file content as
-loaded at startup — not hot-reloaded; restart Wardline after editing
-the policy file to see the update here. Status shows version, uptime,
-listen/upstream addresses, and which feature flags are on.
+currently loaded. It is not auto-detected from the file after edits;
+trigger `POST /dashboard/api/reload/policy` (gated by `config:edit` when
+`rbac` is on) or restart Wardline to refresh it. Status shows version,
+uptime, listen/upstream addresses, and which feature flags are on.
 
 ## Security note
 
@@ -209,5 +210,7 @@ does not change this. This is why `web_ui` defaults to off.
 - Federation's correlated-alerts view is not tenant-scoped (see
   [RBAC](/features/rbac/)'s known limitations) — it correlates on an
   identity fingerprint computed locally, independent of tenant.
-- Policy is a startup snapshot, not hot-reloaded; edit the policy file
-  and restart Wardline to see the change reflected here.
+- Policy, budget, and RBAC changes are not auto-detected from the file;
+  trigger a reload with `POST /dashboard/api/reload/{domain}` (gated by
+  the `config:edit` permission when `rbac` is on) after editing, or
+  restart Wardline. There is no filesystem watcher.

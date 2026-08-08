@@ -66,5 +66,3 @@ exit) within that bound rather than hanging.
   preshared-secret bootstrap source whenever a target identity name is
   registered in more than one tenant — see [RBAC](/features/rbac/)'s
   known limitations.
-- No refresh tokens or configurable JWT TTL — same limitation as
-  [Credential Issuance](/features/credential-issuance/) generally.
