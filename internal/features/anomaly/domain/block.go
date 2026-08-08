@@ -19,6 +19,7 @@ type BlockVerdict struct {
 type BlockedEntry struct {
 	Identity     string    `json:"identity"`
 	Tenant       string    `json:"tenant"`
+	BlockedSince time.Time `json:"blocked_since"`
 	BlockedUntil time.Time `json:"blocked_until"`
 	Reason       string    `json:"reason"`
 }

@@ -563,6 +563,7 @@ function renderBlockedTable() {
       <td>${escapeHTML(b.identity)}</td>
       <td>${escapeHTML(b.tenant)}</td>
       <td class="reason-cell" title="${escapeHTML(b.reason)}">${escapeHTML(b.reason)}</td>
+      <td>${escapeHTML(formatTime(b.blocked_since))}</td>
       <td>${escapeHTML(formatExpiry(b.blocked_until))}</td>
       <td><button class="btn-unblock" data-identity="${escapeHTML(b.identity)}" data-tenant="${escapeHTML(b.tenant)}">Unblock</button></td>
     </tr>
