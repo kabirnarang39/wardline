@@ -6,6 +6,28 @@ const MAX_CLIENT_ROWS = 500;
 
 let lastSeenNotificationCount = 0;
 
+// disabledPollers tracks which optional-feature pollers (anomalies,
+// federation, blocked, reload log) have confirmed their endpoint is 404 --
+// "this feature isn't enabled on this server," a stable, permanent state,
+// not a transient failure. Without this, every one of these pollers would
+// console.error and refetch every POLL_INTERVAL_MS tick forever for the
+// (very common) case of an operator simply not turning the feature on --
+// unbounded log spam and wasted round-trips for the lifetime of the tab.
+// pollerFailed() logs once on the transition into a new failure and then
+// goes quiet; a non-404 error (real outage) keeps retrying and logging,
+// since that's actually worth an operator's attention every time.
+const disabledPollers = new Set();
+function pollerFailed(name, err) {
+  if (err && err.status === 404) {
+    if (!disabledPollers.has(name)) {
+      disabledPollers.add(name);
+      console.error(`${name} poll failed (feature not enabled on this server, no further retries):`, err);
+    }
+    return;
+  }
+  console.error(`${name} poll failed:`, err);
+}
+
 const state = {
   entries: [],
   lastID: 0,
@@ -393,6 +415,7 @@ function renderAnomalies() {
 }
 
 async function pollAnomalies() {
+  if (disabledPollers.has('anomalies')) return;
   try {
     const fresh = await fetchAnomalies(state.lastAnomalyID, 1000);
     if (fresh.length > 0) {
@@ -407,14 +430,13 @@ async function pollAnomalies() {
   } catch (err) {
     // Anomalies polling failure doesn't affect the shared live-dot
     // indicator -- that's pollAudit's own job; a failed anomalies poll
-    // here just means this view doesn't update this tick, silently
-    // retried next tick. Still surface it to devtools (a 404 when
-    // anomaly_detection is off is expected and constant, but a real
-    // 500 or network failure shouldn't be totally silent) and make sure
-    // the empty state actually renders instead of leaving a bare table
-    // header with no explanation -- a fetch failure on the very first
-    // poll otherwise never calls renderAnomalies at all.
-    console.error('anomalies poll failed:', err);
+    // here just means this view doesn't update this tick. pollerFailed()
+    // stops future retries once a 404 confirms anomaly_detection is off
+    // (see its own doc comment); any other error keeps retrying/logging.
+    // Always render so the empty state shows instead of leaving a bare
+    // table header with no explanation -- a fetch failure on the very
+    // first poll otherwise never calls renderAnomalies at all.
+    pollerFailed('anomalies', err);
     renderAnomalies();
   }
 }
@@ -445,6 +467,7 @@ function renderFederation() {
 }
 
 async function pollFederation() {
+  if (disabledPollers.has('federation')) return;
   try {
     const fresh = await fetchFederationCorrelated(state.lastFederationID, 1000);
     if (fresh.length > 0) {
@@ -456,12 +479,11 @@ async function pollFederation() {
     }
     renderFederation();
   } catch (err) {
-    // Same pattern as pollAnomalies: federation is off by default (404),
-    // so a failed poll here just means this view doesn't update this
-    // tick -- silently retried next tick. Still surface it to devtools,
-    // and always render so the empty state shows instead of a bare
-    // table header if the very first poll fails.
-    console.error('federation poll failed:', err);
+    // Same pattern as pollAnomalies: pollerFailed() stops future retries
+    // once a 404 confirms federation is off; always render so the empty
+    // state shows instead of a bare table header if the very first poll
+    // fails.
+    pollerFailed('federation', err);
     renderFederation();
   }
 }
@@ -508,6 +530,7 @@ function renderReloadLog() {
 }
 
 async function pollReloadLog() {
+  if (disabledPollers.has('reload log')) return;
   try {
     const fresh = await fetchReloadHistory(state.lastReloadLogID, 1000);
     if (fresh.length > 0) {
@@ -519,10 +542,10 @@ async function pollReloadLog() {
     }
     renderReloadLog();
   } catch (err) {
-    // Same "not wired" posture as pollFederation/pollAnomalies: a 404
-    // just means this instance has no reloadHistory source configured,
-    // so this view's empty state shows instead of erroring.
-    console.error('reload log poll failed:', err);
+    // Same "not wired" posture as pollFederation/pollAnomalies:
+    // pollerFailed() stops future retries once a 404 confirms this
+    // instance has no reloadHistory source configured.
+    pollerFailed('reload log', err);
     renderReloadLog();
   }
 }
@@ -575,10 +598,12 @@ function renderBlockedTable() {
 }
 
 async function pollBlocked() {
-  try {
-    state.blocked = await fetchBlocked();
-  } catch (err) {
-    console.error('blocked fetch failed:', err);
+  if (!disabledPollers.has('blocked')) {
+    try {
+      state.blocked = await fetchBlocked();
+    } catch (err) {
+      pollerFailed('blocked', err);
+    }
   }
   renderBlockedTable();
   updateNotificationBadge();
