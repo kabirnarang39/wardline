@@ -760,6 +760,9 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   border-radius: var(--radius-panel);
 }
 
+.panel-body { padding: 15px; }
+.panel-body.flush { padding: 0; }
+
 .panel-title-bar {
   display: flex;
   align-items: center;
@@ -1386,6 +1389,11 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
    target (8px inset on each side). */
 .btn-secondary::before { content: ''; position: absolute; inset: -4px; }
 .btn-secondary:hover { border-color: var(--status-info); color: var(--status-info); }
+/* Inline title-bar actions ("+ Add rule"/"+ Add override") get the
+   reference's compact 28px height, not the 36px standalone-button
+   default -- matches the reference's own inline height:28px override on
+   these exact buttons. Expanded ::before hit area still reaches 44px. */
+.panel-title-bar .btn-secondary { min-height: 28px; padding: 0 12px; font-size: 12px; }
 
 .policy-rule-input,
 .policy-rule-select {
@@ -1449,9 +1457,9 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 .policy-editor-footer {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-top: 16px;
+  margin-top: 14px;
 }
 .policy-editor-footer[hidden] { display: none; }
 
@@ -1477,38 +1485,36 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 #policy-write-result { margin-top: 12px; font-size: 13px; font-weight: 600; }
 #policy-write-result[hidden] { display: none; }
 
-/* Budget view: editable default-limit fields + override table, same
-   panel/table-wrap/footer treatment as Policy's editor above. */
-.budget-default-fields {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
-  padding: 15px;
+/* Generic stacked label/input row -- reference's own .field-row system
+   (160px label column + input column, one field per row, divided by a
+   bottom border), used by Budget's default-limit fields below and any
+   later editor that needs the same "form, not a KPI tile" treatment. */
+.field-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
 }
-.budget-default-fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.budget-default-fields input {
-  width: 120px;
+.field-row:last-child { border-bottom: none; }
+.field-label { font-size: 12.5px; font-weight: 600; padding-top: 8px; color: var(--text); }
+.field-hint { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+.field-row input[type="text"],
+.field-row input[type="number"] {
+  width: 100%;
   padding: 8px 11px;
   background: var(--ink);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   color: var(--text);
-  font-family: var(--font-data);
   font-size: 13px;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: normal;
 }
-.budget-default-fields input:focus { border-color: var(--status-info); outline: none; }
+.field-row input:focus { border-color: var(--status-info); outline: none; }
+/* Budget's default-limit numbers specifically: a short numeric field, not
+   a full-width text input -- matches the reference's own max-width:120px
+   override on these two fields. */
+.field-row-input-sm { max-width: 120px; }
 
 .compliance-range-picker {
   display: flex;
