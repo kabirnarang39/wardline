@@ -89,5 +89,3 @@ bootstrap source uses.
   registered under more than one tenant — the same fallback the
   preshared-secret and OIDC bootstrap sources already have, see
   [RBAC](/features/rbac/)'s known limitations.
-- No refresh tokens or configurable JWT TTL — same limitation as
-  [Credential Issuance](/features/credential-issuance/) generally.

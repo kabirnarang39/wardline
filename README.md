@@ -1120,8 +1120,9 @@ three states.
   unable to load the rest of the dashboard even from loopback; see the
   security note below.
 - **Policy** — the active policy backend and raw policy file content, as
-  loaded at startup (not hot-reloaded — restart Wardline after editing
-  the policy file to see the update here).
+  currently loaded. Edits aren't auto-detected from the file; trigger
+  `POST /dashboard/api/reload/policy` (gated by `config:edit` when
+  `rbac` is on) or restart Wardline to refresh it.
 - **Status** — version, uptime, listen/upstream addresses, and which
   feature flags are on.
 
@@ -1249,9 +1250,12 @@ some capabilities staying explicitly per-replica.
   against one replica is honored by every other replica on its very
   next check.
 - **RBAC and policy**, as long as every replica is given the same
-  `rbac.yaml`/policy file (the same ConfigMap/Secret mount) and rolled
-  together on any change — there's no hot-reload, a config change needs
-  a restart on every replica, same as a single-replica deployment.
+  `rbac.yaml`/policy file (the same ConfigMap/Secret mount). A change can
+  be applied without a restart via `POST /dashboard/api/reload/{domain}`
+  (`policy`, `budget`, or `rbac`), but the reload is per-replica — trigger
+  it on every replica, or roll them, so the whole fleet converges. There
+  is no filesystem watcher, and changes to `features:`/`listen:` still
+  need a restart.
 - **Health and readiness**: `GET /healthz` (liveness — always `200` once
   the process has started; deliberately never depends on an external
   dependency) and `GET /readyz` (readiness — `503` for the entire

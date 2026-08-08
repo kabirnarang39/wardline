@@ -39,7 +39,11 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
 - No automatic session/sticky-affinity load balancing is recommended as
   a workaround for the above — sticky sessions would reintroduce a
   single point of failure per identity.
-- No key rotation/KMS integration for the signing key yet — loading a
-  static PEM file from a mounted secret is the v1.0 bar; rotating it
-  without invalidating outstanding tokens (e.g. a JWKS endpoint) is
-  future work.
+- Signing-key rotation is supported —
+  `credential.previous_signing_key_files` accepts old keys for
+  verification-only during a rotation window (new tokens sign under the
+  new key, old-key tokens keep verifying to their TTL), every token
+  carries a `kid`, and `GET /credentials/jwks` publishes the active keys.
+  What's still out of scope is a **live cloud KMS integration**: the keys
+  are local PEM files, so an operator wanting KMS custody sources the PEM
+  bytes through their own secret pipeline.
