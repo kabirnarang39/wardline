@@ -281,7 +281,7 @@ function renderActivity() {
         <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron"></span></td>
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
         <td>${escapeHTML(e.Identity)}</td>
-        <td>${escapeHTML(formatTool(e.Tool))}</td>
+        <td class="tool-cell">${escapeHTML(formatTool(e.Tool))}</td>
         <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
         <td>${e.LatencyMS}ms</td>
         <td title="${escapeHTML(e.TraceID)}">${escapeHTML(e.TraceID ? e.TraceID.slice(0, 8) : '')}</td>
