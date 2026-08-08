@@ -314,7 +314,16 @@ func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, ass
 // which route matches.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'")
+	// frame-ancestors 'none' (and X-Frame-Options as a defense-in-depth
+	// fallback for browsers/scanners that only check the older header) --
+	// this console can trigger config:edit actions (policy/budget reload,
+	// credential revoke) with one click, so letting it render inside a
+	// third-party iframe would open a real clickjacking path: an attacker
+	// overlays invisible controls over "Validate & apply"/"Revoke
+	// credential" and tricks an already-authenticated admin into clicking
+	// them. Nothing about this console's design calls for iframe embedding.
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
 	h.mux.ServeHTTP(w, r)
 }
 
