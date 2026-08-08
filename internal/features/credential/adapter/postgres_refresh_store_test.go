@@ -275,7 +275,7 @@ func TestRefreshTokensSurviveNothingAfterWildcardRevoke_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadBootstrapper: %v", err)
 	}
-	issuer, err := adapter.NewJWTIssuerVerifier("", 15*time.Minute)
+	issuer, err := adapter.NewJWTIssuerVerifier("", nil, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("NewJWTIssuerVerifier: %v", err)
 	}

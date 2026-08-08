@@ -1109,6 +1109,55 @@ audit:
 	}
 }
 
+func TestLoad_CredentialPreviousSigningKeyFilesPassThrough(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "./credentials.yaml"
+  signing_key_file: "./signing-key.pem"
+  previous_signing_key_files:
+    - "./old-key-1.pem"
+    - "./old-key-2.pem"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Credential.PreviousSigningKeyFiles) != 2 {
+		t.Fatalf("expected 2 previous signing key files, got %d: %v", len(cfg.Credential.PreviousSigningKeyFiles), cfg.Credential.PreviousSigningKeyFiles)
+	}
+	if cfg.Credential.PreviousSigningKeyFiles[0] != "./old-key-1.pem" || cfg.Credential.PreviousSigningKeyFiles[1] != "./old-key-2.pem" {
+		t.Errorf("unexpected previous key files: %v", cfg.Credential.PreviousSigningKeyFiles)
+	}
+}
+
+func TestLoad_CredentialPreviousSigningKeyFilesDefaultEmpty(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+features:
+  credential_issuance: true
+credential:
+  identities_file: "./credentials.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Credential.PreviousSigningKeyFiles) != 0 {
+		t.Errorf("expected no previous signing key files when unset, got %v", cfg.Credential.PreviousSigningKeyFiles)
+	}
+}
+
 func TestLoad_FederationRequiresAnomalyDetection(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

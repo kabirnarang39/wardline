@@ -4,8 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	crand "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -952,6 +957,183 @@ credential:
 	revokedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
 	if revokedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a revoked identity's still-otherwise-valid token, got %d", revokedResp.StatusCode)
+	}
+}
+
+// TestServeEndToEnd_JWKSEndpointServesIssuerKey proves GET
+// /credentials/jwks is real end-to-end: a real running server serves a
+// JWKS whose kid matches the kid embedded in a freshly-issued token, so
+// a standard JWKS consumer could verify Wardline-issued tokens.
+func TestServeEndToEnd_JWKSEndpointServesIssuerKey(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: agent-abc123
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"`, credentialsPath))
+
+	// Fetch the JWKS.
+	jwksResp, err := http.Get("http://" + listenAddr + "/credentials/jwks")
+	if err != nil {
+		t.Fatalf("GET /credentials/jwks: %v", err)
+	}
+	defer func() { _ = jwksResp.Body.Close() }()
+	if jwksResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /credentials/jwks, got %d (stderr: %s)", jwksResp.StatusCode, stderr.String())
+	}
+	var jwks struct {
+		Keys []struct {
+			Kid string `json:"kid"`
+			Kty string `json:"kty"`
+			Alg string `json:"alg"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(jwksResp.Body).Decode(&jwks); err != nil {
+		t.Fatalf("invalid JWKS response: %v", err)
+	}
+	if len(jwks.Keys) != 1 {
+		t.Fatalf("expected exactly 1 key in the JWKS, got %d", len(jwks.Keys))
+	}
+	if jwks.Keys[0].Kty != "RSA" || jwks.Keys[0].Alg != "RS256" || jwks.Keys[0].Kid == "" {
+		t.Errorf("unexpected JWKS key: %+v", jwks.Keys[0])
+	}
+
+	// Issue a token and confirm its kid header matches the JWKS key's kid.
+	tokenResp := postCredentialsToken(t, listenAddr, "a-long-random-registration-secret")
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping, got %d", tokenResp.StatusCode)
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+
+	// The JWT header is the first base64url segment; decode it and read kid.
+	parts := strings.SplitN(tokenBody.Token, ".", 3)
+	if len(parts) != 3 {
+		t.Fatalf("expected a 3-segment JWT, got %d", len(parts))
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode JWT header: %v", err)
+	}
+	var header struct {
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		t.Fatalf("parse JWT header: %v", err)
+	}
+	if header.Kid != jwks.Keys[0].Kid {
+		t.Errorf("expected the token's kid %q to match the JWKS key's kid %q", header.Kid, jwks.Keys[0].Kid)
+	}
+}
+
+// TestServeEndToEnd_SigningKeyRotation proves the rotation window works
+// through a real running binary: the server signs with a NEW key while
+// still accepting the OLD key for verification. A token minted under the
+// old key (by a separate short-lived process started with only the old
+// key) is presented to the rotated server and successfully authenticates
+// a real proxied call.
+func TestServeEndToEnd_SigningKeyRotation(t *testing.T) {
+	dir := t.TempDir()
+	oldKeyPath := filepath.Join(dir, "old-key.pem")
+	newKeyPath := filepath.Join(dir, "new-key.pem")
+	writeE2ERSAKey(t, oldKeyPath)
+	writeE2ERSAKey(t, newKeyPath)
+
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: agent-abc123
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1: a server using ONLY the old key mints a token.
+	oldAddr, _, oldStderr, oldCmd, oldWaiter := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+  signing_key_file: "%s"`, credentialsPath, oldKeyPath))
+
+	tokenResp := postCredentialsToken(t, oldAddr, "a-long-random-registration-secret")
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping on the old-key server, got %d (stderr: %s)", tokenResp.StatusCode, oldStderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	oldKeyToken := tokenBody.Token
+	// Stop the old-key server so its port frees up before phase 2.
+	_ = oldCmd.Process.Kill()
+	<-oldWaiter.done
+
+	// Phase 2: a NEW server signs with the new key but lists the old key
+	// as a previous (verification-only) key -- the rotation window.
+	rotatedAddr, _, rotatedStderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+  signing_key_file: "%s"
+  previous_signing_key_files:
+    - "%s"`, credentialsPath, newKeyPath, oldKeyPath))
+
+	// The old-key token still authenticates a real proxied call against
+	// the rotated server.
+	resp := postToolCallWithBearer(t, rotatedAddr, oldKeyToken, "read_file")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the old-key token to still verify during the rotation window, got %d (stderr: %s)", resp.StatusCode, rotatedStderr.String())
+	}
+}
+
+// writeE2ERSAKey writes a fresh 2048-bit PKCS8 RSA private key PEM to path.
+func writeE2ERSAKey(t *testing.T, path string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(crand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0600); err != nil {
+		t.Fatalf("write key: %v", err)
 	}
 }
 
@@ -3186,6 +3368,118 @@ func TestPolicyPackEndToEnd_PacksDirMergesWithEmbeddedCatalog(t *testing.T) {
 // verification), then a revocation issued against replica A is honored
 // by replica B on the very next call (proving cross-replica revocation
 // propagation through the shared Postgres table).
+// TestHAEndToEnd_TwoReplicasShareAutoBlock is the HA proof for the
+// distributed auto-block: two real replicas share one Postgres DSN with
+// auto_block on. A block written into the shared blocked_identities table
+// (simulating replica A's detector having auto-blocked an identity --
+// the detector's block-trigger logic is unit-tested separately; the e2e
+// gap this closes is "does a block written by one replica take effect on
+// another") causes replica B's proxy to deny that identity's next call
+// with 403, while a different identity is unaffected.
+func TestHAEndToEnd_TwoReplicasShareAutoBlock(t *testing.T) {
+	dsn := testDSN(t)
+	dropBlockedIdentitiesTableE2E(t, dsn)
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	anomalyPath := filepath.Join(dir, "anomaly.jsonl")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	addrA := reserveAddr(t)
+	addrB := reserveAddr(t)
+	startReplica := func(listenAddr string) *safeBuffer {
+		configPath := filepath.Join(dir, listenAddr+"-wardline.yaml")
+		if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  anomaly_detection: true
+  postgres_storage: true
+anomaly:
+  output: "%s"
+  window_seconds: 3
+  gc_interval_seconds: 1800
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 2
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 3600
+audit:
+  postgres_dsn: "%s"
+`, listenAddr, upstream.URL, policyPath, anomalyPath, dsn)), 0644); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binPath, "serve", "--config", configPath)
+		stderr := &safeBuffer{}
+		cmd.Stderr = stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start replica at %s: %v", listenAddr, err)
+		}
+		waiter := waitFor(cmd)
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			<-waiter.done
+		})
+		waitForListener(t, listenAddr)
+		return stderr
+	}
+
+	// Start both replicas -- the first to start creates the shared
+	// blocked_identities table via CREATE TABLE IF NOT EXISTS.
+	_ = startReplica(addrA)
+	stderrB := startReplica(addrB)
+
+	// Simulate replica A's detector having blocked the identity: write the
+	// block row directly into the shared table both replicas connect to.
+	blockDB, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open shared db: %v", err)
+	}
+	defer func() { _ = blockDB.Close() }()
+	// Key format matches internal/platform/tenant.Key exactly:
+	// len(tenant) + ":" + tenant + identity. Computed inline (rather than
+	// importing the internal package into this external test) so a drift
+	// in that format is caught by this test failing, which is the point.
+	blockKey := fmt.Sprintf("%d:%s%s", len("default"), "default", "blocked-agent")
+	if _, err := blockDB.Exec(
+		`INSERT INTO blocked_identities (key, tenant, identity, reason, blocked_since, blocked_until) VALUES ($1, $2, $3, $4, $5, $6)`,
+		blockKey, "default", "blocked-agent", "ml_score anomaly on replica A", time.Now(), time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatalf("insert shared block row: %v", err)
+	}
+
+	// Replica B denies the blocked identity's next call.
+	blockedResp := postToolCall(t, addrB, "blocked-agent", "read_file")
+	if blockedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected replica B to honor a block written by replica A (shared postgres), got %d (stderr: %s)", blockedResp.StatusCode, stderrB.String())
+	}
+
+	// A different identity is unaffected.
+	allowedResp := postToolCall(t, addrB, "other-agent", "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected an unblocked identity to be allowed on replica B, got %d (stderr: %s)", allowedResp.StatusCode, stderrB.String())
+	}
+}
+
 func TestHAEndToEnd_TwoReplicasShareSigningKeyAndRevocation(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTableE2E(t, dsn)
@@ -3708,6 +4002,18 @@ func dropAuditEntriesTableE2E(t *testing.T, dsn string) {
 	}
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`DROP TABLE IF EXISTS audit_entries`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+}
+
+func dropBlockedIdentitiesTableE2E(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS blocked_identities`); err != nil {
 		t.Fatalf("drop table for cleanup: %v", err)
 	}
 }

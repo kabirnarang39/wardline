@@ -1179,6 +1179,25 @@ some capabilities staying explicitly per-replica.
   ```
   openssl genrsa -out signing-key.pem 2048
   ```
+  - **Signing-key rotation.** `credential.previous_signing_key_files`
+    (a list of PEM paths) names keys accepted for **verification only**,
+    never for signing new tokens — the rotation window. To rotate:
+    generate a new key, move the old `signing_key_file` path into
+    `previous_signing_key_files`, point `signing_key_file` at the new
+    key, redeploy. Tokens signed under the old key keep verifying (up to
+    their own TTL, bounded by `access_token_ttl_seconds`/
+    `refresh_token_ttl_seconds`) while new tokens use the new key; once
+    the old key's longest outstanding token has expired, drop it from
+    the list. Every issued token carries a `kid` (key ID) header — a
+    content hash of the signing public key — so verification selects the
+    exact key rather than trying each. `GET /credentials/jwks` serves a
+    standard JWKS (RFC 7517) of every currently-valid public key by
+    `kid` (unauthenticated: public keys are not secrets). This is
+    **local file rotation, not a live cloud KMS integration** — an
+    operator whose KMS should custody the private key material sources
+    the PEM bytes into the mounted Secret through their own pipeline;
+    Wardline never speaks a KMS API itself (same self-hosted-proxy
+    posture as every other secret-bearing config field here).
 - **Credential revocation**, when both `credential_issuance` and
   `postgres_storage` are on — revocation is stored in the same shared
   Postgres database instead of an in-memory map, so a revocation issued
@@ -1238,19 +1257,37 @@ some capabilities staying explicitly per-replica.
   each replica enforces the configured limit independently (2 replicas
   ≈ 2× the configured per-window limit). See
   [Budget enforcement](#budget-enforcement) above.
+- **Anomaly auto-block**, when both `anomaly_detection` and
+  `postgres_storage` are on — a block written by one replica's detector
+  lives in the same shared Postgres database, so a blocked identity
+  can't dodge the block by being load-balanced to a different pod. With
+  `postgres_storage` off, blocks are per-process (an identity blocked on
+  replica A is still free on replica B). Note this is the block
+  *decision's* visibility, not the *detection* that produces it — see
+  the per-replica note below.
+- **Anomaly baseline persistence**, when both `anomaly_detection` and
+  `postgres_storage` are on — each replica checkpoints its behavioral
+  baselines to Postgres and reloads them at startup, so a restart no
+  longer wipes an identity's history. (This persists each replica's own
+  baseline; it does not merge traffic across replicas — see below.)
 
 **Still per-replica, by design, not yet cluster-aware:**
-- **Anomaly detection** — each replica's heuristics only see the
-  fraction of an identity's traffic that lands on that replica, so a
+- **Anomaly detection itself** — each replica's heuristics only *see*
+  the fraction of an identity's traffic that lands on that replica, so a
   real spike split evenly across replicas may not cross any single
-  replica's threshold. A shared/distributed detection store is a larger
-  design left for a future cycle.
+  replica's threshold. Auto-block *decisions* are now shared (above),
+  but the detection that produces them still operates on per-replica
+  traffic; merging the traffic signal across replicas (rather than just
+  the block outcome) is a larger design left for a future cycle.
 - **The dashboard's live audit view** — `/dashboard/api/audit` reflects
   only the traffic that landed on the specific replica answering that
   request, not a cluster-wide view.
 
 See `docs/superpowers/specs/2026-07-29-ha-deployment-design.md` for the
-full design and rationale.
+original HA design and
+`docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md`
+for signing-key rotation (JWKS) and the distributed auto-block store,
+including why a live cloud KMS integration stays out of scope.
 
 ## Kubernetes / Helm
 
