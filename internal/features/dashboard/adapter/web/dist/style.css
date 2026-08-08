@@ -1296,18 +1296,16 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 /* 2fr:1.3fr:1fr, not equal thirds: "Recent activity" holds a real 4-column
    table (Identity/Tool/Decision/Latency) that needs real room, matching
    the reference prototype's own .cols-3 ratio for this exact row. */
-/* align-items: start -- without this, grid's default `stretch` forces
-   Needs review/Live pulse to match Recent activity's (real table-driven)
-   height, leaving a large dead-space gap below their own short content.
-   Each card now sizes to its own content instead -- but that alone lets
-   Recent activity's empty-state (48px vertical padding, see .empty-state)
-   make it look mismatched-tall next to the other two's naturally shorter
-   content. A shared min-height on every card gives all three consistent
-   visual weight without re-introducing the stretch-driven dead space:
-   short content still sits at its natural height (now floored, not
-   starved), tall content (many rows, or the empty-state) still grows
-   past the floor instead of being clipped. */
-.card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; align-items: start; }
+/* align-items: stretch (grid default) -- Recent activity holds a real
+   table whose height varies with row count, so Needs review/Live pulse
+   must match IT, not a fixed floor: align-items:start (a prior attempt)
+   let each card size to its own content, which kept the two short cards
+   pinned to the shared min-height floor while Recent activity grew past
+   it with real rows -- three different heights instead of one row of
+   equal-height cards. Stretch makes all three match Recent activity's
+   actual height every time; min-height stays only as the floor for when
+   Recent activity itself is short (e.g. the empty state). */
+.card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; align-items: stretch; }
 .card-grid > .card { min-height: 220px; }
 @media (max-width: 1100px) {
   .card-grid { grid-template-columns: 1fr; }
