@@ -12,6 +12,7 @@ import (
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
@@ -135,6 +136,39 @@ type TenantScopeResolver interface {
 	TenantFilter(r *http.Request) string
 }
 
+// PolicySource resolves the dashboard's current view of the active
+// policy engine's backend/source -- Current() re-reads live state on
+// every call, never a snapshot frozen at construction time. This matters
+// once a policy write-and-reload can happen at runtime (see
+// PolicyWriter below): a plain domain.PolicyInfo field, fixed at
+// startup, would silently keep serving pre-reload content forever
+// after a hot-reload. See domain.PolicyInfo.Current for the trivial
+// "a fixed value is its own current state" implementation every test
+// (and any single-snapshot caller) keeps using unchanged.
+type PolicySource interface {
+	Current() domain.PolicyInfo
+}
+
+// PolicyWriter writes a new rule set to the yaml policy backend's
+// configured file and reloads the live engine from it -- the structured
+// half of Policy view's "Rule editor" (Source tab edits raw text
+// instead, but both paths funnel through the same POST
+// /dashboard/api/reload/policy machinery so a rejected rule set surfaces
+// through the exact same Reload log every other reload does). nil for
+// any non-yaml backend (opa/cedar have no such structured rule
+// representation) or when rbac is off -- WriteAndReload then answers 404,
+// matching every other "not wired" route in this file.
+type PolicyWriter interface {
+	// WriteAndReload validates rules/def, writes them to the policy
+	// file, and reloads the live engine from the freshly written file --
+	// one atomic operation from the caller's perspective, mirroring how
+	// the reference prototype's "Validate & apply" button is a single
+	// action. appliedBy is the resolved caller identity, recorded in the
+	// same Reload log entry POST /dashboard/api/reload/policy itself
+	// would produce -- never a value the client supplies.
+	WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error
+}
+
 // CallerInfoResolver resolves the caller's own identity string and
 // whether they hold config:edit, purely for the dashboard topbar's
 // identity display -- never used for any authorization decision
@@ -167,7 +201,8 @@ const (
 type Handler struct {
 	audit             AuditSource
 	status            StatusSource
-	policy            domain.PolicyInfo
+	policy            PolicySource
+	policyWriter      PolicyWriter
 	anomalies         AnomalySource
 	federation        FederationSource
 	blocked           BlockedSource
@@ -212,9 +247,12 @@ type Handler struct {
 // (GET /dashboard/api/status's CallerIdentity/CallerCanConfigEdit
 // fields) -- nil (rbac off) leaves both fields zero-valued, and the
 // topbar falls back to its generic icon, identical to behavior before
-// this field existed.
-func NewHandler(audit AuditSource, status StatusSource, policy domain.PolicyInfo, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
+// this field existed. policyWriter backs the Policy view's structured
+// rule editor (PUT /dashboard/api/policy) -- nil (non-yaml backend, or
+// rbac off) leaves the editor unavailable, the Source tab's read-only
+// view still works via policy alone.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -558,10 +596,72 @@ func (h *Handler) handleReloadHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
-	if methodNotAllowed(w, r) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, h.policy.Current())
+	case http.MethodPut:
+		h.handlePolicyWrite(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// policyRuleInput/policyWriteRequest are PUT /dashboard/api/policy's wire
+// shape for the Rule editor's "Validate & apply" -- deliberately a
+// dashboard-owned JSON shape, not policydomain.Rule directly, same
+// reasoning as every other *Entry type in domain/entry.go: the wire
+// contract shouldn't change just because the domain type's fields do.
+type policyRuleInput struct {
+	Identity string `json:"identity"`
+	Tool     string `json:"tool"`
+	Tenant   string `json:"tenant"`
+	Effect   string `json:"effect"`
+}
+
+type policyWriteRequest struct {
+	Rules   []policyRuleInput `json:"rules"`
+	Default string            `json:"default"`
+}
+
+// handlePolicyWrite serves PUT /dashboard/api/policy -- the Rule
+// editor's "Validate & apply", writing a new rule set to the yaml
+// backend's policy file and reloading the live engine from it, gated by
+// the exact same config:edit ReloadAuthorizer POST
+// /dashboard/api/reload/{domain} uses (this is at least as sensitive a
+// mutation). appliedBy comes only from ReloadAuthorizer.Authorize, the
+// resolved caller identity -- never from anything the client's JSON
+// body supplies, mirroring handleReload exactly.
+func (h *Handler) handlePolicyWrite(w http.ResponseWriter, r *http.Request) {
+	if h.policyWriter == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, h.policy)
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req policyWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	rules := make([]policydomain.Rule, len(req.Rules))
+	for i, ri := range req.Rules {
+		rules[i] = policydomain.Rule{Identity: ri.Identity, Tool: ri.Tool, Tenant: ri.Tenant, Effect: policydomain.Effect(ri.Effect)}
+	}
+
+	if err := h.policyWriter.WriteAndReload(rules, policydomain.Effect(req.Default), appliedBy); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: err.Error()})
+		return
+	}
+	writeJSON(w, h.policy.Current())
 }
 
 // statusResponse wraps domain.StatusInfo with per-request fields

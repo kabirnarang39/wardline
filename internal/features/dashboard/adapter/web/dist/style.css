@@ -1290,3 +1290,118 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   .sidebar .nav-item span:last-child { display: none; }
   .view-header { flex-direction: column; align-items: flex-start; }
 }
+
+/* Policy view: Rule editor / Source tab toggle + structured rule table.
+   .tab-toggle reuses .chip's segmented-control visual weight (same
+   height/radius/border family) but as a two-button group sharing one
+   border, not independent pills. */
+.tab-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.tab-toggle-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--surface);
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab-toggle-btn:last-child { border-right: none; }
+.tab-toggle-btn:hover { color: var(--text); background: var(--surface-raised); }
+.tab-toggle-btn.is-active { color: var(--status-info); background: var(--status-info-soft); }
+
+.btn-secondary {
+  min-height: 36px;
+  padding: 0 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary:hover { border-color: var(--status-info); color: var(--status-info); }
+
+.policy-rule-input,
+.policy-rule-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.policy-rule-input:focus,
+.policy-rule-select:focus { border-color: var(--status-info); outline: none; }
+
+.policy-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.policy-rule-move,
+.policy-rule-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.policy-rule-move:hover,
+.policy-rule-delete:hover { color: var(--text); background: var(--surface-raised); }
+.policy-rule-move:disabled { opacity: 0.35; cursor: not-allowed; }
+.policy-rule-delete:hover { color: var(--status-critical); border-color: var(--status-critical); }
+.policy-rule-delete svg { width: 14px; height: 14px; }
+
+.policy-editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.policy-editor-footer[hidden] { display: none; }
+
+.policy-default-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.policy-default-label select {
+  min-height: 36px;
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.policy-editor-hint { font-size: 12.5px; color: var(--text-muted); }
+
+#policy-write-result { margin-top: 12px; font-size: 13px; font-weight: 600; }
+#policy-write-result[hidden] { display: none; }

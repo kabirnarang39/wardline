@@ -315,10 +315,54 @@
 
       <section id="view-policy" class="view" aria-labelledby="view-policy-heading" hidden>
         <div class="view-header">
-          <h1 id="view-policy-heading">Policy</h1>
-          <span class="badge" id="policy-backend"></span>
+          <div>
+            <h1 id="view-policy-heading">Policy</h1>
+            <p class="view-sub" id="policy-subtitle"></p>
+          </div>
+          <div class="tab-toggle" role="tablist" id="policy-tabs">
+            <button class="tab-toggle-btn is-active" data-policy-tab="editor" role="tab" aria-selected="true">Rule editor</button>
+            <button class="tab-toggle-btn" data-policy-tab="source" role="tab" aria-selected="false">Source</button>
+          </div>
         </div>
-        <pre class="policy-source" id="policy-source" tabindex="0"></pre>
+
+        <div id="policy-editor-tab">
+          <div class="panel" id="policy-editor-panel" hidden>
+            <div class="panel-title-bar">
+              <span>Rules</span>
+              <button class="btn-secondary" id="policy-add-rule" type="button">+ Add rule</button>
+            </div>
+            <div class="table-wrap">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Identity</th>
+                    <th scope="col">Tool</th>
+                    <th scope="col">Tenant</th>
+                    <th scope="col">Effect</th>
+                    <th scope="col">Priority</th>
+                    <th scope="col"></th>
+                  </tr>
+                </thead>
+                <tbody id="policy-rule-rows"></tbody>
+              </table>
+              <p id="policy-rules-empty" class="empty-state" hidden>No rules yet — every call falls through to the default effect below.</p>
+            </div>
+          </div>
+          <div class="policy-editor-footer" id="policy-editor-footer" hidden>
+            <label class="policy-default-label" for="policy-default-select">Default effect
+              <select id="policy-default-select">
+                <option value="allow">allow</option>
+                <option value="deny">deny</option>
+              </select>
+            </label>
+            <button class="btn-primary" id="policy-validate-apply" type="button">Validate &amp; apply</button>
+            <span class="policy-editor-hint">Old rules keep serving until the new set validates clean — no downtime on a bad edit.</span>
+          </div>
+          <p id="policy-write-result" role="status" aria-live="polite" hidden></p>
+          <p id="policy-editor-unavailable" class="empty-state" hidden>Rule editor is only available for the yaml policy backend, and requires config:edit. Use Source below to view the active policy.</p>
+        </div>
+
+        <pre class="policy-source" id="policy-source" tabindex="0" hidden></pre>
       </section>
 
       <section id="view-rbac" class="view" aria-labelledby="view-rbac-heading" hidden>

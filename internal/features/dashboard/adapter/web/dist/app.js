@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, fetchReloadHistory } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, fetchReloadHistory } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -872,14 +872,160 @@ function setLive(ok) {
   }
 }
 
+// policyRules/policyDefault are the Rule editor's live working state --
+// seeded from the real, currently-loaded rules on every loadPolicy()
+// (see renderPolicyEditor), mutated locally as the operator edits, and
+// only sent to the server on "Validate & apply". Reordering an entry in
+// this array IS changing its real evaluation priority: this policy
+// engine has no separate numeric priority field (see policy.yaml.example),
+// first-match-in-file-order wins, so the editor's "Priority" column is
+// just this array's index -- honest, not a fabricated number the
+// prototype's own mock showed (10/20/50) that this schema has no
+// equivalent for.
+let policyRules = [];
+let policyDefault = 'allow';
+
 async function loadPolicy() {
   try {
     const policy = await fetchPolicy();
-    document.getElementById('policy-backend').textContent = policy.Backend || 'unknown';
+    const ruleCount = Array.isArray(policy.Rules) ? policy.Rules.length : null;
+    const subtitle = document.getElementById('policy-subtitle');
+    subtitle.textContent = ruleCount === null
+      ? `${policy.Backend || 'unknown'} backend`
+      : `${ruleCount} rule${ruleCount === 1 ? '' : 's'} · ${policy.Backend} backend · applies on next reload`;
     document.getElementById('policy-source').textContent = policy.Source || '';
+    renderPolicyEditor(policy);
   } catch {
     document.getElementById('policy-source').textContent = 'Failed to load policy — try refreshing.';
+    document.getElementById('policy-subtitle').textContent = '';
   }
+}
+
+// renderPolicyEditor shows the structured Rule editor only when the
+// server actually sent structured Rules (yaml backend) -- opa/cedar (or
+// a yaml server with the editor unwired) fall back to "Source only",
+// never a fabricated empty editor pretending to represent policy it
+// can't actually parse into rules.
+function renderPolicyEditor(policy) {
+  const panel = document.getElementById('policy-editor-panel');
+  const footer = document.getElementById('policy-editor-footer');
+  const unavailable = document.getElementById('policy-editor-unavailable');
+
+  if (!Array.isArray(policy.Rules)) {
+    panel.hidden = true;
+    footer.hidden = true;
+    unavailable.hidden = false;
+    return;
+  }
+  panel.hidden = false;
+  footer.hidden = false;
+  unavailable.hidden = true;
+
+  policyRules = policy.Rules.map((r) => ({ identity: r.identity, tool: r.tool, tenant: r.tenant || '', effect: r.effect }));
+  policyDefault = policy.Default || 'allow';
+  document.getElementById('policy-default-select').value = policyDefault;
+  renderPolicyRuleRows();
+}
+
+function renderPolicyRuleRows() {
+  const tbody = document.getElementById('policy-rule-rows');
+  const empty = document.getElementById('policy-rules-empty');
+
+  if (policyRules.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = policyRules.map((rule, i) => `
+    <tr>
+      <td><input type="text" class="policy-rule-input" data-field="identity" data-index="${i}" value="${escapeHTML(rule.identity)}" placeholder="identity" aria-label="Rule ${i + 1} identity"></td>
+      <td><input type="text" class="policy-rule-input" data-field="tool" data-index="${i}" value="${escapeHTML(rule.tool)}" placeholder="tool" aria-label="Rule ${i + 1} tool"></td>
+      <td><input type="text" class="policy-rule-input" data-field="tenant" data-index="${i}" value="${escapeHTML(rule.tenant)}" placeholder="all tenants" aria-label="Rule ${i + 1} tenant"></td>
+      <td>
+        <select class="policy-rule-select" data-index="${i}" aria-label="Rule ${i + 1} effect">
+          <option value="allow" ${rule.effect === 'allow' ? 'selected' : ''}>allow</option>
+          <option value="deny" ${rule.effect === 'deny' ? 'selected' : ''}>deny</option>
+        </select>
+      </td>
+      <td>${i + 1}</td>
+      <td class="policy-rule-actions">
+        <button type="button" class="policy-rule-move" data-action="up" data-index="${i}" aria-label="Move rule ${i + 1} up" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="policy-rule-move" data-action="down" data-index="${i}" aria-label="Move rule ${i + 1} down" ${i === policyRules.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="policy-rule-delete" data-action="delete" data-index="${i}" aria-label="Delete rule ${i + 1}"><span data-icon="trash" aria-hidden="true"></span></button>
+      </td>
+    </tr>
+  `).join('');
+  mountIcons(tbody);
+
+  tbody.querySelectorAll('.policy-rule-input').forEach((input) => {
+    input.addEventListener('input', () => {
+      policyRules[Number(input.dataset.index)][input.dataset.field] = input.value;
+    });
+  });
+  tbody.querySelectorAll('.policy-rule-select').forEach((select) => {
+    select.addEventListener('change', () => {
+      policyRules[Number(select.dataset.index)].effect = select.value;
+    });
+  });
+  tbody.querySelectorAll('.policy-rule-move, .policy-rule-delete').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.index);
+      if (btn.dataset.action === 'up' && i > 0) {
+        [policyRules[i - 1], policyRules[i]] = [policyRules[i], policyRules[i - 1]];
+      } else if (btn.dataset.action === 'down' && i < policyRules.length - 1) {
+        [policyRules[i + 1], policyRules[i]] = [policyRules[i], policyRules[i + 1]];
+      } else if (btn.dataset.action === 'delete') {
+        policyRules.splice(i, 1);
+      }
+      renderPolicyRuleRows();
+    });
+  });
+}
+
+function wirePolicyEditor() {
+  document.getElementById('policy-add-rule').addEventListener('click', () => {
+    policyRules.push({ identity: '', tool: '', tenant: '', effect: 'allow' });
+    renderPolicyRuleRows();
+    const inputs = document.querySelectorAll('#policy-rule-rows tr:last-child input');
+    if (inputs.length) inputs[0].focus();
+  });
+
+  document.getElementById('policy-default-select').addEventListener('change', (e) => {
+    policyDefault = e.target.value;
+  });
+
+  document.getElementById('policy-validate-apply').addEventListener('click', async () => {
+    const btn = document.getElementById('policy-validate-apply');
+    const result = document.getElementById('policy-write-result');
+    btn.disabled = true;
+    result.hidden = true;
+    const res = await writePolicy(policyRules, policyDefault);
+    btn.disabled = false;
+    result.hidden = false;
+    if (res.ok) {
+      result.textContent = 'Applied — policy reloaded.';
+      result.style.color = 'var(--status-ok)';
+      await loadPolicy();
+    } else {
+      result.textContent = res.message;
+      result.style.color = 'var(--status-critical)';
+    }
+  });
+
+  document.querySelectorAll('#policy-tabs .tab-toggle-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.policyTab;
+      document.querySelectorAll('#policy-tabs .tab-toggle-btn').forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle('is-active', active);
+        b.setAttribute('aria-selected', String(active));
+      });
+      document.getElementById('policy-editor-tab').hidden = tab !== 'editor';
+      document.getElementById('policy-source').hidden = tab !== 'source';
+    });
+  });
 }
 
 async function loadStatus() {
@@ -1153,6 +1299,7 @@ function init() {
   wireFilters();
   wireActivityInteractions();
   wireCredentials();
+  wirePolicyEditor();
   wireTopbar();
   wireThemeToggle();
   wireLivePulseToggle();

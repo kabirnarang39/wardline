@@ -700,12 +700,19 @@ func runServe(logger *slog.Logger, args []string) {
 
 	extraRoutes := map[string]http.Handler{}
 	if webUIEnabled {
-		policySource, err := os.ReadFile(cfg.PolicyFile)
+		policyInfo, err := buildPolicyInfo(cfg.PolicyBackend, cfg.PolicyFile)
 		if err != nil {
 			logger.Error("failed to read policy file for dashboard", "error", err)
 			os.Exit(1)
 		}
-		policyInfo := dashboarddomain.PolicyInfo{Backend: cfg.PolicyBackend, Source: string(policySource)}
+		// policyInfoHolder makes GET /dashboard/api/policy live instead of
+		// a snapshot frozen at startup -- the "policy" Reloader registered
+		// on reloadCoordinator below (and the Rule editor's own
+		// WriteAndReload) both Swap it after a successful reload, so a
+		// hot-reloaded or dashboard-edited policy is reflected on the very
+		// next GET, not after a process restart.
+		policyInfoHolder := reload.NewReloadableEngine(&policyInfo)
+		policySource := policySourceFunc(func() dashboarddomain.PolicyInfo { return *policyInfoHolder.Current() })
 
 		statusProvider := dashboardusecase.NewStatusProvider(
 			version.Version, cfg.Listen, cfg.Upstream, cfg.Features, startedAt, time.Now,
@@ -793,7 +800,23 @@ func runServe(logger *slog.Logger, args []string) {
 		// GET /dashboard/api/reload/history.
 		reloadCoordinator := &reload.ReloadCoordinator{
 			Reloaders: map[string]func() error{
-				"policy": policyReload,
+				// Wraps policyReload with a refresh of policyInfoHolder --
+				// GET /dashboard/api/policy and the Rule editor must see
+				// the new content immediately after ANY successful policy
+				// reload, not just ones triggered through WriteAndReload
+				// below (an operator editing the file directly on disk and
+				// hitting reload some other way must be reflected too).
+				"policy": func() error {
+					if err := policyReload(); err != nil {
+						return err
+					}
+					info, err := buildPolicyInfo(cfg.PolicyBackend, cfg.PolicyFile)
+					if err != nil {
+						return fmt.Errorf("refresh policy info after reload: %w", err)
+					}
+					policyInfoHolder.Swap(&info)
+					return nil
+				},
 				"rbac":   rbacReload,
 				"budget": budgetReload,
 			},
@@ -832,7 +855,29 @@ func runServe(logger *slog.Logger, args []string) {
 			callerInfoResolver = newCallerInfoResolver(identityAuth, rbacChecker)
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policyInfo, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver)
+		// policyWriter backs the Policy view's structured Rule editor --
+		// only meaningful for the yaml backend (opa/cedar have no such
+		// structured rule representation to write back); nil for either
+		// other backend, matching every other "not wired" nil-source
+		// posture in this file. Writing then reuses the exact same
+		// "policy" Reloader just registered above (reloadCoordinator.Reload),
+		// so a rule-editor save produces the identical Reload log entry a
+		// POST /dashboard/api/reload/policy would.
+		var policyWriter dashboardadapter.PolicyWriter
+		if cfg.PolicyBackend == "yaml" {
+			policyWriter = policyWriterFunc(func(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error {
+				if err := policyadapter.WriteFile(cfg.PolicyFile, rules, def); err != nil {
+					return err
+				}
+				result := reloadCoordinator.Reload("policy", appliedBy)
+				if !result.OK {
+					return fmt.Errorf("%s", result.Error)
+				}
+				return nil
+			})
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1151,6 +1196,20 @@ type callerInfoResolverFunc func(r *http.Request) (identity string, canConfigEdi
 
 func (f callerInfoResolverFunc) CallerInfo(r *http.Request) (string, bool) { return f(r) }
 
+// policySourceFunc adapts a plain function to dashboardadapter.PolicySource,
+// matching callerInfoResolverFunc's pattern immediately above.
+type policySourceFunc func() dashboarddomain.PolicyInfo
+
+func (f policySourceFunc) Current() dashboarddomain.PolicyInfo { return f() }
+
+// policyWriterFunc adapts a plain function to dashboardadapter.PolicyWriter,
+// matching policySourceFunc's pattern immediately above.
+type policyWriterFunc func(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error
+
+func (f policyWriterFunc) WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error {
+	return f(rules, def, appliedBy)
+}
+
 // newCallerInfoResolver builds the dashboardadapter.CallerInfoResolver
 // wired into the dashboard route's topbar identity display when rbac is
 // on -- purely a display concern (see CallerInfoResolver's own doc
@@ -1455,6 +1514,35 @@ func loadPolicyEngine(backend, path string) (policydomain.Engine, error) {
 // reached, so the previously-loaded engine keeps enforcing every request
 // completely untouched. This closure is what a later task registers with
 // the ReloadCoordinator under reloaders["policy"].
+// buildPolicyInfo reads path and returns the dashboard's live PolicyInfo
+// snapshot for it -- Rules/Default populated only for the yaml backend
+// (via policyadapter.ParseRules, the real parser, never a hand-rolled
+// duplicate), left zero-valued for opa/cedar where no such structured
+// representation exists. A yaml parse failure here is NOT fatal the way
+// engine construction failure is: this is a display-only convenience
+// for the Rule editor, and a yaml file that fails ParseRules (should be
+// unreachable in practice, since WriteFile validates before ever
+// persisting, and loadPolicyEngine already validated whatever's on disk
+// at startup/reload) degrades to "Source only, no structured Rules"
+// rather than blocking the dashboard route from mounting at all.
+func buildPolicyInfo(backend, path string) (dashboarddomain.PolicyInfo, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return dashboarddomain.PolicyInfo{}, err
+	}
+	info := dashboarddomain.PolicyInfo{Backend: backend, Source: string(data)}
+	if backend == "yaml" {
+		if rules, def, parseErr := policyadapter.ParseRules(data); parseErr == nil {
+			info.Rules = make([]dashboarddomain.PolicyRuleEntry, len(rules))
+			for i, r := range rules {
+				info.Rules[i] = dashboarddomain.PolicyRuleEntry{Identity: r.Identity, Tool: r.Tool, Tenant: r.Tenant, Effect: string(r.Effect)}
+			}
+			info.Default = string(def)
+		}
+	}
+	return info, nil
+}
+
 func newPolicyReloadFn(policyHolder *reload.ReloadableEngine[policydomain.Engine], configPath string) func() error {
 	return func() error {
 		newCfg, err := config.Load(configPath)
