@@ -21,14 +21,17 @@ scim:
 ```
 
 Serves `POST`/`GET /scim/v2/Users` and `GET`/`DELETE`/`PATCH
-/scim/v2/Users/{id}` (PATCH supports exactly one operation: `{"op":
-"replace", "path": "active", "value": true|false}`), plus the same
-verb set for `/scim/v2/Groups` (PATCH supports `{"op": "add"|"remove",
-"path": "members", "value": [...]}`). Every request needs
-`Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
+/scim/v2/Users/{id}` (PATCH takes a SCIM 2.0 `Operations` array and
+supports exactly one operation: `{"Operations": [{"op": "replace",
+"path": "active", "value": true|false}]}`), plus the same verb set for
+`/scim/v2/Groups` (PATCH supports `{"Operations": [{"op":
+"add"|"remove", "path": "members", "value": [...]}]}`). Every request
+needs `Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
 value, compared in constant time: a wrong or missing token gets `401`;
 an unknown user/group ID on `GET`/`DELETE`/`PATCH` gets `404`; a
-malformed PATCH body gets `400`. A Group's `displayName` encodes the
+malformed PATCH body — including one missing the `Operations` wrapper or
+naming no supported operation — gets `400` (never a silent `204`, so a
+deactivation can't report success without applying). A Group's `displayName` encodes the
 RBAC grant it provisions: `wardline:tenant-<tenant>:role-<role>` makes
 every `active` member a `RoleBinding{Tenant: tenant}`;
 `wardline:role-<role>` (no tenant segment) makes every `active` member

@@ -1,0 +1,10 @@
+default: deny
+
+rules:
+  # shopper-bot is allowed exactly two tools -- everything else is denied.
+  - identity: shopper-bot
+    tool: search_products
+    effect: allow
+  - identity: shopper-bot
+    tool: get_price
+    effect: allow

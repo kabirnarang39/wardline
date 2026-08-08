@@ -8,6 +8,17 @@
 Open source control-plane proxy for AI agents: identity, policy, budget, and
 audit for MCP and beyond.
 
+**A compromised agent trips Wardline's statistical anomaly detection and gets
+auto-blocked in real time — no rule written for the attack, no human in the
+loop.** One static Go binary in front of your MCP server; no database, IdP, or
+sidecar to start.
+
+![Wardline auto-blocking a compromised agent](docs/images/wardline-demo.gif)
+
+```bash
+make demo   # spins up a mock MCP server + Wardline and runs the scenario above
+```
+
 v0.1 scope: a reverse proxy in front of one MCP server, a policy backend
 (a static YAML allow/deny rule list, or an embedded OPA/Rego evaluator) per
 identity+tool, and a structured JSON audit log.
@@ -112,8 +123,7 @@ so every rule written before this existed keeps matching exactly what it
 matched before). **Budget enforcement stays tool-call-scoped only** —
 budget buckets are keyed by tool name, and widening that key space to
 arbitrary resource URIs is a real, separate design question, deliberately
-not solved here (see
-`docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md`).
+not solved here.
 True protocol-lifecycle methods — the `initialize` handshake every client
 performs, `notifications/initialized`, `tools/list` — are still forwarded
 to the upstream server without any policy or budget evaluation, recorded
@@ -837,15 +847,10 @@ separate read-only DSN field to make it useful) is a future cycle.
 
 **Requires a queryable audit trail.** `audit.output: stdout` has
 nothing to read back — point `audit.output` at a file, or turn on
-`features.postgres_storage`, to use this command. See
-`docs/superpowers/specs/2026-07-28-compliance-evidence-export-design.md`
-for the original design and
-`docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md`
-for signing/retention/scheduled-export/live-query/redacted-identities —
-still deliberately deferred: a full raw-entry evidence browser, cron-
-expression scheduling, and cross-replica coordination for retention/
-scheduled-export in an HA deployment (each replica runs its own
-independent ticker today).
+`features.postgres_storage`, to use this command. Still deliberately
+deferred: a full raw-entry evidence browser, cron-expression scheduling,
+and cross-replica coordination for retention/scheduled-export in an HA
+deployment (each replica runs its own independent ticker today).
 
 ## Policy packs
 
@@ -909,13 +914,9 @@ template to edit, not a policy to apply verbatim; `install` warns when
 the pack it just wrote still contains placeholders. An unreplaced
 placeholder matches nothing, so every call falls through to the pack's
 default deny — fail-closed, but it looks like "Wardline blocks
-everything" until you edit the file. See
-`docs/superpowers/specs/2026-07-28-policy-pack-marketplace-design.md` for
-the original design and
-`docs/superpowers/specs/2026-08-08-policy-pack-marketplace-expansion-design.md`
-for OPA/Cedar variants, versioning, compose, and `-packs-dir` — and why
-this still ships as an embedded/operator-directory catalog, not a live
-network registry.
+everything" until you edit the file. This still ships as an
+embedded/operator-directory catalog (with OPA/Cedar variants, versioning,
+compose, and `-packs-dir`), not a live network registry.
 
 ## Auto-generated sandbox policy
 
@@ -1327,11 +1328,8 @@ some capabilities staying explicitly per-replica.
   only the traffic that landed on the specific replica answering that
   request, not a cluster-wide view.
 
-See `docs/superpowers/specs/2026-07-29-ha-deployment-design.md` for the
-original HA design and
-`docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md`
-for signing-key rotation (JWKS) and the distributed auto-block store,
-including why a live cloud KMS integration stays out of scope.
+HA covers signing-key rotation (JWKS) and a distributed auto-block store;
+a live cloud KMS integration stays out of scope.
 
 ## Kubernetes / Helm
 

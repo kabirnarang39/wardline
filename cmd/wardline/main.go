@@ -1065,7 +1065,9 @@ func runServe(logger *slog.Logger, args []string) {
 	// Serving it from a more specific mux pattern than "/" (see
 	// buildTopHandler) satisfies the browser before it ever reaches the
 	// proxy, for every deployment, dashboard enabled or not.
-	extraRoutes["/favicon.ico"] = faviconHandler(logger)
+	favicon := faviconHandler(logger)
+	extraRoutes["/favicon.ico"] = favicon
+	extraRoutes["/favicon.svg"] = favicon
 	// Same bug class and same unconditional-registration fix as
 	// /favicon.ico just above, for the rest of the top-level paths a
 	// browser or crawler routinely requests unprompted: none of these are
@@ -1582,25 +1584,28 @@ func targetIdentityFromRequest(r *http.Request) (string, error) {
 	return req.Identity, nil
 }
 
-// faviconHandler serves favicon.ico out of the dashboard's own embedded
-// asset tree (dashboardadapter.Assets(), the same //go:embed web/dist
-// already used for style.css/app.js/fonts) regardless of whether web_ui
-// is on -- the dashboard package and its embed are always compiled in,
-// the flag only gates whether /dashboard/ itself is routed. Read once at
-// startup and served from memory rather than through http.FileServer:
-// the content type is set explicitly instead of relying on the host's
-// mime.types having an .ico entry (Go's stdlib mime table doesn't
-// register one by default), which a minimal container image may lack.
+// faviconHandler serves the dashboard's SVG favicon out of its own
+// embedded asset tree (dashboardadapter.Assets(), the same //go:embed
+// web/dist already used for style.css/app.js/fonts) regardless of whether
+// web_ui is on -- the dashboard package and its embed are always compiled
+// in, the flag only gates whether /dashboard/ itself is routed. The mark
+// is the same one the docs site and landing page use. Read once at startup
+// and served from memory with an explicit content type. It answers both
+// /favicon.svg and the /favicon.ico browsers auto-request from the origin
+// root: a modern browser honors the returned image/svg+xml content type
+// regardless of the .ico URL, and either way the request is absorbed here
+// rather than falling through to the proxy catch-all and polluting the
+// audit log.
 func faviconHandler(logger *slog.Logger) http.Handler {
-	data, err := fs.ReadFile(dashboardadapter.Assets(), "favicon.ico")
+	data, err := fs.ReadFile(dashboardadapter.Assets(), "favicon.svg")
 	if err != nil {
-		// Embedded at compile time (internal/features/dashboard/adapter/web/dist/favicon.ico)
+		// Embedded at compile time (internal/features/dashboard/adapter/web/dist/favicon.svg)
 		// -- a missing file here is a build-time problem, not a runtime one.
 		logger.Error("failed to read embedded favicon", "error", err)
 		os.Exit(1)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_, _ = w.Write(data)
 	})

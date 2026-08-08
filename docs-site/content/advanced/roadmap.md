@@ -87,8 +87,7 @@ policy-pack marketplace, HA deployment.
   `resources/*`/`prompts/*` method are policy-evaluated (YAML, OPA, or
   Cedar, all three backends) instead of passing through unconditionally.
   Budget enforcement stays tool-call-scoped only — deliberately out of
-  scope, see the design doc for why. Docs:
-  `docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md`.
+  scope.
 
 - **Compliance-evidence-export hardening** — cryptographic signing
   (`wardline generate-signing-key`/`export-evidence -sign-key`/
@@ -101,8 +100,7 @@ policy-pack marketplace, HA deployment.
   reusing `export-evidence`'s exact code path), and log retention
   (`features.log_retention`, `audit.retention_days`/
   `anomaly.retention_days`, a periodic purge job — JSONL rewrite or
-  Postgres `DELETE`). Docs:
-  `docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md`.
+  Postgres `DELETE`).
 
 - **Policy-pack marketplace expansion** — OPA and Cedar variants of all
   four existing packs (twelve packs total), a `version:` metadata field
@@ -116,8 +114,7 @@ policy-pack marketplace, HA deployment.
   decision outside this engineering roadmap, the same reasoning that
   already excludes a hosted cloud tier (see below); `-packs-dir` is
   this cycle's zero-hosting way to get most of that value (an org's own
-  curated pack collection, one flag away). Docs:
-  `docs/superpowers/specs/2026-08-08-policy-pack-marketplace-expansion-design.md`.
+  curated pack collection, one flag away).
 
 - **HA distributed state + signing-key rotation** — the distributed
   budget counters (`PostgresLimiter`) and anomaly baselines
@@ -133,8 +130,7 @@ policy-pack marketplace, HA deployment.
   endpoint. Deliberately **not** a live cloud KMS integration — local
   PEM rotation is the self-hosted-proxy-appropriate default; an operator
   wanting KMS custody sources the PEM bytes through their own Secret
-  pipeline. Docs:
-  `docs/superpowers/specs/2026-08-08-ha-rotation-blockstate-design.md`.
+  pipeline.
 
 - **gRPC transport support** — a second listener (feature
   `grpc_transport`, `grpc_listen` + `grpc_upstream`) runs the exact same
@@ -150,7 +146,7 @@ policy-pack marketplace, HA deployment.
   evaluation (one decision per RPC at stream start, mirroring the HTTP
   transport's one-decision-per-request).
 
-## v2.0 (planned, not yet shipped)
+## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future
 direction, but is a business/infrastructure decision outside this
@@ -158,5 +154,4 @@ project's engineering roadmap — not something this docs site or the
 codebase commits to.
 
 This page reflects actual project state as of each release, not
-aspirational claims — cross-check against `docs/superpowers/specs/`
-before updating it for a new release.
+aspirational claims.
