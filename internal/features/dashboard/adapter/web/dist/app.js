@@ -280,7 +280,7 @@ function renderActivity() {
       <tr data-row-id="${escapeHTML(String(e.ID))}">
         <td class="decision-cell" data-decision="${escapeHTML(e.Decision)}"><span class="expand-toggle" data-icon="chevron"></span></td>
         <td>${escapeHTML(formatTime(e.Timestamp))}</td>
-        <td>${escapeHTML(e.Identity)}</td>
+        <td class="identity-cell">${escapeHTML(e.Identity)}</td>
         <td class="tool-cell">${escapeHTML(formatTool(e.Tool))}</td>
         <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
         <td>${e.LatencyMS}ms</td>
@@ -732,8 +732,8 @@ function renderOverviewRecentTable() {
   empty.hidden = true;
   tbody.innerHTML = recent.map((e) => `
     <tr>
-      <td>${escapeHTML(e.Identity)}</td>
-      <td>${escapeHTML(formatTool(e.Tool))}</td>
+      <td class="identity-cell">${escapeHTML(e.Identity)}</td>
+      <td class="tool-cell">${escapeHTML(formatTool(e.Tool))}</td>
       <td><span class="pill" data-decision="${escapeHTML(e.Decision)}">${escapeHTML(e.Decision)}</span></td>
       <td>${e.LatencyMS}ms</td>
     </tr>

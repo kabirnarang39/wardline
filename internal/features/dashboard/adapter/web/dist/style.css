@@ -778,6 +778,9 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
 .audit-table td.tool-cell { color: var(--text-muted); }
+/* Identity reads as a name, not a code token: sans-serif + full-strength
+   text, matching the reference (tool stays mono/muted above). */
+.audit-table td.identity-cell { font-family: var(--font-body); color: var(--text); }
 
 /* deny and blocked deliberately use two DIFFERENT red tokens, not the same
    one -- v2's own final review caught deny (#DC2626) and blocked
