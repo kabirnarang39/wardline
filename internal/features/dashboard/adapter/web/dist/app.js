@@ -93,7 +93,7 @@ function wireExpandableRows(tbody, colSpan, detailRenderer) {
   // <td> children's implicit table-cell roles (breaks the row/cell
   // ancestor relationship table-structure a11y rules expect), even though
   // it can look fine under manual inspection. Matches this file's other
-  // icon-button controls (.topbar-icon-btn, .pulse-toggle) in spirit: a
+  // icon-button controls (.topbar-icon-btn) in spirit: a
   // real focusable/labelled element, just rendered via CSS off
   // data-icon rather than wrapping a nested decorative icon span --
   // so unlike those controls' inner spans, .expand-toggle itself is the
@@ -1060,6 +1060,10 @@ async function loadStatus() {
     if (status && typeof status.UptimeSeconds === 'number') {
       configLoadedAtMs = Date.now() - status.UptimeSeconds * 1000;
     }
+    const subtitle = document.getElementById('status-subtitle');
+    if (subtitle) {
+      subtitle.textContent = `wardline ${status.Version} · uptime ${formatUptime(status.UptimeSeconds)}`;
+    }
     const grid = document.getElementById('status-grid');
     grid.innerHTML = `
       <div><dt>Version</dt><dd>${escapeHTML(status.Version)}</dd></div>
@@ -1143,6 +1147,12 @@ async function renderRBAC() {
   const bindingList = document.getElementById('rbac-binding-list');
   try {
     const { roles, bindings } = await fetchRBAC();
+    const subtitle = document.getElementById('rbac-subtitle');
+    if (subtitle) {
+      const roleCount = (roles || []).length;
+      const bindingCount = (bindings || []).length;
+      subtitle.textContent = `${roleCount} role${roleCount === 1 ? '' : 's'} · ${bindingCount} live binding${bindingCount === 1 ? '' : 's'}`;
+    }
     roleRows.innerHTML = (roles || []).map((role) => {
       const perms = role.permissions.join(', ');
       return `

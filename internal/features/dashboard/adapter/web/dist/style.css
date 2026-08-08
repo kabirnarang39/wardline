@@ -928,7 +928,7 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
    itself is a real button-shaped hit target; the row's own cursor/hover
    is left alone (no whole-row click affordance to imply). Sized and
    centered like this file's other icon-button controls
-   (.topbar-icon-btn, .pulse-toggle: 44px hit target, smaller centered
+   (.topbar-icon-btn: 44px hit target, smaller centered
    SVG) rather than a bespoke size, both for the 44px touch-target
    requirement and visual consistency -- naturally scoped to tables that
    actually render one, so a plain tr[data-row-id] table (Federation)

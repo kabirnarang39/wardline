@@ -561,7 +561,9 @@ func TestHandler_GetGroupByID(t *testing.T) {
 
 	rec := doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
 	var created struct{ ID string }
-	json.Unmarshal(rec.Body.Bytes(), &created)
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
 	getRec := doRequest(h, http.MethodGet, "/scim/v2/Groups/"+created.ID, "", "secret-token")
 	if getRec.Code != http.StatusOK {
@@ -596,7 +598,9 @@ func TestHandler_DeleteGroup_RemovesBinding(t *testing.T) {
 	aliceID := createTestUser(t, h, "alice")
 	createRec := doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin","members":[{"value":"`+aliceID+`"}]}`, "secret-token")
 	var created struct{ ID string }
-	json.Unmarshal(createRec.Body.Bytes(), &created)
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
 	if cluster, _ := store.Bindings("alice"); len(cluster) != 1 {
 		t.Fatalf("expected alice to have a binding before delete, got %+v", cluster)
@@ -635,7 +639,9 @@ func TestHandler_PatchGroupMembers_AddMember_UpdatesBinding(t *testing.T) {
 
 	createRec := doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin","members":[{"value":"`+aliceID+`"}]}`, "secret-token")
 	var created struct{ ID string }
-	json.Unmarshal(createRec.Body.Bytes(), &created)
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
 	patchBody := `{"Operations":[{"op":"add","path":"members","value":[{"value":"` + bobID + `"}]}]}`
 	rec := doRequest(h, http.MethodPatch, "/scim/v2/Groups/"+created.ID, patchBody, "secret-token")
@@ -665,7 +671,9 @@ func TestHandler_PatchGroupMembers_RemoveMember_UpdatesBinding(t *testing.T) {
 	createRec := doRequest(h, http.MethodPost, "/scim/v2/Groups",
 		`{"displayName":"wardline:role-admin","members":[{"value":"`+aliceID+`"},{"value":"`+bobID+`"}]}`, "secret-token")
 	var created struct{ ID string }
-	json.Unmarshal(createRec.Body.Bytes(), &created)
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
 	patchBody := `{"Operations":[{"op":"remove","path":"members","value":[{"value":"` + bobID + `"}]}]}`
 	rec := doRequest(h, http.MethodPatch, "/scim/v2/Groups/"+created.ID, patchBody, "secret-token")
@@ -700,7 +708,9 @@ func TestHandler_PatchGroupMembers_MalformedJSON_Returns400(t *testing.T) {
 
 	createRec := doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin"}`, "secret-token")
 	var created struct{ ID string }
-	json.Unmarshal(createRec.Body.Bytes(), &created)
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := doRequest(h, http.MethodPatch, "/scim/v2/Groups/"+created.ID, `not json`, "secret-token")
 	if rec.Code != http.StatusBadRequest {

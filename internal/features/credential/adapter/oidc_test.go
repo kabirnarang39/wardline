@@ -225,7 +225,9 @@ func TestNewOIDCBootstrapper_BadJWKSURIFailsFast(t *testing.T) {
 		t.Fatal(err)
 	}
 	badURI := "http://" + ln.Addr().String() + "/jwks"
-	ln.Close()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	done := make(chan error, 1)
 	go func() {
