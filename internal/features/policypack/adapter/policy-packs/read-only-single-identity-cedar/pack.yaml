@@ -1,0 +1,5 @@
+name: read-only-single-identity-cedar
+description: "Cedar equivalent of read-only-single-identity: one identity allowed only read/list-shaped tools, everything else denied. Rename the placeholder identity and edit the tool list for your MCP server before use."
+backend: cedar
+policy_file: policy.cedar
+version: "1"

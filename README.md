@@ -805,40 +805,73 @@ independent ticker today).
 
 ## Policy packs
 
-`wardline policy-pack list` shows four starter policy files embedded in
-the binary itself — no network fetch, no separate download:
+`wardline policy-pack list` shows twelve starter policy files embedded in
+the binary itself — no network fetch, no separate download: four
+postures, times three backends (yaml, opa, cedar):
 
-- `deny-all-baseline` — denies everything; the safest starting point.
-- `single-identity-full-access` — one identity, full access, everything
-  else denied.
-- `read-only-single-identity` — one identity limited to read/list-shaped
-  tools, everything else denied.
-- `admin-viewer-split` — two roles in one file: an admin identity with
-  full access, a viewer identity limited to read/list tools. Rename its
-  two placeholders to two *different* identities — nothing validates
-  that they differ, and reusing one string for both collapses the split
-  (that identity ends up read-only, the deliberately safe outcome).
+- `deny-all-baseline`(`-opa`/`-cedar`) — denies everything; the safest
+  starting point.
+- `single-identity-full-access`(`-opa`/`-cedar`) — one identity, full
+  access, everything else denied.
+- `read-only-single-identity`(`-opa`/`-cedar`) — one identity limited to
+  read/list-shaped tools, everything else denied.
+- `admin-viewer-split`(`-opa`/`-cedar`) — two roles in one file: an admin
+  identity with full access, a viewer identity limited to read/list
+  tools. Rename its two placeholders to two *different* identities —
+  nothing validates that they differ, and reusing one string for both
+  collapses the split (that identity ends up read-only, the deliberately
+  safe outcome — the OPA/Cedar variants enforce this with an explicit
+  `identity != viewer` guard on the admin rule, since Rego/Cedar's
+  additive-rule semantics don't get YAML's first-match-wins safety net
+  for free).
 
-`wardline policy-pack show <name>` prints a pack's full policy source
-before you install it. `wardline policy-pack install <name> [-output
-<path>]` writes it to `<path>` (default `./policy.yaml`) — it refuses to
-overwrite an existing file (or to follow a symlink at that path), and
-never edits `wardline.yaml` itself; it prints the
-`policy_file`/`policy_backend` lines to add yourself.
+`wardline policy-pack show <name>` prints a pack's full manifest
+(including its `version`, metadata only — no upgrade tooling reads it
+yet) and policy source before you install it. `wardline policy-pack
+install <name> [-output <path>]` writes it to `<path>` (default
+`./policy.yaml`) — it refuses to overwrite an existing file (or to follow
+a symlink at that path), and never edits `wardline.yaml` itself; it
+prints the `policy_file`/`policy_backend` lines to add yourself.
+
+`wardline policy-pack compose <name1> <name2> [...] [-output <path>]`
+merges multiple **yaml-backend** packs' rules into one file — rules are
+concatenated in the order named (a real choice: first-match-wins), and
+`default` comes from the last-named pack. A duplicate `(identity, tool,
+tenant)` grant across the composed packs is warned about (not an error)
+so you notice two packs disagreed. Refuses non-yaml packs and an
+existing `-output` path, same posture as `install`.
+
+`-packs-dir <path>` (on `list`/`show`/`install`/`compose`) merges an
+operator-owned directory of your own packs — same `<name>/pack.yaml` +
+policy file shape as the embedded catalog — with the built-in twelve. A
+name present in both resolves to your `-packs-dir` version, so you can
+deliberately shadow a built-in pack by reusing its name. This is the
+zero-hosting, zero-new-trust-boundary way to share a curated pack
+collection across your org (a git submodule, an internal mirror, a plain
+shared directory) without Wardline hosting anything — deliberately
+**not** a network-fetched registry; see the design doc for why that
+stays out of scope.
 
 **Every pack except `deny-all-baseline` names a placeholder identity**
 (`REPLACE_WITH_YOUR_IDENTITY`, etc.) you're expected to rename to your
 own before using the installed file — Wardline's YAML policy engine
 matches identities exactly, with no wildcard, so no pack can express "any
-identity" the way its tool-matching rules can with `"*"`. Treat every
-installed pack as a starting template to edit, not a policy to apply
-verbatim; `install` warns when the pack it just wrote still contains
-placeholders. An unreplaced placeholder matches nothing, so every call
-falls through to the pack's `default: deny` — fail-closed, but it looks
-like "Wardline blocks everything" until you edit the file. See
+identity" the way its tool-matching rules can with `"*"` (this is also
+true of the OPA/Cedar variants: they deliberately mirror the YAML packs'
+shape rather than showing off what those backends' real identity-wildcard
+support could do — the catalog's job is "the same starting shape
+regardless of backend"). Treat every installed pack as a starting
+template to edit, not a policy to apply verbatim; `install` warns when
+the pack it just wrote still contains placeholders. An unreplaced
+placeholder matches nothing, so every call falls through to the pack's
+default deny — fail-closed, but it looks like "Wardline blocks
+everything" until you edit the file. See
 `docs/superpowers/specs/2026-07-28-policy-pack-marketplace-design.md` for
-the full design, including why this ships as an embedded catalog rather
-than a live registry.
+the original design and
+`docs/superpowers/specs/2026-08-08-policy-pack-marketplace-expansion-design.md`
+for OPA/Cedar variants, versioning, compose, and `-packs-dir` — and why
+this still ships as an embedded/operator-directory catalog, not a live
+network registry.
 
 ## Auto-generated sandbox policy
 

@@ -1,0 +1,5 @@
+name: deny-all-baseline-opa
+description: "OPA/Rego equivalent of deny-all-baseline: denies every call by default. The safest possible starting point -- add allow rules as you grant specific access."
+backend: opa
+policy_file: policy.rego
+version: "1"
