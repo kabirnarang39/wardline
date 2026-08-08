@@ -186,6 +186,30 @@ default: deny
 	}
 }
 
+func TestLoadFile_GRPCMethodRule(t *testing.T) {
+	path := writeTemp(t, `
+rules:
+  - identity: "acme-alice"
+    method: "grpc"
+    tool: "/echo.Echo/Say"
+    effect: allow
+default: deny
+`)
+	m, err := adapter.LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := m.Evaluate(domain.Context{Identity: "acme-alice", Tool: "/echo.Echo/Say", Method: "grpc"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for matching grpc rule, got %q", got.Effect)
+	}
+	// A tools/call to the same target must not match a grpc-scoped rule.
+	got = m.Evaluate(domain.Context{Identity: "acme-alice", Tool: "/echo.Echo/Say", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected default deny for tools/call against a grpc-scoped rule, got %q", got.Effect)
+	}
+}
+
 func TestLoadFile_InvalidMethodRejected(t *testing.T) {
 	path := writeTemp(t, `
 rules:

@@ -37,6 +37,56 @@ audit:
 	}
 }
 
+func TestLoad_GRPCTransportRequiresListenAndUpstream(t *testing.T) {
+	// Flag on but grpc_listen/grpc_upstream missing -> rejected.
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+features:
+  grpc_transport: true
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected error when grpc_transport is on but grpc_listen/grpc_upstream are unset")
+	}
+
+	// Both present -> accepted and parsed.
+	path = writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+grpc_listen: "127.0.0.1:9090"
+grpc_upstream: "127.0.0.1:9091"
+features:
+  grpc_transport: true
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GRPCListen != "127.0.0.1:9090" || cfg.GRPCUpstream != "127.0.0.1:9091" {
+		t.Errorf("unexpected grpc config: listen=%q upstream=%q", cfg.GRPCListen, cfg.GRPCUpstream)
+	}
+}
+
+func TestLoad_GRPCFieldsIgnoredWhenFlagOff(t *testing.T) {
+	// Flag off: absent grpc_listen/grpc_upstream is fine, not an error.
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("grpc fields should be optional when grpc_transport is off: %v", err)
+	}
+}
+
 func TestLoad_MissingRequiredFields(t *testing.T) {
 	path := writeTemp(t, `listen: ""`)
 	_, err := config.Load(path)

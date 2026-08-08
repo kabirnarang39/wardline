@@ -90,7 +90,7 @@ func ParseRules(data []byte) ([]domain.Rule, domain.Effect, error) {
 			problems = append(problems, fmt.Sprintf("rule %d: tool must not be empty", i))
 		}
 		if r.Method != "" && !isValidRuleMethod(r.Method) {
-			problems = append(problems, fmt.Sprintf("rule %d: method %q must be \"tools/call\" or start with \"resources/\" or \"prompts/\"", i, r.Method))
+			problems = append(problems, fmt.Sprintf("rule %d: method %q must be \"tools/call\", \"grpc\", or start with \"resources/\" or \"prompts/\"", i, r.Method))
 		}
 		rules = append(rules, domain.Rule{Identity: r.Identity, Tool: r.Tool, Effect: effect, Tenant: r.Tenant, Method: r.Method})
 	}
@@ -107,12 +107,13 @@ func ParseRules(data []byte) ([]domain.Rule, domain.Effect, error) {
 	return rules, def, nil
 }
 
-// isValidRuleMethod matches proxy/usecase/parse.go's isGatedMethod set --
+// isValidRuleMethod matches proxy/usecase/parse.go's isGatedMethod set,
+// plus "grpc" (the grpcproxy transport's method namespace for gRPC calls) --
 // a rule targeting any other method string could never match a real
 // request, silently becoming dead config, so it's rejected at load/write
 // time rather than left to fail confusingly at request time.
 func isValidRuleMethod(method string) bool {
-	return method == "tools/call" || strings.HasPrefix(method, "resources/") || strings.HasPrefix(method, "prompts/")
+	return method == "tools/call" || method == "grpc" || strings.HasPrefix(method, "resources/") || strings.HasPrefix(method, "prompts/")
 }
 
 func parseEffect(s string) (domain.Effect, error) {

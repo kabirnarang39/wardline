@@ -294,9 +294,19 @@ type FederationConfig struct {
 // otel_tracing are the two real ones so far; internal/platform/flags
 // reads this map to decide whether a flagged feature is on.
 type Config struct {
-	Listen        string           `yaml:"listen"`
-	Upstream      string           `yaml:"upstream"`
-	PolicyFile    string           `yaml:"policy_file"`
+	Listen     string `yaml:"listen"`
+	Upstream   string `yaml:"upstream"`
+	PolicyFile string `yaml:"policy_file"`
+
+	// GRPCListen / GRPCUpstream configure the gRPC transport (feature
+	// grpc_transport). GRPCListen is a host:port to accept gRPC on;
+	// GRPCUpstream is the upstream gRPC target (host:port, or any
+	// grpc.NewClient target). Both required when grpc_transport is on,
+	// ignored otherwise. Unlike Upstream these are plain gRPC targets, not
+	// URLs -- the gRPC transport is plaintext to the upstream today (TLS to
+	// upstream is a deliberate follow-up).
+	GRPCListen    string           `yaml:"grpc_listen"`
+	GRPCUpstream  string           `yaml:"grpc_upstream"`
 	PolicyBackend string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
 	Audit         AuditConfig      `yaml:"audit"`
 	Budget        BudgetConfig     `yaml:"budget"`
@@ -384,6 +394,14 @@ func (c *Config) validate() error {
 		c.PolicyBackend = "yaml"
 	} else if c.PolicyBackend != "yaml" && c.PolicyBackend != "opa" && c.PolicyBackend != "cedar" {
 		problems = append(problems, fmt.Sprintf(`policy_backend must be "yaml", "opa", or "cedar", got %q`, c.PolicyBackend))
+	}
+	if c.Features["grpc_transport"] {
+		if c.GRPCListen == "" {
+			problems = append(problems, "grpc_listen must not be empty when features.grpc_transport is true")
+		}
+		if c.GRPCUpstream == "" {
+			problems = append(problems, "grpc_upstream must not be empty when features.grpc_transport is true")
+		}
 	}
 	if c.Features["postgres_storage"] {
 		if c.Audit.PostgresDSN == "" {
