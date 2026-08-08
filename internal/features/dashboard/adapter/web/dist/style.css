@@ -691,20 +691,31 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
    override needed or the panel never actually hides. */
 .facet-panel {
   display: flex;
-  gap: 28px;
+  gap: 16px;
   flex-wrap: wrap;
   padding: 15px;
   margin-top: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
+  align-items: stretch;
 }
 .facet-panel[hidden] { display: none; }
-/* Fixed-width columns instead of content-sized flex items -- without
-   this, three groups of differently-long values (identity names vs tool
-   names vs decision words) produce a ragged, unaligned layout instead of
-   reading as a clean 3-column grid. */
-.facet-group { min-width: 160px; }
+/* Fixed-width, boxed columns instead of bare content-sized flex items --
+   without a visible box, groups with fewer values (e.g. one identity) just
+   trail off with dead space while a group with more values (tools) fills
+   its slot, so the three columns read as different heights even though
+   the invisible flex box was already equal. The border + min-height make
+   the equal-height boxing something the eye can actually see, matching
+   the fixed-height card-grid treatment used elsewhere in the app. */
+.facet-group {
+  min-width: 160px;
+  min-height: 96px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 10px 12px;
+}
 
 .facet-group h3 {
   font-size: 11px;
@@ -799,6 +810,8 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 
 .panel-body { padding: 15px; }
 .panel-body.flush { padding: 0; }
+.panel-body p { margin: 0 0 12px; font-size: 13px; }
+.panel-body p:last-child { margin-bottom: 0; }
 
 .panel-title-bar {
   display: flex;
