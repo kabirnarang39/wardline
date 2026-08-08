@@ -221,7 +221,13 @@ func runServe(logger *slog.Logger, args []string) {
 	var anomalyDetector *anomalyusecase.Detector
 	var anomalyBuffer *anomalyusecase.AlertBuffer
 	var anomalyGCStop chan struct{}
-	var blockChecker *anomalyusecase.BlockChecker
+	// blocker is the auto-block surface passed to the detector, proxy, and
+	// dashboard -- either the in-memory *BlockChecker (with its own GC
+	// ticker) or the Postgres-backed *PostgresBlockStore (shared across HA
+	// replicas, self-reaping in SQL). blockStoreCloser drains the Postgres
+	// pool on shutdown, nil for the in-memory case.
+	var blocker anomalydomain.Blocker
+	var blockStoreCloser io.Closer
 	var autoBlockGCStop chan struct{}
 	var anomalyBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
@@ -244,16 +250,33 @@ func runServe(logger *slog.Logger, args []string) {
 		gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
 
 		if cfg.Anomaly.AutoBlock.Enabled {
-			blockChecker = anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
-			// auto_block has no gc_interval_seconds field of its own (see
-			// config.AutoBlockConfig) -- it's a sub-feature of anomaly
-			// detection, so its GC just reuses the same gcInterval already
-			// derived above for the detector's own per-identity state GC
-			// rather than inventing a second, independently-tunable knob
-			// for what's a tiny in-memory map.
-			autoBlockGCStop = make(chan struct{})
-			go anomalyusecase.StartBlockGC(blockChecker, gcInterval, autoBlockGCStop)
-			logger.Info("auto-block enabled", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+			blockDuration := time.Duration(cfg.Anomaly.AutoBlock.BlockDurationSeconds) * time.Second
+			if postgresStorageEnabled {
+				// Shared across HA replicas: a block written by one replica
+				// is visible to every replica on its next Check. Self-reaps
+				// expired rows in SQL, so no separate GC ticker is started
+				// (the in-memory StartBlockGC below is only for the map).
+				pbs, err := anomalyadapter.NewPostgresBlockStore(cfg.Audit.PostgresDSN, blockDuration, logger)
+				if err != nil {
+					logger.Error("failed to initialize postgres block store", "error", err)
+					os.Exit(1)
+				}
+				blocker = pbs
+				blockStoreCloser = pbs
+				logger.Info("auto-block enabled (shared via postgres)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+			} else {
+				bc := anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
+				blocker = bc
+				// auto_block has no gc_interval_seconds field of its own (see
+				// config.AutoBlockConfig) -- it's a sub-feature of anomaly
+				// detection, so its GC just reuses the same gcInterval already
+				// derived above for the detector's own per-identity state GC
+				// rather than inventing a second, independently-tunable knob
+				// for what's a tiny in-memory map.
+				autoBlockGCStop = make(chan struct{})
+				go anomalyusecase.StartBlockGC(bc, gcInterval, autoBlockGCStop)
+				logger.Info("auto-block enabled (per-replica, in-memory -- enable postgres_storage to share across replicas)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+			}
 		}
 
 		onAnomalyWriteErr := func(err error) {
@@ -291,37 +314,20 @@ func runServe(logger *slog.Logger, args []string) {
 			logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
 		}
 
-		// blockChecker and baselineStore are each passed through explicit
-		// nil branches, not directly as their possibly-nil pointer
-		// variables, for the same typed-nil reason as the liveSink switch
-		// below: a nil *BlockChecker/*PostgresBaselineStore placed into
-		// NewDetector's blocker/store interface parameters would be a
-		// non-nil interface wrapping a nil pointer, which Detector's own
-		// "!= nil" guards can't see -- it would call through to a nil
-		// receiver on the first hit instead of skipping.
-		//
-		// ponytail: a 4-arm combinatorial switch doesn't scale past 2
-		// nilable dependencies -- deliberately left as-is rather than
-		// collapsed, though: usecase.blocker/usecase.baselineStore (the
-		// interface types NewDetector's parameters actually have) are both
-		// unexported, so this package cannot name them to declare a local
-		// "var bc blocker" the way a cleaner version of this switch would
-		// need to. A helper inside the usecase package itself could nil-guard
-		// *BlockChecker (defined in that package, no cycle), but not
-		// *PostgresBaselineStore -- that type lives in the adapter package,
-		// which already imports usecase, so usecase importing it back would
-		// be a cycle. Exporting blocker/baselineStore purely to let main.go
-		// spell their names here would be an API-shape change for a cosmetic
-		// nit; not worth it for 2 dependencies.
-		switch {
-		case blockChecker != nil && baselineStore != nil:
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now, baselineStore)
-		case blockChecker != nil:
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blockChecker, onAnomalyWriteErr, time.Now, nil)
-		case baselineStore != nil:
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now, baselineStore)
-		default:
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, nil, onAnomalyWriteErr, time.Now, nil)
+		// blocker is now an interface-typed var (anomalydomain.Blocker),
+		// nil-when-unset rather than a possibly-nil concrete pointer, so it
+		// can be passed straight into NewDetector's blocker parameter
+		// without the typed-nil hazard the old 4-arm switch existed to
+		// dodge: assigning a nil *BlockChecker into an interface produces a
+		// non-nil interface wrapping a nil pointer, but `var blocker
+		// anomalydomain.Blocker` left unassigned is a genuine nil interface
+		// Detector's own guard sees correctly. baselineStore is still a
+		// concrete pointer (its adapter type isn't behind a shared
+		// interface), so it keeps its explicit nil branch.
+		if baselineStore != nil {
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blocker, onAnomalyWriteErr, time.Now, baselineStore)
+		} else {
+			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blocker, onAnomalyWriteErr, time.Now, nil)
 		}
 
 		if err := anomalyDetector.LoadBaselines(); err != nil {
@@ -648,6 +654,7 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	var credentialHandler *credentialadapter.Handler
+	var jwksHandler *credentialadapter.JWKSHandler
 	var revokerCloser io.Closer
 	var refreshStoreCloser io.Closer
 	var oidcCloser io.Closer
@@ -697,13 +704,16 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		accessTokenTTL := time.Duration(cfg.Credential.AccessTokenTTLSeconds) * time.Second
 		refreshTokenTTL := time.Duration(cfg.Credential.RefreshTokenTTLSeconds) * time.Second
-		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, accessTokenTTL)
+		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, cfg.Credential.PreviousSigningKeyFiles, accessTokenTTL)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
 			os.Exit(1)
 		}
 		if cfg.Credential.SigningKeyFile == "" {
 			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file to run more than one")
+		}
+		if len(cfg.Credential.PreviousSigningKeyFiles) > 0 {
+			logger.Info("credential signing-key rotation window active", "previous_keys", len(cfg.Credential.PreviousSigningKeyFiles))
 		}
 
 		var revoker credentialdomain.Revoker
@@ -735,6 +745,7 @@ func runServe(logger *slog.Logger, args []string) {
 		revocation := credentialusecase.NewRevocationService(revoker, refreshStore)
 		refresh := credentialusecase.NewRefreshService(refreshStore, revoker, issuerVerifier, refreshTokenTTL, time.Now)
 		credentialHandler = credentialadapter.NewHandler(issuance, revocation, refresh, logger, revokeAuthorizer, func(identity string) (string, bool) { return identityTenantLookup(identity) }, mtlsHeader, accessTokenTTL)
+		jwksHandler = credentialadapter.NewJWKSHandler(issuerVerifier, logger)
 		// verification already satisfies proxyadapter.Authenticator directly
 		// -- both return (identity, tenant, err) -- so no adapter shim is
 		// needed to bridge the two.
@@ -742,12 +753,13 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	// Declared as the interface type and left at its zero value (a true
-	// nil interface) unless blockChecker is a guaranteed-non-nil
-	// *BlockChecker -- same typed-nil avoidance as anomalySource/
-	// federationSource below, and the liveSink switch above.
+	// nil interface) unless blocker is non-nil -- same typed-nil avoidance
+	// as anomalySource/federationSource below. blocker already IS an
+	// interface (in-memory or Postgres-backed), so this is a plain nil
+	// check, not the wrap-a-concrete-pointer dance the old code needed.
 	var autoBlockChecker proxyadapter.AutoBlockChecker
-	if blockChecker != nil {
-		autoBlockChecker = blockChecker
+	if blocker != nil {
+		autoBlockChecker = blocker
 	}
 	// mtlsHeader is "" unless bootstrap_source is mtls; when set, the proxy
 	// strips it before forwarding so the untrusted upstream never learns
@@ -785,8 +797,8 @@ func runServe(logger *slog.Logger, args []string) {
 			federationSource = correlatedBuffer
 		}
 		var blockedSource dashboardadapter.BlockedSource
-		if blockChecker != nil {
-			blockedSource = blockChecker
+		if blocker != nil {
+			blockedSource = blocker
 		}
 
 		// scopeResolver derives each dashboard request's tenant filter from
@@ -1002,6 +1014,9 @@ func runServe(logger *slog.Logger, args []string) {
 	extraRoutes["/credentials/token"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleToken)
 	extraRoutes["/credentials/revoke"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRevoke)
 	extraRoutes["/credentials/refresh"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, credentialHandler.HandleRefresh)
+	// jwksHandler is nil when credential_issuance is off; credentialsRouteOrNotFound
+	// never invokes it in that case (returns 404), same guard as the routes above.
+	extraRoutes["/credentials/jwks"] = credentialsRouteOrNotFound(credentialIssuanceEnabled, jwksHandlerFunc(jwksHandler))
 	// Unconditional on web_ui, unlike the dashboard route above -- a peer
 	// must be able to reach this even when the local dashboard UI is off,
 	// matching /credentials/token's unconditional-when-flag-on pattern.
@@ -1116,6 +1131,11 @@ func runServe(logger *slog.Logger, args []string) {
 			if anomalyBaselineStoreCloser != nil {
 				if err := anomalyBaselineStoreCloser.Close(); err != nil {
 					logger.Error("anomaly baseline store shutdown failed", "error", err)
+				}
+			}
+			if blockStoreCloser != nil {
+				if err := blockStoreCloser.Close(); err != nil {
+					logger.Error("anomaly block store shutdown failed", "error", err)
 				}
 			}
 			if oidcCloser != nil {
@@ -1579,6 +1599,18 @@ func credentialsRouteOrNotFound(enabled bool, fn http.HandlerFunc) http.HandlerF
 	return routeOrNotFound(enabled, fn).ServeHTTP
 }
 
+// jwksHandlerFunc adapts a possibly-nil *JWKSHandler to an http.HandlerFunc
+// -- nil when credential_issuance is off, in which case
+// credentialsRouteOrNotFound's enabled=false guard means this func is
+// never actually invoked (so the nil deref inside is unreachable), same
+// pattern as the credentialHandler method values above.
+func jwksHandlerFunc(h *credentialadapter.JWKSHandler) http.HandlerFunc {
+	if h == nil {
+		return func(w http.ResponseWriter, r *http.Request) { http.Error(w, "not found", http.StatusNotFound) }
+	}
+	return h.ServeHTTP
+}
+
 // noiseRouteHandler answers well-known browser/crawler request paths
 // (robots.txt, apple-touch-icon*, the Chrome DevTools well-known probe,
 // sitemap.xml) that will never be a legitimate MCP JSON-RPC call under any
@@ -1838,9 +1870,13 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		provisioning.SetBindingStore(scimusecase.NewBindingStore())
 		_ = scimadapter.NewHandler(provisioning, provisioning, scimToken, logger)
 	}
-	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.SigningKeyFile != "" {
-		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, time.Duration(cfg.Credential.AccessTokenTTLSeconds)*time.Second); err != nil {
-			logger.Error("failed to load credential signing key file", "error", err)
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && (cfg.Credential.SigningKeyFile != "" || len(cfg.Credential.PreviousSigningKeyFiles) > 0) {
+		// NewJWTIssuerVerifier loads and parses both the primary signing
+		// key and every previous (verification-only) rotation key, so this
+		// one construction validates the whole set -- fail loud before
+		// serve, matching every other optional file-based config check.
+		if _, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, cfg.Credential.PreviousSigningKeyFiles, time.Duration(cfg.Credential.AccessTokenTTLSeconds)*time.Second); err != nil {
+			logger.Error("failed to load credential signing key file(s)", "error", err)
 			os.Exit(1)
 		}
 	}

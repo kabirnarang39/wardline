@@ -124,6 +124,18 @@ type CredentialConfig struct {
 	// construction time via credentialadapter.NewJWTIssuerVerifier.
 	SigningKeyFile string `yaml:"signing_key_file"`
 
+	// PreviousSigningKeyFiles optionally lists PEM RSA private keys whose
+	// public halves are accepted for VERIFICATION ONLY -- the key-rotation
+	// window. An operator rotates by generating a new key, moving the old
+	// signing_key_file path into this list, pointing signing_key_file at
+	// the new key, and redeploying: tokens signed under the old key keep
+	// verifying (up to their own TTL) while new tokens use the new key.
+	// Once the old key's longest-lived outstanding token has expired
+	// (bounded by access_token_ttl_seconds/refresh_token_ttl_seconds),
+	// drop it from this list. Empty (the default) is the no-rotation-in-
+	// progress state. See README.md "Credential issuance".
+	PreviousSigningKeyFiles []string `yaml:"previous_signing_key_files"`
+
 	// BootstrapSource selects which Bootstrapper adapter authenticates a
 	// credential exchange: "presharedsecret" (default, credentials.yaml
 	// via IdentitiesFile), "oidc" (OIDC ID token via OIDC below), or
