@@ -239,41 +239,43 @@ button, input {
   flex-direction: column;
   width: 256px;
   flex-shrink: 0;
-  padding: 24px 16px;
+  padding: 20px 14px;
   background: var(--surface);
   border-right: 1px solid var(--border);
   gap: 4px;
 }
 
-.sidebar-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+.sidebar-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 20px; }
 .sidebar-group:last-of-type { margin-bottom: 0; }
 
 .sidebar-group-label {
   font-family: var(--font-body);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
-  padding: 0 12px 6px;
+  opacity: 0.75;
+  padding: 0 10px 6px;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-family: var(--font-heading);
-  font-weight: 600;
-  font-size: 16px;
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
   color: var(--text);
-  padding: 8px 12px 24px;
+  padding: 4px 10px 18px;
 }
 
 .brand-mark {
   display: inline-block;
-  width: 9px;
-  height: 26px;
-  border-radius: var(--radius-pill);
+  width: 8px;
+  height: 20px;
+  border-radius: 2px;
   background: linear-gradient(180deg, var(--status-info), var(--status-ok));
   animation: brand-blink 250ms var(--ease-out) 1;
 }
@@ -290,12 +292,13 @@ button, input {
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  min-height: 44px;
-  padding: 10px 14px;
+  min-height: 38px;
+  padding: 0 10px;
   background: transparent;
   border: none;
   border-radius: var(--radius-control);
@@ -304,17 +307,15 @@ button, input {
   color: var(--text-muted);
   font-family: var(--font-body);
   font-weight: 500;
-  font-size: 14px;
+  font-size: 13.5px;
   transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
+/* Visible control is the reference's 38px row; keep this project's 44px
+   minimum tap target via an invisible expanded hit area. */
+.nav-item::before { content: ''; position: absolute; inset: -3px 0; }
 
 .nav-item:hover { background: var(--surface-raised); color: var(--text); }
-/* Active row matches the reference: a soft blue-tinted panel with a
-   left accent bar and blue text/icon -- not the neutral hover-gray, which
-   read as a too-heavy filled box next to the prototype's subtle
-   highlight. The inset box-shadow gives the left accent without a
-   border-left's content shift. */
-.nav-item.is-active { background: var(--status-info-soft); color: var(--status-info); font-weight: 600; box-shadow: inset 2px 0 0 var(--status-info); }
+.nav-item.is-active { background: var(--surface-raised); color: var(--status-info); font-weight: 600; }
 
 .nav-item .nav-count {
   margin-left: auto;
@@ -328,7 +329,7 @@ button, input {
 }
 .nav-item.is-active .nav-count { color: var(--status-info); border-color: var(--status-info); }
 
-.nav-icon { width: 18px; height: 18px; flex-shrink: 0; }
+.nav-icon { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.9; }
 
 .live-indicator {
   margin-top: auto;
@@ -362,12 +363,14 @@ button, input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  /* Full-bleed the bottom divider to the sidebar edge and the right edge:
-     negative margins cancel .content's 40px horizontal padding, and matching
-     padding keeps the bar's own contents aligned with the grid. */
-  margin: 0 -40px;
-  padding: 12px 40px 16px;
+  gap: 14px;
+  /* Full-bleed the bottom divider to the sidebar/right edges and up to the
+     viewport top: negative margins cancel .content's 24px/28px padding on
+     three sides (top bar is .content's first child, not a true sibling —
+     see index.html), matching padding keeps the bar's own contents aligned
+     with the grid below. */
+  margin: -24px -28px 0;
+  padding: 12px 28px;
   background: var(--ink);
   border-bottom: 1px solid var(--border);
 }
@@ -376,9 +379,9 @@ button, input {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  max-width: 420px;
-  height: 38px;
+  flex: 1;
+  max-width: 380px;
+  min-height: 36px;
   padding: 0 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -480,12 +483,16 @@ button, input {
 }
 
 .identity-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-control);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
   background: var(--surface-raised);
   color: var(--status-info);
-  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
   flex-shrink: 0;
 }
 
@@ -509,14 +516,15 @@ button, input {
 }
 
 .identity-name {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
 }
 
 .identity-tenant-badge {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
+  font-family: var(--font-data);
 }
 
 /* Generic card system — later tasks build Overview's KPI tiles, Blocked's
@@ -552,7 +560,7 @@ button, input {
   min-width: 0;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 0 40px 40px;
+  padding: 24px 28px 60px;
 }
 
 .view[hidden] { display: none; }
@@ -566,7 +574,7 @@ button, input {
   margin-bottom: 20px;
 }
 
-h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
+h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 
 .view-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
 
@@ -756,11 +764,11 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
   border-radius: var(--radius-panel);
 }
 
-.audit-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 13px; }
+.audit-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 12.5px; }
 
 .audit-table th {
   text-align: left;
-  padding: 14px 16px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font-weight: 600;
@@ -773,7 +781,7 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
   font-size: 10.5px;
 }
 
-.audit-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
+.audit-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
 .audit-table tr:last-child td { border-bottom: none; }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
@@ -994,15 +1002,16 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
+  gap: 6px;
+  min-height: 34px;
   padding: 0 14px;
-  background: #2563EB;
-  color: #FFFFFF;
-  border: none;
+  background: var(--status-info);
+  color: #06111F;
+  border: 1px solid var(--status-info);
   border-radius: var(--radius-control);
   font-family: var(--font-body);
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
   cursor: pointer;
   transition: background-color var(--duration-standard) var(--ease-hover);
 }
@@ -1140,25 +1149,23 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
 .status-band {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 46px;
-  padding: 0 18px;
-  margin-bottom: 20px;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
   border-radius: var(--radius-panel);
   /* State-colored, subtle: currentColor is the state text color (green/amber/
      red), mixed down to a faint border that reads against the soft fill. */
   border: 1px solid;
-  border-color: color-mix(in srgb, currentColor 28%, transparent);
-  font-family: var(--font-heading);
-  font-weight: 500;
-  font-size: 14px;
+  border-color: color-mix(in srgb, currentColor 35%, transparent);
+  font-weight: 600;
+  font-size: 13px;
 }
 
 .status-band[data-state="nominal"] { background: var(--status-ok-soft); color: var(--status-ok); }
 .status-band[data-state="attention"] { background: var(--status-warn-soft); color: var(--status-warn); }
 .status-band[data-state="action-needed"] { background: var(--status-critical-soft); color: var(--status-critical); }
 
-.status-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 
 .status-band.is-transitioning .status-dot {
   animation: status-pulse 600ms var(--ease-hover) 3;
@@ -1182,8 +1189,8 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
   padding: 16px;
 }
 
-.kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
-.kpi-value { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-data); font-size: 22px; font-weight: 600; color: var(--text); }
+.kpi-label { font-size: 11px; color: var(--text-muted); font-weight: 600; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
+.kpi-value { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-family: var(--font-data); font-size: 26px; font-weight: 600; color: var(--text); }
 
 .kpi-delta {
   font-family: var(--font-mono);
@@ -1291,7 +1298,7 @@ h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
   .content { padding: 20px; margin: 0; }
   /* Match the reduced content padding so the full-bleed topbar divider
      doesn't overflow into horizontal scroll on narrow viewports. */
-  .topbar { margin: 0 -20px; padding-left: 20px; padding-right: 20px; }
+  .topbar { margin: -20px -20px 0; padding-left: 20px; padding-right: 20px; }
 }
 
 @media (max-width: 480px) {
