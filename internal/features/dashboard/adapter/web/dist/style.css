@@ -759,6 +759,12 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
 }
+/* A real class, not the reference's own inline style="margin-bottom:14px" --
+   this dashboard's CSP (default-src 'self', no style-src exemption) silently
+   discards inline style="" attributes at runtime, the same gap the
+   Credentials view's own #revoke-identity-input hit earlier. Used to space
+   two stacked panels (e.g. Budget's Default limit / Overrides) apart. */
+.panel-spaced { margin-bottom: 14px; }
 
 .panel-body { padding: 15px; }
 .panel-body.flush { padding: 0; }
