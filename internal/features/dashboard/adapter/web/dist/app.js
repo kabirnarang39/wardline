@@ -792,7 +792,7 @@ function updateLivePulse() {
 function renderOverview() {
   const subtitle = document.getElementById('overview-subtitle');
   if (subtitle) {
-    subtitle.textContent = `${state.entries.length.toLocaleString()} buffered event${state.entries.length === 1 ? '' : 's'} — not a full historical view`;
+    subtitle.textContent = 'Live activity across all tenants';
   }
   renderStatusBand();
   renderKPIs();
