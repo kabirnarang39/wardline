@@ -264,15 +264,15 @@ button, input {
   gap: 10px;
   font-family: var(--font-heading);
   font-weight: 700;
-  font-size: 20px;
+  font-size: 18px;
   color: var(--text);
   padding: 8px 12px 24px;
 }
 
 .brand-mark {
   display: inline-block;
-  width: 6px;
-  height: 28px;
+  width: 9px;
+  height: 26px;
   border-radius: var(--radius-pill);
   background: linear-gradient(180deg, var(--status-info), var(--status-ok));
   animation: brand-blink 250ms var(--ease-out) 1;
@@ -304,12 +304,17 @@ button, input {
   color: var(--text-muted);
   font-family: var(--font-body);
   font-weight: 500;
-  font-size: 15px;
+  font-size: 14px;
   transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
 }
 
 .nav-item:hover { background: var(--surface-raised); color: var(--text); }
-.nav-item.is-active { background: var(--surface-raised); color: var(--status-info); font-weight: 600; }
+/* Active row matches the reference: a soft blue-tinted panel with a
+   left accent bar and blue text/icon -- not the neutral hover-gray, which
+   read as a too-heavy filled box next to the prototype's subtle
+   highlight. The inset box-shadow gives the left accent without a
+   border-left's content shift. */
+.nav-item.is-active { background: var(--status-info-soft); color: var(--status-info); font-weight: 600; box-shadow: inset 2px 0 0 var(--status-info); }
 
 .nav-item .nav-count {
   margin-left: auto;
@@ -323,7 +328,7 @@ button, input {
 }
 .nav-item.is-active .nav-count { color: var(--status-info); border-color: var(--status-info); }
 
-.nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; }
 
 .live-indicator {
   margin-top: auto;
@@ -368,8 +373,8 @@ button, input {
   align-items: center;
   gap: 8px;
   width: 100%;
-  max-width: 384px;
-  height: 36px;
+  max-width: 420px;
+  height: 38px;
   padding: 0 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -471,12 +476,12 @@ button, input {
 }
 
 .identity-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
   background: var(--surface-raised);
   color: var(--status-info);
-  padding: 4px;
+  padding: 8px;
   flex-shrink: 0;
 }
 
