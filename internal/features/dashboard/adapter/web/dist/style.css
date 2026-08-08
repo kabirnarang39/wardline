@@ -1231,31 +1231,6 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
    yet" state, not a placeholder. */
 .pulse-chart { display: block; width: 100%; height: 56px; margin-bottom: 12px; }
 
-.pulse-toggle {
-  position: relative;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-control);
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-/* Small, recessive control (the reference has none) but still a 44px tap
-   target via the invisible expanded hit area. */
-.pulse-toggle::before { content: ''; position: absolute; inset: -8px; }
-.pulse-toggle:hover { color: var(--text); background: var(--surface-raised); }
-.pulse-toggle svg { width: 15px; height: 15px; }
-.pulse-toggle:active {
-  transform: scale(0.97);
-  transition: transform var(--duration-micro) var(--ease-hover);
-}
-@media (prefers-reduced-motion: reduce) {
-  .pulse-toggle:active { transform: none; }
-}
 
 /* Page-load stagger -- Overview cards only, once per load, never per-poll-tick */
 .stagger-in {

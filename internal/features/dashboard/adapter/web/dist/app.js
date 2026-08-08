@@ -738,7 +738,6 @@ function renderNeedsReview() {
     : `${state.anomalies.length} anomal${state.anomalies.length === 1 ? 'y' : 'ies'} and ${state.blocked.length} blocked identit${state.blocked.length === 1 ? 'y' : 'ies'} on record.`;
 }
 
-let pulsePaused = false;
 
 // pulseHistory holds the last PULSE_HISTORY_LEN real req/s samples (one
 // per updateLivePulse tick) driving .pulse-chart's sparkline -- a real
@@ -770,7 +769,6 @@ function renderPulseChart() {
 }
 
 function updateLivePulse() {
-  if (pulsePaused) return;
   const now = Date.now();
   const windowEntries = state.entries.filter((e) => new Date(e.Timestamp).getTime() >= now - 10000);
   const rate = windowEntries.length / 10;
@@ -779,21 +777,6 @@ function updateLivePulse() {
   pulseHistory.push(rate);
   if (pulseHistory.length > PULSE_HISTORY_LEN) pulseHistory.shift();
   renderPulseChart();
-}
-
-function wireLivePulseToggle() {
-  const btn = document.getElementById('pulse-toggle');
-  btn.addEventListener('click', () => {
-    pulsePaused = !pulsePaused;
-    btn.innerHTML = pulsePaused ? '<span data-icon="play" aria-hidden="true"></span>' : '<span data-icon="pause" aria-hidden="true"></span>';
-    btn.setAttribute('aria-label', pulsePaused ? 'Resume live updates' : 'Pause live updates');
-    mountIcons(btn);
-    if (pulsePaused) {
-      document.getElementById('pulse-rate').innerHTML = 'Paused';
-    } else {
-      updateLivePulse();
-    }
-  });
 }
 
 function renderOverview() {
@@ -1488,7 +1471,6 @@ function init() {
   wireComplianceView();
   wireTopbar();
   wireThemeToggle();
-  wireLivePulseToggle();
   document.getElementById('needs-review-cta').addEventListener('click', () => switchView('anomalies'));
   loadStatus();
   pollAudit();
