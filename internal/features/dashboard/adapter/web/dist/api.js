@@ -56,6 +56,32 @@ export async function writePolicy(rules, def) {
   return { ok: false, status: res.status, message };
 }
 
+// writeBudget PUTs the Budget editor's edited default limit and
+// tenant/tool overrides to /dashboard/api/budget -- "Validate & apply"
+// as one action, same shape/error-handling convention as writePolicy.
+export async function writeBudget(def, tenantOverrides, toolOverrides) {
+  const res = await fetch('api/budget', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ default: def, tenant_overrides: tenantOverrides, tool_overrides: toolOverrides }),
+  });
+  if (res.status === 200) {
+    return { ok: true, budget: await res.json() };
+  }
+  if (res.status === 403) {
+    return { ok: false, status: res.status, message: 'You don’t have permission to edit budget (requires config:edit).' };
+  }
+  if (res.status === 404) {
+    return { ok: false, status: res.status, message: 'Budget editor is not available on this server.' };
+  }
+  let message = `save failed: ${res.status}`;
+  try {
+    const body = await res.json();
+    if (body && body.error) message = body.error;
+  } catch { /* non-JSON error body, keep the generic message */ }
+  return { ok: false, status: res.status, message };
+}
+
 export async function fetchStatus() {
   const res = await fetch('api/status');
   if (!res.ok) {

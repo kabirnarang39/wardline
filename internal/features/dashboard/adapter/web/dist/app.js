@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, fetchReloadHistory } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -1144,32 +1144,110 @@ async function renderRBAC() {
 // task-8-budget-screen-brief.md), so it's fetched once per view-switch,
 // same posture as renderRBAC/loadPolicy/loadStatus above, not polled on
 // an interval like Activity/Anomalies/Federation.
+// budgetOverrides is the Budget editor's live working state (each entry
+// carries its own scope: "tenant"|"tool", split back into separate
+// tenant_overrides/tool_overrides arrays only at write time) --
+// mirrors policyRules' exact "seeded from the real GET, mutated
+// locally, sent on Validate & apply" contract.
+let budgetOverrides = [];
+
 async function renderBudget() {
-  const grid = document.getElementById('budget-default-grid');
-  const rows = document.getElementById('budget-override-rows');
-  const empty = document.getElementById('budget-override-empty');
+  const requestsInput = document.getElementById('budget-default-requests');
+  const windowInput = document.getElementById('budget-default-window');
   try {
     const { default: def, overrides } = await fetchBudget();
-    grid.innerHTML = `
-      <div><dt>Requests / window</dt><dd>${def.requests_per_window}</dd></div>
-      <div><dt>Window</dt><dd>${def.window_seconds}s</dd></div>
-    `;
-    rows.innerHTML = (overrides || []).map((o) => `
-      <tr>
-        <td><span class="pill ${o.scope === 'tenant' ? 'info' : 'muted'}">${escapeHTML(o.scope)}</span></td>
-        <td>${escapeHTML(o.name)}</td>
-        <td>${o.requests_per_window}</td>
-        <td>${o.window_seconds}s</td>
-      </tr>
-    `).join('');
-    empty.hidden = (overrides || []).length > 0;
+    requestsInput.value = def.requests_per_window;
+    windowInput.value = def.window_seconds;
+    budgetOverrides = (overrides || []).map((o) => ({ scope: o.scope, name: o.name, requestsPerWindow: o.requests_per_window, windowSeconds: o.window_seconds }));
+    renderBudgetOverrideRows();
   } catch (err) {
     console.error('budget fetch failed:', err);
-    grid.innerHTML = '';
-    rows.innerHTML = '';
-    empty.hidden = true;
-    grid.textContent = 'Failed to load budget data — try refreshing.';
+    requestsInput.value = '';
+    windowInput.value = '';
+    budgetOverrides = [];
+    renderBudgetOverrideRows();
   }
+}
+
+function renderBudgetOverrideRows() {
+  const tbody = document.getElementById('budget-override-rows');
+  const empty = document.getElementById('budget-override-empty');
+
+  if (budgetOverrides.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = budgetOverrides.map((o, i) => `
+    <tr>
+      <td>
+        <select class="budget-override-select" data-field="scope" data-index="${i}" aria-label="Override ${i + 1} scope">
+          <option value="tenant" ${o.scope === 'tenant' ? 'selected' : ''}>tenant</option>
+          <option value="tool" ${o.scope === 'tool' ? 'selected' : ''}>tool</option>
+        </select>
+      </td>
+      <td><input type="text" class="budget-override-input" data-field="name" data-index="${i}" value="${escapeHTML(o.name)}" placeholder="name" aria-label="Override ${i + 1} value"></td>
+      <td><input type="number" min="1" class="budget-override-input" data-field="requestsPerWindow" data-index="${i}" value="${o.requestsPerWindow}" aria-label="Override ${i + 1} limit"></td>
+      <td><input type="number" min="1" class="budget-override-input" data-field="windowSeconds" data-index="${i}" value="${o.windowSeconds}" aria-label="Override ${i + 1} window seconds"></td>
+      <td class="policy-rule-actions">
+        <button type="button" class="policy-rule-delete" data-index="${i}" aria-label="Delete override ${i + 1}"><span data-icon="trash" aria-hidden="true"></span></button>
+      </td>
+    </tr>
+  `).join('');
+  mountIcons(tbody);
+
+  tbody.querySelectorAll('.budget-override-select').forEach((select) => {
+    select.addEventListener('change', () => {
+      budgetOverrides[Number(select.dataset.index)].scope = select.value;
+    });
+  });
+  tbody.querySelectorAll('.budget-override-input').forEach((input) => {
+    input.addEventListener('input', () => {
+      const field = input.dataset.field;
+      const value = field === 'name' ? input.value : Number(input.value);
+      budgetOverrides[Number(input.dataset.index)][field] = value;
+    });
+  });
+  tbody.querySelectorAll('.policy-rule-delete').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      budgetOverrides.splice(Number(btn.dataset.index), 1);
+      renderBudgetOverrideRows();
+    });
+  });
+}
+
+function wireBudgetEditor() {
+  document.getElementById('budget-add-override').addEventListener('click', () => {
+    budgetOverrides.push({ scope: 'tenant', name: '', requestsPerWindow: 1, windowSeconds: 60 });
+    renderBudgetOverrideRows();
+    const inputs = document.querySelectorAll('#budget-override-rows tr:last-child input');
+    if (inputs.length) inputs[0].focus();
+  });
+
+  document.getElementById('budget-validate-apply').addEventListener('click', async () => {
+    const btn = document.getElementById('budget-validate-apply');
+    const result = document.getElementById('budget-write-result');
+    btn.disabled = true;
+    result.hidden = true;
+    const def = {
+      requests_per_window: Number(document.getElementById('budget-default-requests').value),
+      window_seconds: Number(document.getElementById('budget-default-window').value),
+    };
+    const toWire = (scope) => budgetOverrides.filter((o) => o.scope === scope).map((o) => ({ scope: o.scope, name: o.name, requests_per_window: o.requestsPerWindow, window_seconds: o.windowSeconds }));
+    const res = await writeBudget(def, toWire('tenant'), toWire('tool'));
+    btn.disabled = false;
+    result.hidden = false;
+    if (res.ok) {
+      result.textContent = 'Applied — budget reloaded.';
+      result.style.color = 'var(--status-ok)';
+      await renderBudget();
+    } else {
+      result.textContent = res.message;
+      result.style.color = 'var(--status-critical)';
+    }
+  });
 }
 
 function formatUptime(totalSeconds) {
@@ -1300,6 +1378,7 @@ function init() {
   wireActivityInteractions();
   wireCredentials();
   wirePolicyEditor();
+  wireBudgetEditor();
   wireTopbar();
   wireThemeToggle();
   wireLivePulseToggle();

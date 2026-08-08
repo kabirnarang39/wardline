@@ -1405,3 +1405,55 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 
 #policy-write-result { margin-top: 12px; font-size: 13px; font-weight: 600; }
 #policy-write-result[hidden] { display: none; }
+
+/* Budget view: editable default-limit fields + override table, same
+   panel/table-wrap/footer treatment as Policy's editor above. */
+.budget-default-fields {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 24px;
+}
+.budget-default-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.budget-default-fields input {
+  min-height: 40px;
+  width: 140px;
+  padding: 0 12px;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 18px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.budget-default-fields input:focus { border-color: var(--status-info); outline: none; }
+
+.budget-override-input,
+.budget-override-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.budget-override-input:focus,
+.budget-override-select:focus { border-color: var(--status-info); outline: none; }
+
+#budget-write-result { margin-top: 12px; font-size: 13px; font-weight: 600; }
+#budget-write-result[hidden] { display: none; }
