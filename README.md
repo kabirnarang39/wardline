@@ -1363,10 +1363,11 @@ Most of `internal/platform/config.Config` is exposed under `values.yaml`'s
 `wardline:` key — feature flags, budget limits, tracing, Postgres
 storage, and (as of the HA-deployment cycle) `credential.signing_key_file`
 / `credential.identities_file` and `shutdown_delay_seconds` all work the
-same way they do outside Kubernetes. Two blocks are not yet exposed
-there: `rbac:` and `anomaly:` — set either via a mounted/overridden
-config file if you need them on Kubernetes today; wiring them into
-`values.yaml` is deferred to a future chart cycle.
+same way they do outside Kubernetes. The `rbac:` and `anomaly:` blocks are
+also exposed: set `wardline.rbac` / `wardline.anomaly` to their full config
+maps (rendered into `wardline.yaml` verbatim) and set the matching feature
+flags — for `rbac`, mount the roles/bindings file via
+`extraVolumes`/`extraVolumeMounts` and point `rbac.config_file` at it.
 
 **Mounting a signing key or identities file:** `wardline.credentialSigningKeyFile`
 and `wardline.credentialIdentitiesFile` only set the config *paths* — you
