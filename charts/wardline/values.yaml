@@ -105,6 +105,7 @@ wardline:
   # is on. See README "gRPC transport".
   grpcListen: ""       # e.g. ":8081"
   grpcUpstream: ""     # e.g. "your-grpc-upstream:50051"
+  grpcUpstreamTls: false   # dial grpcUpstream over TLS (system root pool) instead of plaintext
   # Extra credential.* fields beyond signing_key_file/identities_file above,
   # rendered verbatim (mirrors config.CredentialConfig): bootstrap_source
   # and the oidc/mtls sub-blocks. Mount any referenced files via

@@ -305,20 +305,25 @@ type Config struct {
 	// ignored otherwise. Unlike Upstream these are plain gRPC targets, not
 	// URLs -- the gRPC transport is plaintext to the upstream today (TLS to
 	// upstream is a deliberate follow-up).
-	GRPCListen    string           `yaml:"grpc_listen"`
-	GRPCUpstream  string           `yaml:"grpc_upstream"`
-	PolicyBackend string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
-	Audit         AuditConfig      `yaml:"audit"`
-	Budget        BudgetConfig     `yaml:"budget"`
-	Tracing       TracingConfig    `yaml:"tracing"`
-	Credential    CredentialConfig `yaml:"credential"`
-	RBAC          RBACConfig       `yaml:"rbac"`
-	Scim          ScimConfig       `yaml:"scim"`
-	Anomaly       AnomalyConfig    `yaml:"anomaly"`
-	Federation    FederationConfig `yaml:"federation"`
-	Compliance    ComplianceConfig `yaml:"compliance"`
-	Retention     RetentionConfig  `yaml:"retention"`
-	Features      map[string]bool  `yaml:"features"`
+	GRPCListen   string `yaml:"grpc_listen"`
+	GRPCUpstream string `yaml:"grpc_upstream"`
+	// GRPCUpstreamTLS dials the gRPC upstream over TLS (verified against
+	// the host's system root pool, server name from GRPCUpstream) instead
+	// of plaintext. Default false preserves the plaintext-to-mesh behavior;
+	// set true when Wardline talks directly to a TLS-terminating upstream.
+	GRPCUpstreamTLS bool             `yaml:"grpc_upstream_tls"`
+	PolicyBackend   string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
+	Audit           AuditConfig      `yaml:"audit"`
+	Budget          BudgetConfig     `yaml:"budget"`
+	Tracing         TracingConfig    `yaml:"tracing"`
+	Credential      CredentialConfig `yaml:"credential"`
+	RBAC            RBACConfig       `yaml:"rbac"`
+	Scim            ScimConfig       `yaml:"scim"`
+	Anomaly         AnomalyConfig    `yaml:"anomaly"`
+	Federation      FederationConfig `yaml:"federation"`
+	Compliance      ComplianceConfig `yaml:"compliance"`
+	Retention       RetentionConfig  `yaml:"retention"`
+	Features        map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
 	// requests normally after receiving SIGTERM/SIGINT before it begins
