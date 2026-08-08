@@ -263,8 +263,8 @@ button, input {
   align-items: center;
   gap: 10px;
   font-family: var(--font-heading);
-  font-weight: 700;
-  font-size: 18px;
+  font-weight: 600;
+  font-size: 16px;
   color: var(--text);
   padding: 8px 12px 24px;
 }
@@ -561,7 +561,7 @@ button, input {
   margin-bottom: 20px;
 }
 
-h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
+h1 { font-size: 21px; font-weight: 600; margin: 0; color: var(--text); }
 
 .view-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
 
@@ -1133,13 +1133,13 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 56px;
-  padding: 0 20px;
+  min-height: 46px;
+  padding: 0 18px;
   margin-bottom: 20px;
   border-radius: var(--radius-panel);
   font-family: var(--font-heading);
   font-weight: 600;
-  font-size: 16px;
+  font-size: 13.5px;
 }
 
 .status-band[data-state="nominal"] { background: var(--status-ok-soft); color: var(--status-ok); }
@@ -1171,7 +1171,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 }
 
 .kpi-label { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
-.kpi-value { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-data); font-size: 24px; font-weight: 700; color: var(--text); }
+.kpi-value { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-data); font-size: 22px; font-weight: 600; color: var(--text); }
 
 .kpi-delta {
   font-family: var(--font-mono);
