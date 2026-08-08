@@ -773,6 +773,7 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .audit-table tr:last-child td { border-bottom: none; }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
+.audit-table td.tool-cell { color: var(--text-muted); }
 
 /* deny and blocked deliberately use two DIFFERENT red tokens, not the same
    one -- v2's own final review caught deny (#DC2626) and blocked
@@ -902,6 +903,8 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
 .expand-toggle svg {
   width: 16px;
   height: 16px;
+  transform: rotate(90deg);
+  transition: transform 150ms var(--ease-hover);
 }
 
 .expand-toggle:hover,
@@ -910,12 +913,13 @@ h1 { font-size: 24px; font-weight: 700; margin: 0; color: var(--text); }
   color: var(--text);
 }
 
-.expand-toggle.is-open {
-  transform: rotate(90deg);
+.expand-toggle.is-open svg {
+  transform: rotate(270deg);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .expand-toggle {
+  .expand-toggle,
+  .expand-toggle svg {
     transition: none;
   }
 }
