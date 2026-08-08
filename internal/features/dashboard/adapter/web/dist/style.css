@@ -538,6 +538,10 @@ button, input {
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-resting);
   padding: 24px;
+  /* Same reasoning as .panel's own overflow:hidden -- clips
+     .panel-title-bar/.card-title's square-cornered background to the
+     card's rounded boundary instead of letting it poke past. */
+  overflow: hidden;
 }
 
 /* Overview's 3 cards additionally carry `.panel` (identical
@@ -758,6 +762,11 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
+  /* Without this, .panel-title-bar's own square-cornered background
+     (and any other full-width child with its own background) pokes past
+     the panel's rounded corners at the top edge -- clip children to the
+     panel's own rounded boundary instead. */
+  overflow: hidden;
 }
 /* A real class, not the reference's own inline style="margin-bottom:14px" --
    this dashboard's CSP (default-src 'self', no style-src exemption) silently
