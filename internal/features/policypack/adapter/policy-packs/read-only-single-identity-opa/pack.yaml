@@ -1,0 +1,5 @@
+name: read-only-single-identity-opa
+description: "OPA/Rego equivalent of read-only-single-identity: one identity allowed only read/list-shaped tools, everything else denied. Rename the placeholder identity and edit the tool list for your MCP server before use."
+backend: opa
+policy_file: policy.rego
+version: "1"

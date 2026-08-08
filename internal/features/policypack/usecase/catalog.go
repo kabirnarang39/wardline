@@ -16,7 +16,12 @@ type packYAML struct {
 	Description string `yaml:"description"`
 	Backend     string `yaml:"backend"`
 	PolicyFile  string `yaml:"policy_file"`
+	Version     string `yaml:"version"`
 }
+
+// defaultPackVersion is what an absent pack.yaml "version:" key means --
+// every pack written before that field existed.
+const defaultPackVersion = "1"
 
 // Catalog loads policy packs from fsys, where each pack is a top-level
 // directory containing a pack.yaml manifest and the policy file it names.
@@ -66,6 +71,33 @@ func (c *Catalog) Get(name string) (domain.Pack, []byte, error) {
 	return c.loadPack(name)
 }
 
+// ListLenient is List's fault-tolerant sibling: a pack that fails to
+// load is skipped and its error collected, rather than aborting the
+// whole listing. Not used for the embedded catalog (List's strict
+// all-or-nothing behavior is what a build-time test catches a Wardline
+// packaging defect with) -- exists for MultiCatalog to use against a
+// non-Wardline-owned source (an operator's own -packs-dir), where one
+// broken pack must not hide every other pack in that directory.
+func (c *Catalog) ListLenient() (packs []domain.Pack, errs []error) {
+	entries, err := fs.ReadDir(c.fsys, ".")
+	if err != nil {
+		return nil, []error{fmt.Errorf("read pack catalog: %w", err)}
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pack, _, err := c.loadPack(e.Name())
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		packs = append(packs, pack)
+	}
+	sort.Slice(packs, func(i, j int) bool { return packs[i].Name < packs[j].Name })
+	return packs, errs
+}
+
 func (c *Catalog) loadPack(dirName string) (domain.Pack, []byte, error) {
 	manifestPath := path.Join(dirName, "pack.yaml")
 	data, err := fs.ReadFile(c.fsys, manifestPath)
@@ -81,10 +113,15 @@ func (c *Catalog) loadPack(dirName string) (domain.Pack, []byte, error) {
 	if err != nil {
 		return domain.Pack{}, nil, fmt.Errorf("read policy file for pack %q: %w", raw.Name, err)
 	}
+	version := raw.Version
+	if version == "" {
+		version = defaultPackVersion
+	}
 	return domain.Pack{
 		Name:           raw.Name,
 		Description:    raw.Description,
 		Backend:        raw.Backend,
 		PolicyFilename: raw.PolicyFile,
+		Version:        version,
 	}, policySource, nil
 }

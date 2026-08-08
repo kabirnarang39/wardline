@@ -1,0 +1,5 @@
+name: single-identity-full-access-cedar
+description: "Cedar equivalent of single-identity-full-access: one identity, full access, everything else denied. Rename the placeholder identity before use."
+backend: cedar
+policy_file: policy.cedar
+version: "1"

@@ -269,3 +269,149 @@ func TestRunPolicyPackInstall_UnknownName_Fails(t *testing.T) {
 		t.Error("expected no file to be written for an unknown pack name")
 	}
 }
+
+// capturingLogger returns a logger whose output lands in the returned
+// buffer, for tests asserting on a warning/error message's content --
+// discardLogger throws its output away, which is fine for tests that
+// only care about the return value.
+func capturingLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
+
+func TestRunPolicyPackCompose_TwoDisjointYAMLPacks_ConcatenatesRules(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
+	var out bytes.Buffer
+
+	ok := runPolicyPackComposeTo(&out, discardLogger(), catalog, []string{"single-identity-full-access", "read-only-single-identity"}, outputPath)
+	if !ok {
+		t.Fatalf("expected compose to succeed, output:\n%s", out.String())
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected the composed file to be written: %v", err)
+	}
+	// default comes from the LAST named pack (read-only-single-identity's
+	// own "default: deny" -- both packs happen to share it here, but the
+	// rule content proves both packs' rules made it into one file).
+	if !strings.Contains(string(data), `identity: REPLACE_WITH_YOUR_IDENTITY`) {
+		t.Errorf("expected composed rules from both packs, got:\n%s", data)
+	}
+	if !strings.Contains(string(data), "tool: '*'") {
+		t.Errorf("expected single-identity-full-access's wildcard-tool rule to survive composition, got:\n%s", data)
+	}
+}
+
+func TestRunPolicyPackCompose_DuplicateRuleKey_WarnsButSucceeds(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
+	logger, logBuf := capturingLogger()
+	var out bytes.Buffer
+
+	// single-identity-full-access composed with itself is the simplest
+	// guaranteed rule-key collision (every rule collides with itself).
+	ok := runPolicyPackComposeTo(&out, logger, catalog, []string{"single-identity-full-access", "single-identity-full-access"}, outputPath)
+	if !ok {
+		t.Fatalf("expected compose to still succeed despite a collision, log:\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "same (identity, tool, tenant)") {
+		t.Errorf("expected a collision warning in the log, got:\n%s", logBuf.String())
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Errorf("expected a file to still be written despite the warning: %v", err)
+	}
+}
+
+func TestRunPolicyPackCompose_NonYAMLPack_RefusesAndWritesNothing(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
+	logger, logBuf := capturingLogger()
+	var out bytes.Buffer
+
+	ok := runPolicyPackComposeTo(&out, logger, catalog, []string{"single-identity-full-access", "single-identity-full-access-opa"}, outputPath)
+	if ok {
+		t.Fatal("expected compose to refuse a non-yaml-backend pack")
+	}
+	if !strings.Contains(logBuf.String(), "only supports backend: yaml") {
+		t.Errorf("expected a clear backend-mismatch error, got:\n%s", logBuf.String())
+	}
+	if _, err := os.Stat(outputPath); err == nil {
+		t.Error("expected no file to be written when a named pack isn't yaml-backend")
+	}
+}
+
+func TestRunPolicyPackCompose_UnknownName_Fails(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
+	var out bytes.Buffer
+
+	ok := runPolicyPackComposeTo(&out, discardLogger(), catalog, []string{"single-identity-full-access", "does-not-exist"}, outputPath)
+	if ok {
+		t.Fatal("expected compose to fail for an unknown pack name")
+	}
+}
+
+func TestRunPolicyPackCompose_RefusesToOverwriteExistingFile(t *testing.T) {
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(outputPath, []byte("pre-existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+
+	ok := runPolicyPackComposeTo(&out, discardLogger(), catalog, []string{"single-identity-full-access", "read-only-single-identity"}, outputPath)
+	if ok {
+		t.Fatal("expected compose to refuse to overwrite an existing file")
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "pre-existing" {
+		t.Error("expected the existing file's content to be untouched")
+	}
+}
+
+func TestBuildPackCatalog_NoPacksDir_ReturnsEmbeddedOnly(t *testing.T) {
+	catalog := buildPackCatalog(discardLogger(), "")
+	packs, err := catalog.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(packs) != 12 {
+		t.Fatalf("expected exactly the 12 embedded packs with no -packs-dir, got %d: %+v", len(packs), packs)
+	}
+}
+
+func TestBuildPackCatalog_WithPacksDir_MergesExternalPacks(t *testing.T) {
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "my-custom-pack")
+	if err := os.MkdirAll(packDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.yaml"), []byte("name: my-custom-pack\ndescription: mine\nbackend: yaml\npolicy_file: policy.yaml\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "policy.yaml"), []byte("default: deny\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog := buildPackCatalog(discardLogger(), dir)
+	packs, err := catalog.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	found := false
+	for _, p := range packs {
+		if p.Name == "my-custom-pack" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected my-custom-pack to appear via -packs-dir, got %+v", packs)
+	}
+	if len(packs) != 13 {
+		t.Errorf("expected 12 embedded + 1 custom = 13 packs, got %d", len(packs))
+	}
+}
