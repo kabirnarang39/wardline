@@ -196,6 +196,64 @@ func TestPostgresWriter_QueryReturnsEntriesInRangeOrderedByTimestamp(t *testing.
 	}
 }
 
+func TestPostgresWriter_PurgeDeletesOnlyEntriesOlderThanCutoff(t *testing.T) {
+	dsn := testDSN(t)
+	dropTable(t, dsn)
+
+	w, err := adapter.NewPostgresWriter(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	entries := []domain.Entry{
+		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Identity: "old", Tool: "read_file", Decision: "allow"},
+		{Timestamp: time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC), Identity: "at-cutoff", Tool: "read_file", Decision: "allow"},
+		{Timestamp: time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC), Identity: "recent", Tool: "read_file", Decision: "allow"},
+	}
+	for _, e := range entries {
+		if err := w.Write(e); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+
+	cutoff := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	deleted, err := w.Purge(context.Background(), cutoff)
+	if err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected exactly 1 deleted row (only the one strictly before cutoff), got %d", deleted)
+	}
+
+	remaining, err := w.Query(context.Background(), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Query after Purge: %v", err)
+	}
+	if len(remaining) != 2 || remaining[0].Identity != "at-cutoff" || remaining[1].Identity != "recent" {
+		t.Fatalf("expected [at-cutoff, recent] to survive, got %+v", remaining)
+	}
+}
+
+func TestPostgresWriter_PurgeNothingToDeleteReturnsZero(t *testing.T) {
+	dsn := testDSN(t)
+	dropTable(t, dsn)
+
+	w, err := adapter.NewPostgresWriter(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	deleted, err := w.Purge(context.Background(), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted rows on an empty table, got %d", deleted)
+	}
+}
+
 // TestPostgresWriter_MissingTenantDefaultsOnRead proves the migration is
 // safe against a table that predates this task: it hand-creates the
 // pre-Task-20 schema (no tenant column) and inserts a row directly, the

@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -1309,6 +1309,79 @@ function switchView(name) {
   if (name === 'budget') renderBudget();
 }
 
+// wireComplianceView wires the Compliance view's manual "Query" button --
+// unlike every other view, this one has no default poll: an operator
+// picks a range and asks for it explicitly, matching the CLI's own
+// -from/-to required-range posture (see
+// docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md).
+// Defaults the range inputs to "last 24 hours" purely as a convenience
+// starting point, not an auto-query.
+function wireComplianceView() {
+  const fromInput = document.getElementById('compliance-from');
+  const toInput = document.getElementById('compliance-to');
+  const toLocalInputValue = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const now = new Date();
+  toInput.value = toLocalInputValue(now);
+  fromInput.value = toLocalInputValue(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+
+  document.getElementById('compliance-query').addEventListener('click', async () => {
+    const errorEl = document.getElementById('compliance-error');
+    const resultsEl = document.getElementById('compliance-results');
+    const unavailableEl = document.getElementById('compliance-unavailable');
+    errorEl.hidden = true;
+    resultsEl.hidden = true;
+    unavailableEl.hidden = true;
+
+    if (!fromInput.value || !toInput.value) {
+      errorEl.textContent = 'Both From and To are required.';
+      errorEl.hidden = false;
+      return;
+    }
+    // datetime-local has no timezone; treated as the browser's local
+    // time and converted to a real Date, then serialized as RFC3339 --
+    // the exact shape GET /dashboard/api/compliance parses.
+    const from = new Date(fromInput.value).toISOString();
+    const to = new Date(toInput.value).toISOString();
+
+    const res = await fetchCompliance(from, to);
+    if (!res.ok) {
+      if (res.status === 404) {
+        unavailableEl.hidden = false;
+      } else {
+        errorEl.textContent = res.message;
+        errorEl.hidden = false;
+      }
+      return;
+    }
+    renderComplianceManifest(res.manifest);
+    resultsEl.hidden = false;
+  });
+}
+
+function renderComplianceManifest(m) {
+  document.getElementById('compliance-summary').innerHTML = `
+    <div><dt>Audit entries</dt><dd>${m.audit_entry_count}</dd></div>
+    <div><dt>Unparsable audit lines skipped</dt><dd>${m.unparsable_audit_lines_skipped}</dd></div>
+    <div><dt>Anomaly entries</dt><dd>${m.anomaly_entry_count}</dd></div>
+    <div><dt>Unparsable anomaly lines skipped</dt><dd>${m.unparsable_anomaly_lines_skipped}</dd></div>
+  `;
+
+  const decisions = m.audit_decision_counts || {};
+  const decisionNames = Object.keys(decisions).sort();
+  document.getElementById('compliance-audit-decisions').innerHTML = decisionNames.length
+    ? decisionNames.map((name) => `<li><span>${escapeHTML(name)}</span><span>${decisions[name]}</span></li>`).join('')
+    : '<li>No audit entries in this range.</li>';
+
+  const kinds = m.anomaly_kind_counts || {};
+  const kindNames = Object.keys(kinds).sort();
+  document.getElementById('compliance-anomaly-kinds').innerHTML = kindNames.length
+    ? kindNames.map((name) => `<li><span>${escapeHTML(name)}</span><span>${kinds[name]}</span></li>`).join('')
+    : '<li>No anomalies in this range.</li>';
+}
+
 function wireNav() {
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
@@ -1412,6 +1485,7 @@ function init() {
   wireCredentials();
   wirePolicyEditor();
   wireBudgetEditor();
+  wireComplianceView();
   wireTopbar();
   wireThemeToggle();
   wireLivePulseToggle();

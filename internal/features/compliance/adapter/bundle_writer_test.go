@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -55,7 +57,7 @@ func TestWriteBundle_ContainsExpectedFiles(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := adapter.WriteBundle(&buf, manifest, auditEntries, anomalies, []byte("default: allow"), "yaml", []byte("bindings: []")); err != nil {
+	if err := adapter.WriteBundle(&buf, manifest, auditEntries, anomalies, []byte("default: allow"), "yaml", []byte("bindings: []"), nil, nil); err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
 
@@ -102,7 +104,7 @@ func keysOf(m map[string][]byte) []string {
 func TestWriteBundle_ChecksumsMatchRealSHA256(t *testing.T) {
 	manifest := domain.Manifest{WardlineVersion: "0.6.0"}
 	var buf bytes.Buffer
-	if err := adapter.WriteBundle(&buf, manifest, nil, nil, nil, "", nil); err != nil {
+	if err := adapter.WriteBundle(&buf, manifest, nil, nil, nil, "", nil, nil, nil); err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
 
@@ -123,7 +125,7 @@ func TestWriteBundle_ChecksumsMatchRealSHA256(t *testing.T) {
 func TestWriteBundle_OmitsAnomaliesAndRBACWhenNotProvided(t *testing.T) {
 	manifest := domain.Manifest{WardlineVersion: "0.6.0"}
 	var buf bytes.Buffer
-	if err := adapter.WriteBundle(&buf, manifest, nil, nil, []byte("default: allow"), "yaml", nil); err != nil {
+	if err := adapter.WriteBundle(&buf, manifest, nil, nil, []byte("default: allow"), "yaml", nil, nil, nil); err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
 
@@ -134,10 +136,81 @@ func TestWriteBundle_OmitsAnomaliesAndRBACWhenNotProvided(t *testing.T) {
 	if _, ok := files["rbac_snapshot"]; ok {
 		t.Error("expected rbac_snapshot to be omitted when no rbac source is passed")
 	}
+	if _, ok := files["identities.json"]; ok {
+		t.Error("expected identities.json to be omitted when no identities are passed")
+	}
+	if _, ok := files["checksums.txt.sig"]; ok {
+		t.Error("expected checksums.txt.sig to be omitted when no signing key is passed")
+	}
+	if _, ok := files["public_key.pem"]; ok {
+		t.Error("expected public_key.pem to be omitted when no signing key is passed")
+	}
 	if _, ok := files["manifest.json"]; !ok {
 		t.Error("expected manifest.json to always be present")
 	}
 	if _, ok := files["audit.jsonl"]; !ok {
 		t.Error("expected audit.jsonl to always be present, even if empty")
+	}
+}
+
+func TestWriteBundle_SignedBundle_SignatureVerifiesAgainstEmbeddedPublicKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	manifest := domain.Manifest{WardlineVersion: "0.6.0"}
+	var buf bytes.Buffer
+	if err := adapter.WriteBundle(&buf, manifest, nil, nil, nil, "", nil, nil, key); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+
+	files := readBundle(t, buf.Bytes())
+	sig, ok := files["checksums.txt.sig"]
+	if !ok {
+		t.Fatal("expected checksums.txt.sig to be present when a signing key is passed")
+	}
+	pubPEM, ok := files["public_key.pem"]
+	if !ok {
+		t.Fatal("expected public_key.pem to be present when a signing key is passed")
+	}
+	pubKey, err := adapter.ParsePublicKeyPEM(pubPEM)
+	if err != nil {
+		t.Fatalf("parse embedded public key: %v", err)
+	}
+	if !adapter.Verify(files["checksums.txt"], sig, pubKey) {
+		t.Error("expected the signature to verify against the embedded public key")
+	}
+
+	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate wrong key: %v", err)
+	}
+	if adapter.Verify(files["checksums.txt"], sig, &wrongKey.PublicKey) {
+		t.Error("expected the signature to NOT verify against an unrelated key")
+	}
+}
+
+func TestWriteBundle_IdentitiesRoundTrip(t *testing.T) {
+	manifest := domain.Manifest{WardlineVersion: "0.6.0"}
+	identities := []domain.RedactedIdentity{
+		{Name: "agent-abc123", Tenant: "acme"},
+		{Name: "agent-def456", Tenant: "widgets-inc"},
+	}
+	var buf bytes.Buffer
+	if err := adapter.WriteBundle(&buf, manifest, nil, nil, nil, "", nil, identities, nil); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+
+	files := readBundle(t, buf.Bytes())
+	raw, ok := files["identities.json"]
+	if !ok {
+		t.Fatal("expected identities.json to be present when identities are passed")
+	}
+	var got []domain.RedactedIdentity
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("identities.json is not valid JSON: %v", err)
+	}
+	if len(got) != 2 || got[0] != identities[0] || got[1] != identities[1] {
+		t.Errorf("expected identities to round-trip unchanged, got %+v", got)
 	}
 }

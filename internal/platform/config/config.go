@@ -17,6 +17,14 @@ import (
 type AuditConfig struct {
 	Output      string `yaml:"output"`       // "stdout" or a file path
 	PostgresDSN string `yaml:"postgres_dsn"` // only used when features.postgres_storage is true
+
+	// RetentionDays, when > 0, is how many days of audit history
+	// features.log_retention's periodic job keeps before purging older
+	// entries -- 0 (the default) means keep forever, preserving every
+	// existing deployment's behavior exactly. Meaningless (and rejected
+	// by validate()) when Output is "stdout": nothing durable exists
+	// there to retain or purge.
+	RetentionDays int `yaml:"retention_days"`
 }
 
 // BudgetConfig configures the per-identity rate limiter. Only validated
@@ -208,6 +216,41 @@ type AnomalyConfig struct {
 	DenyRateSpike     DenyRateSpikeConfig `yaml:"deny_rate_spike"`
 	MLScore           MLScoreConfig       `yaml:"ml_score"`
 	AutoBlock         AutoBlockConfig     `yaml:"auto_block"`
+
+	// RetentionDays mirrors AuditConfig.RetentionDays -- see its doc
+	// comment. This is the anomaly LOG's own retention (the JSONL/
+	// Postgres record of past detections), unrelated to
+	// GCIntervalSeconds above, which governs the separate in-memory
+	// behavioral baseline's own eviction, not the durable log.
+	RetentionDays int `yaml:"retention_days"`
+}
+
+// ComplianceConfig configures the periodic scheduled-export background
+// job. Only validated (and only meaningful) when the
+// compliance_scheduled_export feature flag is on.
+type ComplianceConfig struct {
+	ScheduledExportIntervalSeconds int `yaml:"scheduled_export_interval_seconds"`
+	// ScheduledExportOutputDir is where each tick's bundle is written
+	// (evidence-<from>-<to>.tar.gz inside it) -- required when the flag
+	// is on, matching every other required-when-flag-on field in this
+	// file.
+	ScheduledExportOutputDir string `yaml:"scheduled_export_output_dir"`
+	// SigningKeyFile is optional -- the same PEM path shape
+	// export-evidence -sign-key expects, reused for every scheduled run
+	// so an operator doesn't need to touch the filesystem each cycle.
+	// "" (the default) produces unsigned scheduled bundles.
+	SigningKeyFile string `yaml:"signing_key_file"`
+}
+
+// RetentionConfig configures the periodic log-retention background job.
+// Only validated (and only meaningful) when the log_retention feature
+// flag is on. A single shared interval governs both the audit and
+// anomaly retention checks (whichever of AuditConfig.RetentionDays/
+// AnomalyConfig.RetentionDays is non-zero runs on this cadence) --
+// simpler than two independently-configurable tickers for what's
+// operationally one "how often does housekeeping run" knob.
+type RetentionConfig struct {
+	CheckIntervalSeconds int `yaml:"check_interval_seconds"`
 }
 
 // FederationConfig configures cross-instance anomaly correlation. Only
@@ -251,6 +294,8 @@ type Config struct {
 	Scim          ScimConfig       `yaml:"scim"`
 	Anomaly       AnomalyConfig    `yaml:"anomaly"`
 	Federation    FederationConfig `yaml:"federation"`
+	Compliance    ComplianceConfig `yaml:"compliance"`
+	Retention     RetentionConfig  `yaml:"retention"`
 	Features      map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
@@ -334,6 +379,30 @@ func (c *Config) validate() error {
 		}
 	} else if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty (or set features.postgres_storage: true and audit.postgres_dsn instead)")
+	}
+	if c.Audit.RetentionDays < 0 {
+		problems = append(problems, "audit.retention_days must be >= 0")
+	} else if c.Audit.RetentionDays > 0 && c.Audit.Output == "stdout" {
+		problems = append(problems, "audit.retention_days is meaningless when audit.output is stdout -- nothing durable exists there to retain or purge")
+	}
+	if c.Features["log_retention"] {
+		if c.Audit.RetentionDays <= 0 && c.Anomaly.RetentionDays <= 0 {
+			problems = append(problems, "at least one of audit.retention_days/anomaly.retention_days must be > 0 when features.log_retention is true -- otherwise the job has nothing to do")
+		}
+		if c.Retention.CheckIntervalSeconds < 0 {
+			problems = append(problems, "retention.check_interval_seconds must be >= 0")
+		}
+	}
+	if c.Features["compliance_scheduled_export"] {
+		if c.Compliance.ScheduledExportIntervalSeconds <= 0 {
+			problems = append(problems, "compliance.scheduled_export_interval_seconds must be > 0 when features.compliance_scheduled_export is true")
+		}
+		if c.Compliance.ScheduledExportOutputDir == "" {
+			problems = append(problems, "compliance.scheduled_export_output_dir must not be empty when features.compliance_scheduled_export is true")
+		}
+		if !c.Features["postgres_storage"] && c.Audit.Output == "stdout" {
+			problems = append(problems, "compliance.scheduled_export requires audit.output to be a file path (or features.postgres_storage) -- the audit trail is not queryable when audit.output is stdout")
+		}
 	}
 	if c.Features["budget_enforcement"] {
 		if c.Budget.RequestsPerWindow <= 0 {
@@ -442,6 +511,11 @@ func (c *Config) validate() error {
 		if c.Scim.PersistPostgres && !c.Features["postgres_storage"] {
 			problems = append(problems, "features.postgres_storage must be true when scim.persist_postgres is true")
 		}
+	}
+	if c.Anomaly.RetentionDays < 0 {
+		problems = append(problems, "anomaly.retention_days must be >= 0")
+	} else if c.Anomaly.RetentionDays > 0 && c.Anomaly.Output == "stdout" {
+		problems = append(problems, "anomaly.retention_days is meaningless when anomaly.output is stdout -- nothing durable exists there to retain or purge")
 	}
 	if c.Features["anomaly_detection"] {
 		if c.Anomaly.Output == "" {

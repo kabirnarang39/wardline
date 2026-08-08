@@ -90,9 +90,22 @@ policy-pack marketplace, HA deployment.
   scope, see the design doc for why. Docs:
   `docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md`.
 
+- **Compliance-evidence-export hardening** — cryptographic signing
+  (`wardline generate-signing-key`/`export-evidence -sign-key`/
+  `verify-evidence`, RSA-PSS/SHA-256, matching federation's existing
+  scheme), a live query API (`GET /dashboard/api/compliance`, also a
+  dashboard Compliance view — aggregate counts only, never raw entries),
+  redacted credential inclusion (`identities.json`: name+tenant only,
+  never secrets/SPIFFE IDs), scheduled export
+  (`features.compliance_scheduled_export`, a periodic background job
+  reusing `export-evidence`'s exact code path), and log retention
+  (`features.log_retention`, `audit.retention_days`/
+  `anomaly.retention_days`, a periodic purge job — JSONL rewrite or
+  Postgres `DELETE`). Docs:
+  `docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md`.
+
 ## v2.0 (planned, not yet shipped)
 
-- **Compliance-evidence-export hardening** — cryptographic signing, live query API, redacted credential inclusion, scheduled export, and log retention.
 - **Policy-pack marketplace expansion** — OPA/Cedar pack variants, a live registry, versioning, and pack composition.
 - **HA distributed budget/anomaly state + signing-key rotation/KMS** — distributing state across HA instances with key rotation support.
 - **gRPC transport support** — enabling gRPC as a transport layer alongside HTTP.

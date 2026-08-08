@@ -71,6 +71,10 @@
           <span class="nav-icon" data-icon="reload-log"></span>
           <span>Reload log</span>
         </button>
+        <button class="nav-item" data-view="compliance">
+          <span class="nav-icon" data-icon="compliance"></span>
+          <span>Compliance</span>
+        </button>
       </div>
 
       <div class="live-indicator" id="live-indicator" role="status" aria-live="polite">
@@ -456,6 +460,33 @@
           </table>
           <p id="reload-log-empty" class="empty-state" hidden>No config-reload attempts yet.</p>
         </div>
+      </section>
+
+      <section id="view-compliance" class="view" aria-labelledby="view-compliance-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-compliance-heading">Compliance</h1>
+            <p class="view-sub">Live preview of what a `wardline export-evidence` bundle over this range would contain -- counts only, not raw entries. Run the CLI command for a real, checksum-verified bundle.</p>
+          </div>
+        </div>
+        <div class="compliance-range-picker">
+          <label for="compliance-from">From
+            <input type="datetime-local" id="compliance-from">
+          </label>
+          <label for="compliance-to">To
+            <input type="datetime-local" id="compliance-to">
+          </label>
+          <button class="btn-secondary" id="compliance-query" type="button">Query</button>
+        </div>
+        <p id="compliance-error" role="alert" hidden></p>
+        <div id="compliance-results" hidden>
+          <dl class="status-grid" id="compliance-summary"></dl>
+          <h2 class="status-subheading">Audit decisions</h2>
+          <ul class="feature-list" id="compliance-audit-decisions"></ul>
+          <h2 class="status-subheading">Anomaly kinds</h2>
+          <ul class="feature-list" id="compliance-anomaly-kinds"></ul>
+        </div>
+        <p id="compliance-unavailable" class="empty-state" hidden>Compliance evidence is not queryable on this server (audit.output is stdout, or postgres_storage/features are not configured for it).</p>
       </section>
     </main>
   </div>
