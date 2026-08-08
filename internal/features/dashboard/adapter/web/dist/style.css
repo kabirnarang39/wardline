@@ -1266,8 +1266,16 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 /* align-items: start -- without this, grid's default `stretch` forces
    Needs review/Live pulse to match Recent activity's (real table-driven)
    height, leaving a large dead-space gap below their own short content.
-   Each card now sizes to its own content instead. */
+   Each card now sizes to its own content instead -- but that alone lets
+   Recent activity's empty-state (48px vertical padding, see .empty-state)
+   make it look mismatched-tall next to the other two's naturally shorter
+   content. A shared min-height on every card gives all three consistent
+   visual weight without re-introducing the stretch-driven dead space:
+   short content still sits at its natural height (now floored, not
+   starved), tall content (many rows, or the empty-state) still grows
+   past the floor instead of being clipped. */
 .card-grid { display: grid; grid-template-columns: 2fr 1.3fr 1fr; gap: 16px; align-items: start; }
+.card-grid > .card { min-height: 220px; }
 @media (max-width: 1100px) {
   .card-grid { grid-template-columns: 1fr; }
 }
