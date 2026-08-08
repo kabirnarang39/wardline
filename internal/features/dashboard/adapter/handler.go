@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
@@ -123,6 +125,17 @@ type ReloadHistorySource interface {
 	Since(afterID int64, limit int) []reload.ReloadEvent
 }
 
+// ComplianceSource backs GET /dashboard/api/compliance -- a live,
+// aggregate-only preview of what a `wardline export-evidence` CLI run
+// over the same range would produce (counts and histograms, never raw
+// audit entries -- see handleCompliance's doc comment for why this stays
+// narrower than a full evidence browser). Unlike every other Source
+// interface in this file, Query can fail per-request (a bad range, an
+// unreachable Postgres), not just return an empty/zero value.
+type ComplianceSource interface {
+	Query(ctx context.Context, from, to time.Time) (compliancedomain.Manifest, error)
+}
+
 // TenantScopeResolver derives the effective tenant filter for the
 // caller of a request: empty string means "no filter" (a global,
 // ClusterRoleBinding-scoped caller, or rbac off entirely); a non-empty
@@ -230,6 +243,7 @@ type Handler struct {
 	reloadAuth        ReloadAuthorizer
 	reloadHistory     ReloadHistorySource
 	callerInfo        CallerInfoResolver
+	compliance        ComplianceSource
 	mux               *http.ServeMux
 }
 
@@ -269,8 +283,11 @@ type Handler struct {
 // view still works via policy alone. budgetWriter backs the Budget
 // view's editor (PUT /dashboard/api/budget) the same way, nil when
 // budget_enforcement or rbac is off.
-func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
+// compliance backs GET /dashboard/api/compliance -- nil (audit trail not
+// queryable, e.g. audit.output is stdout) answers 404, the same
+// "not wired" posture as every other nil-source route above.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -284,6 +301,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, ass
 	mux.HandleFunc("/dashboard/api/budget", h.handleBudget)
 	mux.HandleFunc("/dashboard/api/reload/history", h.handleReloadHistory)
 	mux.HandleFunc("/dashboard/api/reload/", h.handleReload)
+	mux.HandleFunc("/dashboard/api/compliance", h.handleCompliance)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", spaHandler(assets)))
 	h.mux = mux
 
@@ -519,6 +537,55 @@ func (h *Handler) handleRBAC(w http.ResponseWriter, r *http.Request) {
 		Roles    []domain.RoleEntry    `json:"roles"`
 		Bindings []domain.BindingEntry `json:"bindings"`
 	}{roles, bindings})
+}
+
+// handleCompliance serves GET /dashboard/api/compliance?from=&to=
+// (RFC3339 query params, both required) -- a live, aggregate-only
+// preview of what `wardline export-evidence` over the same range would
+// produce: entry counts and decision/kind histograms, via
+// compliance/domain.Manifest, the exact same shape the CLI's bundle
+// carries in manifest.json. Deliberately NOT a raw-entry browser (see
+// docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md
+// "5. Live query API") -- a manifest-level summary is a strict subset of
+// what the existing Activity view (raw entries, ring-buffer-backed)
+// already discloses to the same dashboard:view caller, so this route is
+// gated identically (the outer dashboard:view RequirePermission wrap
+// around the whole /dashboard/ tree in main.go), never a stricter
+// permission.
+func (h *Handler) handleCompliance(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.compliance == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if fromStr == "" || toStr == "" {
+		http.Error(w, "from and to query params are required (RFC3339)", http.StatusBadRequest)
+		return
+	}
+	from, err := time.Parse(time.RFC3339, fromStr)
+	if err != nil {
+		http.Error(w, "invalid from: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	to, err := time.Parse(time.RFC3339, toStr)
+	if err != nil {
+		http.Error(w, "invalid to: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !from.Before(to) {
+		http.Error(w, "from must be before to", http.StatusBadRequest)
+		return
+	}
+	manifest, err := h.compliance.Query(r.Context(), from, to)
+	if err != nil {
+		http.Error(w, "failed to query compliance evidence: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, manifest)
 }
 
 // handleBudget serves GET /dashboard/api/budget -- a read-only snapshot of

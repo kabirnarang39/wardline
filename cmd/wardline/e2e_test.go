@@ -2412,7 +2412,6 @@ audit:
 	if err := os.Mkdir(outputDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	tmpPath := outputDir + ".tmp"
 
 	binPath := filepath.Join(dir, "wardline")
 	build := exec.Command("go", "build", "-o", binPath, ".")
@@ -2429,11 +2428,20 @@ audit:
 	if err == nil {
 		t.Fatalf("expected export-evidence to fail when -output collides with an existing directory, got no error; output: %s", out)
 	}
-	if !bytes.Contains(out, []byte("failed to finalize output file")) {
+	if !bytes.Contains(out, []byte("finalize output file")) {
 		t.Fatalf("expected the rename-failure log message, got: %s", out)
 	}
-	if _, statErr := os.Stat(tmpPath); !os.IsNotExist(statErr) {
-		t.Fatalf("expected %s to be cleaned up after a rename failure, stat err = %v", tmpPath, statErr)
+	// The atomic write uses os.CreateTemp(dir, ".evidence-*.tar.gz.tmp") in
+	// outputDir's parent directory (same atomic-write pattern
+	// policyadapter.WriteFile/config.WriteBudgetSection already
+	// established) -- a rename failure must still clean that temp file up,
+	// not leave it behind under a random name.
+	leftover, err := filepath.Glob(filepath.Join(dir, ".evidence-*.tar.gz.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftover) != 0 {
+		t.Fatalf("expected no leftover temp files after a rename failure, found: %v", leftover)
 	}
 }
 
@@ -2576,6 +2584,362 @@ audit:
 	}
 	if _, ok := files["checksums.txt"]; !ok {
 		t.Error("expected checksums.txt in the bundle")
+	}
+}
+
+// TestVerifyEvidenceEndToEnd_FullLifecycle exercises generate-signing-key
+// -> export-evidence -sign-key -> verify-evidence as three real
+// subprocess invocations of the compiled binary -- proving a genuine
+// signed bundle verifies successfully, an unsigned bundle is reported as
+// unsigned (not silently "passed"), and a tampered signed bundle fails
+// verification with a non-zero exit -- the whole point of shipping
+// verify-evidence as a distinct command from sha256sum -c.
+func TestVerifyEvidenceEndToEnd_FullLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+
+	if err := os.WriteFile(policyPath, []byte("rules: []\ndefault: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auditPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "127.0.0.1:0"
+upstream: "http://127.0.0.1:1"
+policy_file: "%s"
+audit:
+  output: "%s"
+`, policyPath, auditPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	privKeyPath := filepath.Join(dir, "priv.pem")
+	pubKeyPath := filepath.Join(dir, "pub.pem")
+	genOut, err := exec.Command(binPath, "generate-signing-key",
+		"-private-key", privKeyPath, "-public-key", pubKeyPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("generate-signing-key failed: %v\n%s", err, genOut)
+	}
+
+	signedPath := filepath.Join(dir, "signed.tar.gz")
+	exportOut, err := exec.Command(binPath, "export-evidence",
+		"--config", configPath, "-from", "2020-01-01T00:00:00Z", "-to", "2030-01-01T00:00:00Z",
+		"-output", signedPath, "-sign-key", privKeyPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("export-evidence -sign-key failed: %v\n%s", err, exportOut)
+	}
+
+	unsignedPath := filepath.Join(dir, "unsigned.tar.gz")
+	if out, err := exec.Command(binPath, "export-evidence",
+		"--config", configPath, "-from", "2020-01-01T00:00:00Z", "-to", "2030-01-01T00:00:00Z",
+		"-output", unsignedPath).CombinedOutput(); err != nil {
+		t.Fatalf("export-evidence (unsigned) failed: %v\n%s", err, out)
+	}
+
+	// A genuinely signed bundle verifies cleanly.
+	verifyOut, err := exec.Command(binPath, "verify-evidence",
+		"-bundle", signedPath, "-public-key", pubKeyPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected verify-evidence to succeed on a genuinely signed bundle, got error: %v\n%s", err, verifyOut)
+	}
+	if !bytes.Contains(verifyOut, []byte("signature verified")) {
+		t.Errorf("expected a signature-verified confirmation, got: %s", verifyOut)
+	}
+
+	// Integrity-only check (no -public-key) still passes for an unsigned bundle.
+	unsignedVerifyOut, err := exec.Command(binPath, "verify-evidence", "-bundle", unsignedPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected integrity-only verify to succeed on an unsigned bundle, got error: %v\n%s", err, unsignedVerifyOut)
+	}
+
+	// Asking to verify a signature against an unsigned bundle is a hard failure, not a silent pass.
+	missingSigCmd := exec.Command(binPath, "verify-evidence", "-bundle", unsignedPath, "-public-key", pubKeyPath)
+	missingSigOut, err := missingSigCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify-evidence to fail when -public-key is given but the bundle isn't signed, got no error; output: %s", missingSigOut)
+	}
+	if !bytes.Contains(missingSigOut, []byte("not signed")) {
+		t.Errorf("expected a clear \"not signed\" message, got: %s", missingSigOut)
+	}
+
+	// Tampering with the signed bundle after the fact must fail
+	// verification -- re-append a byte-corrupted copy is unnecessary;
+	// simplest real tamper is truncating the file, which breaks the
+	// gzip/tar stream and must surface as a read error, not a false pass.
+	tamperedPath := filepath.Join(dir, "tampered.tar.gz")
+	signedBytes, err := os.ReadFile(signedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signedBytes) < 100 {
+		t.Fatalf("signed bundle unexpectedly small (%d bytes), can't safely truncate for the tamper test", len(signedBytes))
+	}
+	if err := os.WriteFile(tamperedPath, signedBytes[:len(signedBytes)-50], 0644); err != nil {
+		t.Fatal(err)
+	}
+	tamperedOut, err := exec.Command(binPath, "verify-evidence",
+		"-bundle", tamperedPath, "-public-key", pubKeyPath).CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected verify-evidence to fail on a truncated/corrupted bundle, got no error; output: %s", tamperedOut)
+	}
+}
+
+// TestLogRetentionEndToEnd_PurgesOldAuditEntriesOnAShortTicker starts a
+// real serve subprocess with features.log_retention on and a 1-second
+// retention.check_interval_seconds against a file pre-seeded with one
+// entry from 2020 (older than the 1-day retention window) and one from
+// "now" (younger) -- proves the background job actually runs on its
+// configured cadence and purges only what it should.
+func TestLogRetentionEndToEnd_PurgesOldAuditEntriesOnAShortTicker(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+
+	seed := `{"timestamp":"2020-01-01T00:00:00Z","identity":"ancient","tenant":"default","tool":"read_file","decision":"allow","latency_ms":1}
+{"timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","identity":"recent","tenant":"default","tool":"read_file","decision":"allow","latency_ms":1}
+`
+	if err := os.WriteFile(auditPath, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte("rules: []\ndefault: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: "%s"
+  retention_days: 1
+features:
+  log_retention: true
+retention:
+  check_interval_seconds: 1
+`, listenAddr, upstream.URL, policyPath, auditPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	var stderr safeBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForListener(t, listenAddr)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(auditPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"identity":"ancient"`) {
+			if !strings.Contains(string(data), `"identity":"recent"`) {
+				t.Fatalf("expected the recent entry to survive retention, got:\n%s", data)
+			}
+			break // purged -- success
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for retention to purge the ancient entry (stderr: %s)", stderr.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestScheduledExportEndToEnd_ProducesABundleWithoutAnyCLIInvocation
+// starts a real serve subprocess with features.compliance_scheduled_export
+// on and a 1-second interval, and proves a bundle file appears in the
+// configured output directory purely from the background ticker -- no
+// export-evidence CLI call is made by this test.
+func TestScheduledExportEndToEnd_ProducesABundleWithoutAnyCLIInvocation(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+	outputDir := filepath.Join(dir, "evidence")
+
+	if err := os.WriteFile(auditPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte("rules: []\ndefault: allow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: "%s"
+features:
+  compliance_scheduled_export: true
+compliance:
+  scheduled_export_interval_seconds: 1
+  scheduled_export_output_dir: "%s"
+`, listenAddr, upstream.URL, policyPath, auditPath, outputDir)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	var stderr safeBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForListener(t, listenAddr)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, err := os.ReadDir(outputDir)
+		if err == nil && len(entries) > 0 {
+			break // a scheduled bundle appeared -- success
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for a scheduled export bundle to appear in %s (stderr: %s)", outputDir, stderr.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestServeEndToEnd_DashboardComplianceQuery_ReflectsRealProxiedCalls
+// proves GET /dashboard/api/compliance is a real live query against a
+// real running server: an allow and a deny made through the proxy both
+// show up in the returned Manifest's counts, with zero CLI invocation.
+func TestServeEndToEnd_DashboardComplianceQuery_ReflectsRealProxiedCalls(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	configPath := filepath.Join(dir, "wardline.yaml")
+	binPath := filepath.Join(dir, "wardline")
+
+	if err := os.WriteFile(auditPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+	listenAddr := reserveAddr(t)
+
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+audit:
+  output: "%s"
+features:
+  web_ui: true
+`, listenAddr, upstream.URL, policyPath, auditPath)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	var stderr safeBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForListener(t, listenAddr)
+
+	before := time.Now().Add(-time.Minute)
+	allowResp := postToolCall(t, listenAddr, "agent-1", "read_file")
+	if allowResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (stderr: %s)", allowResp.StatusCode, stderr.String())
+	}
+	denyResp := postToolCall(t, listenAddr, "agent-1", "delete_file")
+	if denyResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d (stderr: %s)", denyResp.StatusCode, stderr.String())
+	}
+	after := time.Now().Add(time.Minute)
+
+	url := fmt.Sprintf("http://%s/dashboard/api/compliance?from=%s&to=%s",
+		listenAddr, before.UTC().Format(time.RFC3339), after.UTC().Format(time.RFC3339))
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("dashboard compliance API failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s (stderr: %s)", resp.StatusCode, body, stderr.String())
+	}
+	var manifest struct {
+		AuditEntryCount     int            `json:"audit_entry_count"`
+		AuditDecisionCounts map[string]int `json:"audit_decision_counts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		t.Fatalf("invalid manifest JSON: %v", err)
+	}
+	if manifest.AuditEntryCount != 2 {
+		t.Errorf("expected 2 audit entries, got %d", manifest.AuditEntryCount)
+	}
+	if manifest.AuditDecisionCounts["allow"] != 1 || manifest.AuditDecisionCounts["deny"] != 1 {
+		t.Errorf("unexpected decision counts: %+v", manifest.AuditDecisionCounts)
 	}
 }
 

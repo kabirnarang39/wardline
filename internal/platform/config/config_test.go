@@ -1635,3 +1635,122 @@ credential:
 		t.Fatal("expected validation error for a negative refresh_token_ttl_seconds")
 	}
 }
+
+func TestLoad_AuditRetentionDaysOnStdoutRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+  retention_days: 30
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for audit.retention_days set while audit.output is stdout")
+	}
+}
+
+func TestLoad_AnomalyRetentionDaysOnStdoutRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+anomaly:
+  output: stdout
+  retention_days: 30
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for anomaly.retention_days set while anomaly.output is stdout")
+	}
+}
+
+func TestLoad_LogRetentionFlagRequiresARetentionDaysValue(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: "./audit.jsonl"
+features:
+  log_retention: true
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error when features.log_retention is on but no retention_days is set")
+	}
+}
+
+func TestLoad_LogRetentionValidConfig(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: "./audit.jsonl"
+  retention_days: 30
+features:
+  log_retention: true
+retention:
+  check_interval_seconds: 3600
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("unexpected error for a valid log_retention config: %v", err)
+	}
+}
+
+func TestLoad_ScheduledExportRequiresIntervalAndOutputDir(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: "./audit.jsonl"
+features:
+  compliance_scheduled_export: true
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected validation error when compliance_scheduled_export is on but interval/output_dir are unset")
+	}
+	if !strings.Contains(err.Error(), "scheduled_export_interval_seconds") || !strings.Contains(err.Error(), "scheduled_export_output_dir") {
+		t.Errorf("expected the error to name both missing fields, got: %v", err)
+	}
+}
+
+func TestLoad_ScheduledExportRequiresQueryableAuditTrail(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  compliance_scheduled_export: true
+compliance:
+  scheduled_export_interval_seconds: 3600
+  scheduled_export_output_dir: "./evidence"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error when compliance_scheduled_export is on but audit.output is stdout")
+	}
+}
+
+func TestLoad_ScheduledExportValidConfig(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: "./audit.jsonl"
+features:
+  compliance_scheduled_export: true
+compliance:
+  scheduled_export_interval_seconds: 3600
+  scheduled_export_output_dir: "./evidence"
+  signing_key_file: "./signing-key.pem"
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("unexpected error for a valid compliance_scheduled_export config: %v", err)
+	}
+}

@@ -199,3 +199,24 @@ func (w *PostgresWriter) Query(ctx context.Context, from, to time.Time) ([]domai
 }
 
 var _ domain.Reader = (*PostgresWriter)(nil)
+
+const deleteOlderThanSQL = `DELETE FROM audit_entries WHERE timestamp < $1`
+
+// Purge implements domain.Purger. Uses queryTimeout, not writeTimeout: a
+// bulk DELETE over a large retention backlog is closer in shape to a
+// range-scan Query than a single-row Write.
+func (w *PostgresWriter) Purge(ctx context.Context, cutoff time.Time) (int, error) {
+	purgeCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	res, err := w.db.ExecContext(purgeCtx, deleteOlderThanSQL, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete audit entries older than %s: %w", cutoff, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted audit entries: %w", err)
+	}
+	return int(n), nil
+}
+
+var _ domain.Purger = (*PostgresWriter)(nil)

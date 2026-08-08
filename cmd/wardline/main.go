@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +24,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"gopkg.in/yaml.v3"
 
 	anomalyadapter "github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
@@ -32,6 +36,7 @@ import (
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	budgetusecase "github.com/kabirnarang39/wardline/internal/features/budget/usecase"
 	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
+	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	complianceusecase "github.com/kabirnarang39/wardline/internal/features/compliance/usecase"
 	credentialadapter "github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	credentialdomain "github.com/kabirnarang39/wardline/internal/features/credential/domain"
@@ -57,6 +62,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
 	"github.com/kabirnarang39/wardline/internal/platform/version"
 )
@@ -98,7 +104,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if len(os.Args) < 2 {
-		logger.Error("usage: wardline <serve|validate-policy|validate-config|export-evidence|policy-pack|infer-policy> [flags]")
+		logger.Error("usage: wardline <serve|validate-policy|validate-config|export-evidence|verify-evidence|generate-signing-key|policy-pack|infer-policy> [flags]")
 		os.Exit(1)
 	}
 
@@ -111,6 +117,10 @@ func main() {
 		runValidateConfig(logger, os.Args[2:])
 	case "export-evidence":
 		runExportEvidence(logger, os.Args[2:])
+	case "verify-evidence":
+		runVerifyEvidence(logger, os.Args[2:])
+	case "generate-signing-key":
+		runGenerateSigningKey(logger, os.Args[2:])
 	case "policy-pack":
 		runPolicyPack(logger, os.Args[2:])
 	case "infer-policy":
@@ -154,6 +164,54 @@ func runServe(logger *slog.Logger, args []string) {
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
+
+	// retentionStop/scheduledExportStop are independent of
+	// anomalyDetectionEnabled -- retention purges the audit log even when
+	// anomaly detection is off, and scheduled export needs only the
+	// audit trail to be queryable, not anomaly detection.
+	var retentionStop chan struct{}
+	if featureFlags.Enabled("log_retention") {
+		var purgers []complianceusecase.NamedPurger
+		if p := buildAuditPurger(featureFlags, cfg.Audit, writer); p != nil {
+			purgers = append(purgers, complianceusecase.NamedPurger{Name: "audit", RetentionDays: cfg.Audit.RetentionDays, Purge: p.Purge})
+		}
+		if p := buildAnomalyPurger(cfg.Anomaly); p != nil {
+			purgers = append(purgers, complianceusecase.NamedPurger{Name: "anomaly", RetentionDays: cfg.Anomaly.RetentionDays, Purge: p.Purge})
+		}
+		if len(purgers) > 0 {
+			interval := time.Duration(cfg.Retention.CheckIntervalSeconds) * time.Second
+			if interval <= 0 {
+				interval = 24 * time.Hour
+			}
+			retentionStop = make(chan struct{})
+			go startRetentionJob(logger, purgers, interval, retentionStop)
+			logger.Info("log retention enabled", "check_interval", interval, "purgers", len(purgers))
+		}
+	}
+
+	var scheduledExportStop chan struct{}
+	if featureFlags.Enabled("compliance_scheduled_export") {
+		var signingKey *rsa.PrivateKey
+		if cfg.Compliance.SigningKeyFile != "" {
+			var err error
+			signingKey, err = loadSigningKey(cfg.Compliance.SigningKeyFile)
+			if err != nil {
+				logger.Error("failed to load compliance scheduled-export signing key", "error", err)
+				os.Exit(1)
+			}
+		}
+		// 0700: the output directory holds evidence bundles (already
+		// individually 0600), so the directory itself must not be
+		// world-traversable either.
+		if err := os.MkdirAll(cfg.Compliance.ScheduledExportOutputDir, 0o700); err != nil {
+			logger.Error("failed to create scheduled export output directory", "path", cfg.Compliance.ScheduledExportOutputDir, "error", err)
+			os.Exit(1)
+		}
+		interval := time.Duration(cfg.Compliance.ScheduledExportIntervalSeconds) * time.Second
+		scheduledExportStop = make(chan struct{})
+		go startScheduledExportJob(logger, cfg, featureFlags, interval, signingKey, scheduledExportStop)
+		logger.Info("compliance scheduled export enabled", "interval", interval, "output_dir", cfg.Compliance.ScheduledExportOutputDir, "signed", signingKey != nil)
+	}
 
 	var ringBuffer *dashboardusecase.RingBuffer
 	if webUIEnabled {
@@ -907,7 +965,19 @@ func runServe(logger *slog.Logger, args []string) {
 			})
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter)
+		// complianceSource backs GET /dashboard/api/compliance -- nil
+		// (audit trail not queryable, matching export-evidence's own
+		// "stdout isn't queryable" gate) leaves the route 404, the same
+		// "not wired" posture as every other nil-source route.
+		var complianceSource dashboardadapter.ComplianceSource
+		if postgresStorageEnabled || (cfg.Audit.Output != "" && cfg.Audit.Output != "stdout") {
+			complianceSource = complianceSourceFunc(func(ctx context.Context, from, to time.Time) (compliancedomain.Manifest, error) {
+				manifest, _, _, err := queryComplianceManifest(logger, cfg, featureFlags, from, to)
+				return manifest, err
+			})
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1066,6 +1136,12 @@ func runServe(logger *slog.Logger, args []string) {
 			if anomalyGCStop != nil {
 				close(anomalyGCStop)
 			}
+			if retentionStop != nil {
+				close(retentionStop)
+			}
+			if scheduledExportStop != nil {
+				close(scheduledExportStop)
+			}
 			if autoBlockGCStop != nil {
 				close(autoBlockGCStop)
 			}
@@ -1166,6 +1242,12 @@ func runServe(logger *slog.Logger, args []string) {
 	if anomalyGCStop != nil {
 		close(anomalyGCStop)
 	}
+	if retentionStop != nil {
+		close(retentionStop)
+	}
+	if scheduledExportStop != nil {
+		close(scheduledExportStop)
+	}
 	if autoBlockGCStop != nil {
 		close(autoBlockGCStop)
 	}
@@ -1231,6 +1313,14 @@ func (f callerInfoResolverFunc) CallerInfo(r *http.Request) (string, bool) { ret
 type policySourceFunc func() dashboarddomain.PolicyInfo
 
 func (f policySourceFunc) Current() dashboarddomain.PolicyInfo { return f() }
+
+// complianceSourceFunc adapts a plain function to
+// dashboardadapter.ComplianceSource, same shape as policySourceFunc.
+type complianceSourceFunc func(ctx context.Context, from, to time.Time) (compliancedomain.Manifest, error)
+
+func (f complianceSourceFunc) Query(ctx context.Context, from, to time.Time) (compliancedomain.Manifest, error) {
+	return f(ctx, from, to)
+}
 
 // policyWriterFunc adapts a plain function to dashboardadapter.PolicyWriter,
 // matching policySourceFunc's pattern immediately above.
@@ -1824,6 +1914,7 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	fromStr := fs.String("from", "", "start of the evidence range (RFC3339), required")
 	toStr := fs.String("to", "", "end of the evidence range (RFC3339), defaults to now")
 	outputPath := fs.String("output", "", "output bundle path, defaults to ./evidence-<from>-<to>.tar.gz")
+	signKeyPath := fs.String("sign-key", "", "path to a PEM-encoded RSA private key (PKCS1 or PKCS8) to sign the bundle with, optional")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
 
 	if *fromStr == "" {
@@ -1855,10 +1946,97 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	}
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 
+	var signingKey *rsa.PrivateKey
+	if *signKeyPath != "" {
+		signingKey, err = loadSigningKey(*signKeyPath)
+		if err != nil {
+			logger.Error("failed to load signing key", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	output := *outputPath
+	if output == "" {
+		sanitize := func(s string) string { return strings.ReplaceAll(s, ":", "-") }
+		output = fmt.Sprintf("./evidence-%s-%s.tar.gz", sanitize(from.Format(time.RFC3339)), sanitize(to.Format(time.RFC3339)))
+	}
+
+	auditCount, anomalyCount, err := buildAndWriteEvidenceBundle(logger, cfg, featureFlags, from, to, output, signingKey)
+	if err != nil {
+		logger.Error("failed to write evidence bundle", "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("wrote evidence bundle", "output", output, "audit_entries", auditCount, "anomalies", anomalyCount, "signed", signingKey != nil)
+}
+
+// loadSigningKey reads and parses a PEM-encoded RSA private key from
+// path -- shared by export-evidence's -sign-key flag and the scheduled
+// export job (both need the exact same "read file, parse PEM" step).
+func loadSigningKey(path string) (*rsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read signing key %s: %w", path, err)
+	}
+	key, err := complianceadapter.ParsePrivateKeyPEM(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse signing key %s: %w", path, err)
+	}
+	return key, nil
+}
+
+// redactedIdentitiesYAML is the minimal subset of credentials.yaml's
+// shape this reads -- deliberately omitting "secret"/"spiffe_id" so
+// those values are never even unmarshaled into memory on this codepath,
+// not just omitted from the bundle afterward.
+type redactedIdentitiesYAML struct {
+	Identities []struct {
+		Name   string `yaml:"name"`
+		Tenant string `yaml:"tenant"`
+	} `yaml:"identities"`
+}
+
+// readRedactedIdentities reads path (the same file
+// credential.identities_file points at) and returns each entry's Name
+// and Tenant only -- see compliancedomain.RedactedIdentity's doc comment
+// for why Secret/SpiffeID must never reach a compliance bundle.
+func readRedactedIdentities(path string) ([]compliancedomain.RedactedIdentity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read identities file %s: %w", path, err)
+	}
+	var raw redactedIdentitiesYAML
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse identities file %s: %w", path, err)
+	}
+	out := make([]compliancedomain.RedactedIdentity, len(raw.Identities))
+	for i, e := range raw.Identities {
+		t := e.Tenant
+		if t == "" {
+			t = tenant.Default
+		}
+		out[i] = compliancedomain.RedactedIdentity{Name: e.Name, Tenant: t}
+	}
+	return out, nil
+}
+
+// buildAndWriteEvidenceBundle assembles and atomically writes a
+// compliance evidence bundle covering [from, to) to outputPath --
+// shared by runExportEvidence (the CLI path) and the scheduled export
+// background job, one implementation for both callers. signingKey is
+// optional (nil skips signing, matching WriteBundle's own nil
+// convention).
+// queryComplianceManifest runs the exact query+aggregate logic
+// export-evidence's CLI path and the scheduled export job both need --
+// factored out so GET /dashboard/api/compliance's live query can reuse
+// it too (three callers, one implementation), returning the raw
+// audit/anomaly entries alongside the built Manifest since
+// buildAndWriteEvidenceBundle's caller still needs those for
+// WriteBundle, while the dashboard querier only needs the Manifest.
+func queryComplianceManifest(logger *slog.Logger, cfg *config.Config, featureFlags flags.Provider, from, to time.Time) (compliancedomain.Manifest, []auditdomain.Entry, []anomalydomain.Anomaly, error) {
 	auditReader, jsonlReader, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
 	if err != nil {
-		logger.Error("failed to set up audit reader", "error", err)
-		os.Exit(1)
+		return compliancedomain.Manifest{}, nil, nil, fmt.Errorf("set up audit reader: %w", err)
 	}
 	if closer, ok := auditReader.(io.Closer); ok {
 		defer func() { _ = closer.Close() }()
@@ -1867,8 +2045,7 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 	ctx := context.Background()
 	auditEntries, err := auditReader.Query(ctx, from, to)
 	if err != nil {
-		logger.Error("failed to query audit entries", "error", err)
-		os.Exit(1)
+		return compliancedomain.Manifest{}, nil, nil, fmt.Errorf("query audit entries: %w", err)
 	}
 	skippedAuditLines := 0
 	if jsonlReader != nil {
@@ -1893,28 +2070,9 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 			logger.Warn("anomaly output file does not exist yet; exporting zero anomalies",
 				"path", cfg.Anomaly.Output)
 		case err != nil:
-			logger.Error("failed to query anomaly entries", "error", err)
-			os.Exit(1)
+			return compliancedomain.Manifest{}, nil, nil, fmt.Errorf("query anomaly entries: %w", err)
 		default:
 			skippedAnomalyLines = anomalyReader.SkippedLines
-		}
-	}
-
-	var policySource []byte
-	if cfg.PolicyFile != "" {
-		policySource, err = os.ReadFile(cfg.PolicyFile)
-		if err != nil {
-			logger.Error("failed to read policy file", "error", err)
-			os.Exit(1)
-		}
-	}
-
-	var rbacSource []byte
-	if featureFlags.Enabled("rbac") && cfg.RBAC.ConfigFile != "" {
-		rbacSource, err = os.ReadFile(cfg.RBAC.ConfigFile)
-		if err != nil {
-			logger.Error("failed to read rbac file", "error", err)
-			os.Exit(1)
 		}
 	}
 
@@ -1929,41 +2087,187 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 		manifestFeatures = map[string]bool{}
 	}
 	manifest := complianceusecase.BuildManifest(version.Version, from, to, time.Now(), manifestFeatures, auditEntries, skippedAuditLines, anomalies, skippedAnomalyLines)
+	return manifest, auditEntries, anomalies, nil
+}
 
-	output := *outputPath
-	if output == "" {
-		sanitize := func(s string) string { return strings.ReplaceAll(s, ":", "-") }
-		output = fmt.Sprintf("./evidence-%s-%s.tar.gz", sanitize(from.Format(time.RFC3339)), sanitize(to.Format(time.RFC3339)))
-	}
-
-	tmpPath := output + ".tmp"
-	// 0600, not os.Create's 0666&umask: the bundle aggregates the whole
-	// audit trail (whose own file wardline opens 0600), the rbac bindings
-	// and the policy source into one artifact, so a world-readable default
-	// would widen access to evidence on any shared host.
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+func buildAndWriteEvidenceBundle(logger *slog.Logger, cfg *config.Config, featureFlags flags.Provider, from, to time.Time, outputPath string, signingKey *rsa.PrivateKey) (auditCount, anomalyCount int, err error) {
+	manifest, auditEntries, anomalies, err := queryComplianceManifest(logger, cfg, featureFlags, from, to)
 	if err != nil {
-		logger.Error("failed to create output file", "path", tmpPath, "error", err)
-		os.Exit(1)
+		return 0, 0, err
 	}
-	if err := complianceadapter.WriteBundle(f, manifest, auditEntries, anomalies, policySource, cfg.PolicyBackend, rbacSource); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		logger.Error("failed to write evidence bundle", "error", err)
-		os.Exit(1)
+
+	var policySource []byte
+	if cfg.PolicyFile != "" {
+		policySource, err = os.ReadFile(cfg.PolicyFile)
+		if err != nil {
+			return 0, 0, fmt.Errorf("read policy file: %w", err)
+		}
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		logger.Error("failed to close output file", "error", err)
-		os.Exit(1)
+
+	var rbacSource []byte
+	if featureFlags.Enabled("rbac") && cfg.RBAC.ConfigFile != "" {
+		rbacSource, err = os.ReadFile(cfg.RBAC.ConfigFile)
+		if err != nil {
+			return 0, 0, fmt.Errorf("read rbac file: %w", err)
+		}
 	}
-	if err := os.Rename(tmpPath, output); err != nil {
-		_ = os.Remove(tmpPath)
-		logger.Error("failed to finalize output file", "error", err)
+
+	var identities []compliancedomain.RedactedIdentity
+	if featureFlags.Enabled("credential_issuance") && cfg.Credential.IdentitiesFile != "" {
+		identities, err = readRedactedIdentities(cfg.Credential.IdentitiesFile)
+		if err != nil {
+			return 0, 0, fmt.Errorf("read identities: %w", err)
+		}
+	}
+
+	dir := filepath.Dir(outputPath)
+	tmp, err := os.CreateTemp(dir, ".evidence-*.tar.gz.tmp")
+	if err != nil {
+		return 0, 0, fmt.Errorf("create temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	// 0600, not the temp file's default: the bundle aggregates the whole
+	// audit trail (whose own file wardline opens 0600), the rbac
+	// bindings, and the policy source into one artifact, so a
+	// world-readable default would widen access to evidence on any
+	// shared host.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return 0, 0, fmt.Errorf("chmod %s: %w", tmpPath, err)
+	}
+	if err := complianceadapter.WriteBundle(tmp, manifest, auditEntries, anomalies, policySource, cfg.PolicyBackend, rbacSource, identities, signingKey); err != nil {
+		_ = tmp.Close()
+		return 0, 0, fmt.Errorf("write evidence bundle: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return 0, 0, fmt.Errorf("close output file: %w", err)
+	}
+	if err := os.Rename(tmpPath, outputPath); err != nil {
+		return 0, 0, fmt.Errorf("finalize output file: %w", err)
+	}
+	cleanup = false
+	return len(auditEntries), len(anomalies), nil
+}
+
+// runGenerateSigningKey writes a fresh 2048-bit RSA keypair (PKCS8
+// private / PKIX public, PEM-encoded) to -private-key/-public-key --
+// the shape export-evidence -sign-key and verify-evidence -public-key
+// both expect. An operator who already has a compliant key (e.g. from
+// their org's PKI) never needs this command; it exists purely so a
+// first-time user isn't required to reach for openssl.
+func runGenerateSigningKey(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("generate-signing-key", flag.ExitOnError)
+	privateKeyPath := fs.String("private-key", "signing-key.pem", "output path for the PEM-encoded RSA private key")
+	publicKeyPath := fs.String("public-key", "signing-key.pub.pem", "output path for the PEM-encoded RSA public key")
+	_ = fs.Parse(args)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		logger.Error("failed to generate key", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info("wrote evidence bundle", "output", output, "audit_entries", len(auditEntries), "anomalies", len(anomalies))
+	privDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		logger.Error("failed to marshal private key", "error", err)
+		os.Exit(1)
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	// 0600: a signing private key is the whole trust basis for evidence
+	// bundle authenticity -- a world-readable default would defeat the
+	// point before the file is even used once.
+	if err := os.WriteFile(*privateKeyPath, privPEM, 0o600); err != nil {
+		logger.Error("failed to write private key", "path", *privateKeyPath, "error", err)
+		os.Exit(1)
+	}
+
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		logger.Error("failed to marshal public key", "error", err)
+		os.Exit(1)
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+	if err := os.WriteFile(*publicKeyPath, pubPEM, 0o644); err != nil {
+		logger.Error("failed to write public key", "path", *publicKeyPath, "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("generated signing key", "private_key", *privateKeyPath, "public_key", *publicKeyPath)
+}
+
+// runVerifyEvidence re-verifies an evidence bundle's checksums.txt
+// against every other file it lists (the integrity guarantee every
+// bundle already carries, signed or not) and, when -public-key is
+// given, additionally verifies checksums.txt.sig against that key (the
+// authenticity guarantee only a signed bundle carries). Exits 1 on any
+// failure -- unlike sha256sum -c, this also has an opinion about
+// authenticity, not just integrity.
+func runVerifyEvidence(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("verify-evidence", flag.ExitOnError)
+	bundlePath := fs.String("bundle", "", "path to the evidence bundle (.tar.gz), required")
+	publicKeyPath := fs.String("public-key", "", "path to a PEM-encoded RSA public key to verify the signature against, optional")
+	_ = fs.Parse(args)
+
+	if *bundlePath == "" {
+		logger.Error("-bundle is required")
+		os.Exit(1)
+	}
+
+	files, err := complianceadapter.ReadBundle(*bundlePath)
+	if err != nil {
+		logger.Error("failed to read bundle", "error", err)
+		os.Exit(1)
+	}
+
+	checksums, ok := files["checksums.txt"]
+	if !ok {
+		logger.Error("bundle has no checksums.txt -- not a valid evidence bundle")
+		os.Exit(1)
+	}
+	mismatches, err := complianceadapter.VerifyChecksums(checksums, files)
+	if err != nil {
+		logger.Error("failed to parse checksums.txt", "error", err)
+		os.Exit(1)
+	}
+	if len(mismatches) > 0 {
+		for _, m := range mismatches {
+			logger.Error("checksum mismatch", "file", m)
+		}
+		os.Exit(1)
+	}
+	logger.Info("checksums verified", "files", len(files)-1)
+
+	if *publicKeyPath == "" {
+		logger.Info("no -public-key given; skipping signature verification (integrity-only check passed)")
+		return
+	}
+
+	sig, ok := files["checksums.txt.sig"]
+	if !ok {
+		logger.Error("-public-key given but bundle is not signed (no checksums.txt.sig) -- nothing to verify")
+		os.Exit(1)
+	}
+	pubPEM, err := os.ReadFile(*publicKeyPath)
+	if err != nil {
+		logger.Error("failed to read public key", "error", err)
+		os.Exit(1)
+	}
+	pubKey, err := complianceadapter.ParsePublicKeyPEM(pubPEM)
+	if err != nil {
+		logger.Error("failed to parse public key", "error", err)
+		os.Exit(1)
+	}
+	if !complianceadapter.Verify(checksums, sig, pubKey) {
+		logger.Error("signature verification FAILED -- bundle was not signed by the holder of this public key, or has been tampered with since signing")
+		os.Exit(1)
+	}
+	logger.Info("signature verified: bundle authenticity confirmed")
 }
 
 // buildAuditSink picks the audit Writer for the current postgres_storage
@@ -1976,6 +2280,93 @@ func runExportEvidence(logger *slog.Logger, args []string) {
 // while postgres_storage is off (silently JSONL-backed audit trail,
 // possibly not what the operator intended — the flag-on-no-DSN case is
 // already caught by config validation before runServe ever calls this).
+// buildAuditPurger returns the audit/domain.Purger matching whichever
+// backend buildAuditSink actually built -- postgres_storage reuses the
+// already-open *PostgresWriter (writer, cast back) rather than opening a
+// second connection pool; the JSONL case builds a fresh, stateless
+// JSONLPurger from the same Output path. Returns nil when there's
+// nothing to purge (stdout, or Output unset) -- callers must nil-check
+// before adding it to the retention job's purger list.
+func buildAuditPurger(featureFlags flags.Provider, cfg config.AuditConfig, writer auditdomain.Writer) auditdomain.Purger {
+	if featureFlags.Enabled("postgres_storage") {
+		if pw, ok := writer.(*auditadapter.PostgresWriter); ok {
+			return pw
+		}
+		return nil
+	}
+	if cfg.Output == "" || cfg.Output == "stdout" {
+		return nil
+	}
+	return auditadapter.NewJSONLPurger(cfg.Output)
+}
+
+// buildAnomalyPurger is buildAuditPurger's anomaly-log counterpart.
+// Unlike audit, there is no Postgres-backed anomaly LOG (only
+// PostgresBaselineStore, which persists behavioral baselines -- a
+// distinct concept with its own existing GC, not this retention job's
+// concern) -- so this only ever builds a JSONLPurger, or nil.
+func buildAnomalyPurger(cfg config.AnomalyConfig) anomalydomain.Purger {
+	if cfg.Output == "" || cfg.Output == "stdout" {
+		return nil
+	}
+	return anomalyadapter.NewJSONLPurger(cfg.Output)
+}
+
+// startRetentionJob runs RunRetention on a ticker until stop is closed --
+// mirrors anomalyusecase.StartGC's exact ticker-until-stop-channel shape.
+// A failing purger is logged and does not stop the job; the next tick
+// tries again.
+func startRetentionJob(logger *slog.Logger, purgers []complianceusecase.NamedPurger, interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-ticker.C:
+			for _, r := range complianceusecase.RunRetention(context.Background(), purgers, now) {
+				if r.Err != nil {
+					logger.Error("log retention purge failed", "store", r.Name, "cutoff", r.Cutoff, "error", r.Err)
+					continue
+				}
+				logger.Info("log retention purge completed", "store", r.Name, "cutoff", r.Cutoff, "deleted", r.Deleted)
+			}
+		}
+	}
+}
+
+// startScheduledExportJob runs a compliance evidence export on a ticker
+// until stop is closed, reusing buildAndWriteEvidenceBundle -- the exact
+// same code path export-evidence's CLI handler calls, so scheduled and
+// manual exports can never drift apart. lastTick's range is retried (not
+// advanced) on a failed export, so a transient failure never creates a
+// permanent gap in scheduled coverage -- see
+// docs/superpowers/specs/2026-08-08-compliance-evidence-export-hardening-design.md
+// "Data flow".
+func startScheduledExportJob(logger *slog.Logger, cfg *config.Config, featureFlags flags.Provider, interval time.Duration, signingKey *rsa.PrivateKey, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	lastTick := time.Now()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-ticker.C:
+			from, to := lastTick, now
+			sanitize := func(s string) string { return strings.ReplaceAll(s, ":", "-") }
+			output := filepath.Join(cfg.Compliance.ScheduledExportOutputDir,
+				fmt.Sprintf("evidence-%s-%s.tar.gz", sanitize(from.UTC().Format(time.RFC3339)), sanitize(to.UTC().Format(time.RFC3339))))
+			auditCount, anomalyCount, err := buildAndWriteEvidenceBundle(logger, cfg, featureFlags, from, to, output, signingKey)
+			if err != nil {
+				logger.Error("scheduled compliance export failed", "error", err, "from", from, "to", to)
+				continue
+			}
+			lastTick = now
+			logger.Info("scheduled compliance export completed", "output", output, "audit_entries", auditCount, "anomalies", anomalyCount)
+		}
+	}
+}
+
 func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig) (auditdomain.Writer, io.Closer) {
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 
