@@ -167,6 +167,61 @@ default: deny
 	}
 }
 
+// TestServeEndToEnd_ResourcesAndPromptsGatedByPolicy is the widening
+// feature's real end-to-end proof, mirroring the empirical-proof
+// discipline docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md
+// established: a real compiled wardline binary, a real YAML policy file
+// with method-scoped rules, proves a matching resources/read succeeds, a
+// non-matching one is denied, and a matching prompts/get succeeds too —
+// resources/*/prompts/* are no longer unconditional passthrough. See
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestServeEndToEnd_ResourcesAndPromptsGatedByPolicy(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    method: "resources/read"
+    tool: "file:///data/report.csv"
+    effect: allow
+  - identity: "agent-abc123"
+    method: "prompts/get"
+    tool: "*"
+    effect: allow
+default: deny
+`, "")
+
+	allowedRead := postToolCallBody(t, listenAddr, "agent-abc123", `{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"file:///data/report.csv"}}`)
+	if allowedRead.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a resources/read matching the allow rule, got %d (stderr: %s)", allowedRead.StatusCode, stderr.String())
+	}
+
+	deniedRead := postToolCallBody(t, listenAddr, "agent-abc123", `{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"file:///etc/passwd"}}`)
+	if deniedRead.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a resources/read NOT matching the allow rule (falls to default deny), got %d (stderr: %s)", deniedRead.StatusCode, stderr.String())
+	}
+
+	allowedPrompt := postToolCallBody(t, listenAddr, "agent-abc123", `{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"summarize"}}`)
+	if allowedPrompt.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a prompts/get matching the wildcard allow rule, got %d (stderr: %s)", allowedPrompt.StatusCode, stderr.String())
+	}
+
+	// A tools/call to the same identity, with no tools/call rule defined,
+	// still falls to the default deny -- proves the resources/prompts
+	// rules above didn't accidentally widen into the tools/call method
+	// space (each rule is method-scoped, see the design doc's Matcher
+	// changes).
+	deniedToolCall := postToolCall(t, listenAddr, "agent-abc123", "read_file")
+	if deniedToolCall.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a tools/call with no matching tools/call rule, got %d (stderr: %s)", deniedToolCall.StatusCode, stderr.String())
+	}
+
+	// A true protocol-lifecycle method (not resources/*/prompts/*) still
+	// passes through unconditionally, unaffected by this widening.
+	initResp := postToolCallBody(t, listenAddr, "agent-abc123", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	if initResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for initialize (still unconditional passthrough), got %d (stderr: %s)", initResp.StatusCode, stderr.String())
+	}
+}
+
 // reserveAddr binds an ephemeral port to find one that's free, then closes
 // the listener immediately so the wardline subprocess can bind it. This
 // avoids hardcoding a port that could collide under parallel/shared CI runs.

@@ -79,6 +79,16 @@ policy-pack marketplace, HA deployment.
   [Anomaly Detection](/features/anomaly-detection/) for what's
   deliberately out of scope (cross-replica baseline sharing, blob-format
   migration).
+- **Widening policy enforcement to MCP resources/* and prompts/* calls** —
+  a policy `Rule` and `Context` now carry an optional `method` (blank
+  means `tools/call`, so every rule written before this existed keeps
+  matching exactly what it matched before); `resources/read`,
+  `resources/list`, `prompts/get`, `prompts/list`, and any other
+  `resources/*`/`prompts/*` method are policy-evaluated (YAML, OPA, or
+  Cedar, all three backends) instead of passing through unconditionally.
+  Budget enforcement stays tool-call-scoped only — deliberately out of
+  scope, see the design doc for why. Docs:
+  `docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md`.
 
 ## v2.0 (planned, not yet shipped)
 
@@ -86,7 +96,6 @@ policy-pack marketplace, HA deployment.
 - **Policy-pack marketplace expansion** — OPA/Cedar pack variants, a live registry, versioning, and pack composition.
 - **HA distributed budget/anomaly state + signing-key rotation/KMS** — distributing state across HA instances with key rotation support.
 - **gRPC transport support** — enabling gRPC as a transport layer alongside HTTP.
-- **Widening policy enforcement to MCP resources/* and prompts/* calls** — expanding from current ungated passthrough to full policy coverage.
 
 A hosted cloud tier has been explicitly named as a possible future
 direction, but is a business/infrastructure decision outside this

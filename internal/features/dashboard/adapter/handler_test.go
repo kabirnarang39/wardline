@@ -1320,6 +1320,29 @@ func policyWritePayload(t *testing.T, rules []map[string]string, def string) *by
 	return bytes.NewReader(data)
 }
 
+// TestHandler_PolicyWriteRoute_MethodFieldReachesWriteAndReload proves the
+// Rule editor's Method column (resources/read, prompts/get, etc.) isn't
+// silently dropped between the wire request and WriteAndReload -- the
+// widening feature's dashboard write-path proof. See
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestHandler_PolicyWriteRoute_MethodFieldReachesWriteAndReload(t *testing.T) {
+	writer := &fakePolicyWriter{}
+	updated := domain.PolicyInfo{Backend: "yaml"}
+	h := adapter.NewHandler(nil, nil, updated, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, writer, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", policyWritePayload(t,
+		[]map[string]string{{"identity": "alice", "method": "resources/read", "tool": "file:///data/report.csv", "effect": "allow"}}, "deny"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(writer.lastRules) != 1 || writer.lastRules[0].Method != "resources/read" {
+		t.Errorf("expected the decoded rule's Method to reach WriteAndReload unchanged, got %+v", writer.lastRules)
+	}
+}
+
 func TestHandler_PolicyWriteRoute_GetStillReturnsPolicyInfo(t *testing.T) {
 	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{Backend: "yaml", Source: "rules: []\ndefault: allow\n"}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 

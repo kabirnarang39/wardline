@@ -82,6 +82,81 @@ func TestMatcher_TenantScopedRuleOnlyMatchesItsOwnTenant(t *testing.T) {
 	}
 }
 
+// TestMatcher_EmptyRuleMethodDefaultsToToolsCall is the back-compat
+// regression guard the widening design doc calls for: a rule written
+// before Method existed (Method == "") must keep matching tools/call
+// exactly as before, and must NOT match a resources/prompts request just
+// because it left Method unset.
+func TestMatcher_EmptyRuleMethodDefaultsToToolsCall(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "search", Effect: domain.EffectAllow},
+	}, domain.EffectDeny)
+
+	got := m.Evaluate(domain.Context{Identity: "alice", Tool: "search", Method: "tools/call"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("explicit tools/call context: got %v, want allow", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "alice", Tool: "search"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("empty-method context (legacy caller): got %v, want allow", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "alice", Tool: "search", Method: "resources/read"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("resources/read with same tool name: got %v, want default deny (rule must not cross methods)", got.Effect)
+	}
+}
+
+// TestMatcher_MethodScopedWildcardDoesNotCrossMethods proves a Tool: "*"
+// rule with no Method set (defaulting to tools/call) does NOT widen to
+// cover the new resources/prompts method space — an old wildcard rule
+// written before this feature existed must not silently start matching
+// request types its author never saw.
+func TestMatcher_MethodScopedWildcardDoesNotCrossMethods(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "*", Effect: domain.EffectAllow},
+	}, domain.EffectDeny)
+
+	got := m.Evaluate(domain.Context{Identity: "alice", Tool: "anything", Method: "tools/call"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("tools/call wildcard: got %v, want allow", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "alice", Tool: "file:///etc/passwd", Method: "resources/read"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("resources/read against a tools/call-only wildcard: got %v, want default deny", got.Effect)
+	}
+}
+
+func TestMatcher_MethodScopedRuleMatchesOnlyItsMethod(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "file:///data/report.csv", Effect: domain.EffectAllow, Method: "resources/read"},
+	}, domain.EffectDeny)
+
+	got := m.Evaluate(domain.Context{Identity: "alice", Tool: "file:///data/report.csv", Method: "resources/read"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("matching resource read: got %v, want allow", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "alice", Tool: "file:///data/report.csv", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("same target name via tools/call: got %v, want default deny (rule is method-scoped)", got.Effect)
+	}
+}
+
+func TestMatcher_UntargetedListCallOnlyMatchesWildcardOrDefault(t *testing.T) {
+	m := usecase.NewMatcher([]domain.Rule{
+		{Identity: "alice", Tool: "*", Effect: domain.EffectAllow, Method: "resources/list"},
+		{Identity: "bob", Tool: "file:///specific", Effect: domain.EffectAllow, Method: "resources/list"},
+	}, domain.EffectDeny)
+
+	got := m.Evaluate(domain.Context{Identity: "alice", Tool: "", Method: "resources/list"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("wildcard rule against untargeted list call: got %v, want allow", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "bob", Tool: "", Method: "resources/list"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("specific-target rule against untargeted list call (empty tool never equals a specific target): got %v, want default deny", got.Effect)
+	}
+}
+
 func TestMatcher_UntenantedRuleMatchesAnyTenant(t *testing.T) {
 	m := usecase.NewMatcher([]domain.Rule{
 		{Identity: "alice", Tool: "*", Effect: domain.EffectAllow},

@@ -702,6 +702,7 @@ type policyRuleInput struct {
 	Tool     string `json:"tool"`
 	Tenant   string `json:"tenant"`
 	Effect   string `json:"effect"`
+	Method   string `json:"method"`
 }
 
 type policyWriteRequest struct {
@@ -736,7 +737,7 @@ func (h *Handler) handlePolicyWrite(w http.ResponseWriter, r *http.Request) {
 
 	rules := make([]policydomain.Rule, len(req.Rules))
 	for i, ri := range req.Rules {
-		rules[i] = policydomain.Rule{Identity: ri.Identity, Tool: ri.Tool, Tenant: ri.Tenant, Effect: policydomain.Effect(ri.Effect)}
+		rules[i] = policydomain.Rule{Identity: ri.Identity, Tool: ri.Tool, Tenant: ri.Tenant, Effect: policydomain.Effect(ri.Effect), Method: ri.Method}
 	}
 
 	if err := h.policyWriter.WriteAndReload(rules, policydomain.Effect(req.Default), appliedBy); err != nil {

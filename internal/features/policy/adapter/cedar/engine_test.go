@@ -346,6 +346,80 @@ func TestCedarEngine_TenantFieldAdditiveDoesNotAffectExistingPolicy(t *testing.T
 	}
 }
 
+const accessResourceOnlySource = `
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"access_resource",
+  resource == Wardline::Tool::"file:///data/report.csv"
+);
+`
+
+// TestCedarEngine_MethodPicksTheAction proves domain.Context.Method
+// selects a distinct Cedar action (access_resource for resources/*, vs.
+// the default call_tool) instead of every request sharing one hardcoded
+// action label -- the widening feature's core Cedar-adapter proof. A
+// policy permitting only access_resource must allow a resources/read
+// request and deny an otherwise-identical tools/call to the same
+// resource string, proving the action genuinely discriminates. See
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+func TestCedarEngine_MethodPicksTheAction(t *testing.T) {
+	e, err := cedar.NewCedarEngine("resource.cedar", []byte(accessResourceOnlySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "resources/read"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("resources/read: got %v, want allow (reason: %q)", got.Effect, got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("same target via tools/call (wrong action): got %v, want deny", got.Effect)
+	}
+}
+
+// TestCedarEngine_PromptsMethodMapsToGetPromptAction is the prompts/*
+// analog of the resources/* proof above.
+func TestCedarEngine_PromptsMethodMapsToGetPromptAction(t *testing.T) {
+	source := `
+permit(
+  principal == Wardline::Identity::"agent-abc123",
+  action == Wardline::Action::"get_prompt",
+  resource == Wardline::Tool::"summarize"
+);
+`
+	e, err := cedar.NewCedarEngine("prompt.cedar", []byte(source))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "summarize", Method: "prompts/get"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("prompts/get: got %v, want allow (reason: %q)", got.Effect, got.Reason)
+	}
+
+	got = e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "summarize", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Fatalf("same target via tools/call (wrong action): got %v, want deny", got.Effect)
+	}
+}
+
+// TestCedarEngine_EmptyMethodDefaultsToCallToolAction is the back-compat
+// regression guard: a Context built by a caller that predates Method
+// (empty string) must still map to call_tool, matching every existing
+// fixture in this file (allowDenySource etc.) that hardcodes call_tool.
+func TestCedarEngine_EmptyMethodDefaultsToCallToolAction(t *testing.T) {
+	e, err := cedar.NewCedarEngine("policy.cedar", []byte(allowDenySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file"})
+	if got.Effect != domain.EffectAllow {
+		t.Fatalf("empty Method against a call_tool-only policy: got %v, want allow", got.Effect)
+	}
+}
+
 func TestNewCedarEngine_SyntaxError(t *testing.T) {
 	_, err := cedar.NewCedarEngine("bad.cedar", []byte(`this is not { valid cedar`))
 	if err == nil {

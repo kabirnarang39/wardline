@@ -3,6 +3,7 @@ package cedar
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	cedarsdk "github.com/cedar-policy/cedar-go"
@@ -11,10 +12,32 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/policy/domain"
 )
 
-// actionCallTool is the single fixed Cedar action every Wardline tool
-// call maps to — Wardline's action space genuinely is just "call a
-// tool"; the tool being called is the resource, not the action.
-const actionCallTool = "call_tool"
+// Cedar action names, one per gated MCP method family. Before the
+// resources/prompts widening every gated request was a tools/call, so
+// actionCallTool was the single fixed action every request mapped to;
+// now the action is picked by actionForMethod below, so a Cedar policy
+// author can write separate permit/forbid statements per action instead
+// of every resource/prompt request masquerading as a tool call.
+const (
+	actionCallTool       = "call_tool"
+	actionAccessResource = "access_resource"
+	actionGetPrompt      = "get_prompt"
+)
+
+// actionForMethod maps a gated JSON-RPC method to its Cedar action name.
+// Prefix match, not an enumerated method list, matching
+// proxy/usecase/parse.go's isGatedMethod — a future MCP protocol
+// revision adding new resources/*/prompts/* methods needs no change here.
+func actionForMethod(method string) string {
+	switch {
+	case strings.HasPrefix(method, "resources/"):
+		return actionAccessResource
+	case strings.HasPrefix(method, "prompts/"):
+		return actionGetPrompt
+	default:
+		return actionCallTool
+	}
+}
 
 // CedarEngine is a policydomain.Engine backed by an embedded Cedar
 // evaluator (github.com/cedar-policy/cedar-go) — no external process, no
@@ -51,10 +74,10 @@ func LoadCedarFile(path string) (*CedarEngine, error) {
 }
 
 // Evaluate maps pc onto a Cedar request (principal=identity,
-// action=call_tool, resource=tool, context={params, timestamp,
-// remote_addr, user_agent}) and asks the policy set for a decision.
-// Cedar's own semantics are already default-deny — no matching `permit`
-// denies with no adapter-side work required.
+// action=actionForMethod(pc.Method), resource=tool, context={params,
+// timestamp, remote_addr, user_agent}) and asks the policy set for a
+// decision. Cedar's own semantics are already default-deny — no matching
+// `permit` denies with no adapter-side work required.
 func (e *CedarEngine) Evaluate(pc domain.Context) domain.Decision {
 	contextRecord, err := buildContext(pc)
 	if err != nil {
@@ -63,7 +86,7 @@ func (e *CedarEngine) Evaluate(pc domain.Context) domain.Decision {
 
 	req := cedarsdk.Request{
 		Principal: cedarsdk.NewEntityUID("Wardline::Identity", cedarsdk.String(pc.Identity)),
-		Action:    cedarsdk.NewEntityUID("Wardline::Action", actionCallTool),
+		Action:    cedarsdk.NewEntityUID("Wardline::Action", cedarsdk.String(actionForMethod(pc.Method))),
 		Resource:  cedarsdk.NewEntityUID("Wardline::Tool", cedarsdk.String(pc.Tool)),
 		Context:   contextRecord,
 	}

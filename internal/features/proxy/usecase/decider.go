@@ -35,6 +35,7 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 		Identity:   call.Identity,
 		Tenant:     call.Tenant,
 		Tool:       call.Tool,
+		Method:     call.Method,
 		Params:     call.Params,
 		Timestamp:  call.Timestamp,
 		RemoteAddr: call.RemoteAddr,
