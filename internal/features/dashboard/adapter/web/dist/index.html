@@ -155,16 +155,20 @@
 
           <div class="card panel" id="needs-review-card">
             <div class="panel-title-bar"><h2 class="card-title">Needs review</h2></div>
-            <p id="needs-review-summary"></p>
-            <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
+            <div class="panel-body">
+              <p id="needs-review-summary"></p>
+              <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
+            </div>
           </div>
 
           <div class="card card-dark panel" id="live-pulse-card">
             <div class="panel-title-bar"><h2 class="card-title">Live pulse</h2></div>
+            <div class="panel-body">
             <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
             <svg class="pulse-chart" id="pulse-chart" viewBox="0 0 240 56" preserveAspectRatio="none" aria-hidden="true">
               <polyline id="pulse-chart-line" fill="none" stroke="var(--status-info)" stroke-width="1.6" points=""></polyline>
             </svg>
+            </div>
           </div>
         </div>
       </section>
