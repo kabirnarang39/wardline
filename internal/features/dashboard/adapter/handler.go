@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
@@ -169,6 +170,20 @@ type PolicyWriter interface {
 	WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error
 }
 
+// BudgetWriter writes a new default limit and tenant/tool overrides to
+// the config file's budget: section and reloads the live limiter from
+// it -- the Budget view's editor equivalent of PolicyWriter, funneling
+// through the exact same reloadCoordinator.Reload("budget", ...) a raw
+// POST /dashboard/api/reload/budget would use, so a rejected edit
+// surfaces through the identical Reload log. nil when budget_enforcement
+// is off or rbac is off, matching PolicyWriter's own nil posture.
+type BudgetWriter interface {
+	// WriteAndReload validates and persists def/tenantOverrides/toolOverrides,
+	// then reloads. appliedBy is the resolved caller identity from
+	// ReloadAuthorizer.Authorize, never anything the client supplies.
+	WriteAndReload(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error
+}
+
 // CallerInfoResolver resolves the caller's own identity string and
 // whether they hold config:edit, purely for the dashboard topbar's
 // identity display -- never used for any authorization decision
@@ -210,6 +225,7 @@ type Handler struct {
 	unblock           UnblockAuthorizer
 	rbac              RBACSource
 	budget            BudgetSource
+	budgetWriter      BudgetWriter
 	reloadCoordinator *reload.ReloadCoordinator
 	reloadAuth        ReloadAuthorizer
 	reloadHistory     ReloadHistorySource
@@ -250,9 +266,11 @@ type Handler struct {
 // this field existed. policyWriter backs the Policy view's structured
 // rule editor (PUT /dashboard/api/policy) -- nil (non-yaml backend, or
 // rbac off) leaves the editor unavailable, the Source tab's read-only
-// view still works via policy alone.
-func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
+// view still works via policy alone. budgetWriter backs the Budget
+// view's editor (PUT /dashboard/api/budget) the same way, nil when
+// budget_enforcement or rbac is off.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -510,9 +528,17 @@ func (h *Handler) handleRBAC(w http.ResponseWriter, r *http.Request) {
 // whole /dashboard/ tree in main.go -- never config:edit, since this is a
 // read, not a mutation, and no edit capability exists yet.
 func (h *Handler) handleBudget(w http.ResponseWriter, r *http.Request) {
-	if methodNotAllowed(w, r) {
-		return
+	switch r.Method {
+	case http.MethodGet:
+		h.handleBudgetRead(w, r)
+	case http.MethodPut:
+		h.handleBudgetWrite(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *Handler) handleBudgetRead(w http.ResponseWriter, r *http.Request) {
 	if h.budget == nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -529,6 +555,66 @@ func (h *Handler) handleBudget(w http.ResponseWriter, r *http.Request) {
 		Default   domain.BudgetDefaultEntry    `json:"default"`
 		Overrides []domain.BudgetOverrideEntry `json:"overrides"`
 	}{domain.BudgetDefaultEntry{RequestsPerWindow: def.RequestsPerWindow, WindowSeconds: int(def.Window.Seconds())}, overrides})
+}
+
+// budgetOverrideInput/budgetWriteRequest are PUT /dashboard/api/budget's
+// wire shape -- deliberately dashboard-owned JSON, not budgetdomain
+// types directly, same reasoning as policyWriteRequest.
+type budgetOverrideInput struct {
+	Scope             string `json:"scope"`
+	Name              string `json:"name"`
+	RequestsPerWindow int    `json:"requests_per_window"`
+	WindowSeconds     int    `json:"window_seconds"`
+}
+
+type budgetWriteRequest struct {
+	Default struct {
+		RequestsPerWindow int `json:"requests_per_window"`
+		WindowSeconds     int `json:"window_seconds"`
+	} `json:"default"`
+	TenantOverrides []budgetOverrideInput `json:"tenant_overrides"`
+	ToolOverrides   []budgetOverrideInput `json:"tool_overrides"`
+}
+
+// handleBudgetWrite serves PUT /dashboard/api/budget -- the Budget
+// view's editor equivalent of handlePolicyWrite, gated by the same
+// config:edit ReloadAuthorizer. appliedBy comes only from
+// ReloadAuthorizer.Authorize, never the request body.
+func (h *Handler) handleBudgetWrite(w http.ResponseWriter, r *http.Request) {
+	if h.budgetWriter == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req budgetWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	toOverrides := func(in []budgetOverrideInput) []budgetdomain.OverrideInfo {
+		out := make([]budgetdomain.OverrideInfo, len(in))
+		for i, o := range in {
+			out[i] = budgetdomain.OverrideInfo{Scope: o.Scope, Name: o.Name, LimitInfo: budgetdomain.LimitInfo{RequestsPerWindow: o.RequestsPerWindow, Window: time.Duration(o.WindowSeconds) * time.Second}}
+		}
+		return out
+	}
+	def := budgetdomain.LimitInfo{RequestsPerWindow: req.Default.RequestsPerWindow, Window: time.Duration(req.Default.WindowSeconds) * time.Second}
+
+	if err := h.budgetWriter.WriteAndReload(def, toOverrides(req.TenantOverrides), toOverrides(req.ToolOverrides), appliedBy); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: err.Error()})
+		return
+	}
+	h.handleBudgetRead(w, r)
 }
 
 // handleReload serves POST /dashboard/api/reload/{domain}, triggering a

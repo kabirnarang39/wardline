@@ -277,11 +277,26 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
+	cfg, err := ParseBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// ParseBytes validates and parses config YAML content already in
+// memory, the half of Load's work that doesn't need a filesystem path
+// -- extracted so a caller writing NEW config content (the dashboard's
+// Budget editor, see WriteBudgetSection) can validate the exact bytes
+// about to be persisted BEFORE writing anything, the same
+// validate-before-persist discipline policyadapter.WriteFile/ParseYAML
+// already established for the Policy editor.
+func ParseBytes(data []byte) (*Config, error) {
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err

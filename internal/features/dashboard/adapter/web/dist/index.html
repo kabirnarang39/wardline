@@ -388,22 +388,40 @@
 
       <section id="view-budget" class="view" aria-labelledby="view-budget-heading" hidden>
         <div class="view-header">
-          <h1 id="view-budget-heading">Budget</h1>
+          <div>
+            <h1 id="view-budget-heading">Budget</h1>
+            <p class="view-sub">Requests-per-window limits</p>
+          </div>
         </div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="panel-title-bar">Default limit</div>
-          <dl class="status-grid" id="budget-default-grid"></dl>
+          <div class="budget-default-fields">
+            <label>Requests / window
+              <input type="number" id="budget-default-requests" min="1" inputmode="numeric">
+            </label>
+            <label>Window (seconds)
+              <input type="number" id="budget-default-window" min="1" inputmode="numeric">
+            </label>
+          </div>
         </div>
         <div class="panel">
-          <div class="panel-title-bar">Overrides</div>
+          <div class="panel-title-bar">
+            <span>Overrides</span>
+            <button class="btn-secondary" id="budget-add-override" type="button">+ Add override</button>
+          </div>
           <div class="table-wrap">
             <table class="audit-table">
-              <thead><tr><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Limit</th><th scope="col">Window</th></tr></thead>
+              <thead><tr><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Limit</th><th scope="col">Window (s)</th><th scope="col"></th></tr></thead>
               <tbody id="budget-override-rows"></tbody>
             </table>
             <p id="budget-override-empty" class="empty-state" hidden>No tenant or tool overrides configured — every identity uses the default limit above.</p>
           </div>
         </div>
+        <div class="policy-editor-footer" id="budget-editor-footer">
+          <button class="btn-primary" id="budget-validate-apply" type="button">Validate &amp; apply</button>
+          <span class="policy-editor-hint">Thresholds update in place — nobody's already-counted usage resets.</span>
+        </div>
+        <p id="budget-write-result" role="status" aria-live="polite" hidden></p>
       </section>
 
       <section id="view-status" class="view" aria-labelledby="view-status-heading" hidden>

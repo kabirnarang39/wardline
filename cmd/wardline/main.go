@@ -877,7 +877,37 @@ func runServe(logger *slog.Logger, args []string) {
 			})
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter)
+		// budgetWriter backs the Budget view's editor (PUT
+		// /dashboard/api/budget) -- writes the config file's budget:
+		// section (see config.WriteBudgetSection, a surgical node-level
+		// edit that preserves every other key) then reuses the exact same
+		// "budget" Reloader reloadCoordinator already owns, mirroring
+		// policyWriter's own write-then-Reload shape exactly. nil when
+		// budget_enforcement is off (budgetSource itself is nil then too).
+		var budgetWriter dashboardadapter.BudgetWriter
+		if budgetEnforcementEnabled {
+			budgetWriter = budgetWriterFunc(func(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error {
+				tenants := make(map[string]config.BudgetConfig, len(tenantOverrides))
+				for _, o := range tenantOverrides {
+					tenants[o.Name] = config.BudgetConfig{RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())}
+				}
+				tools := make(map[string]config.BudgetConfig, len(toolOverrides))
+				for _, o := range toolOverrides {
+					tools[o.Name] = config.BudgetConfig{RequestsPerWindow: o.RequestsPerWindow, WindowSeconds: int(o.Window.Seconds())}
+				}
+				budgetCfg := config.BudgetConfig{RequestsPerWindow: def.RequestsPerWindow, WindowSeconds: int(def.Window.Seconds()), Tenants: tenants, Tools: tools}
+				if err := config.WriteBudgetSection(*configPath, budgetCfg); err != nil {
+					return err
+				}
+				result := reloadCoordinator.Reload("budget", appliedBy)
+				if !result.OK {
+					return fmt.Errorf("%s", result.Error)
+				}
+				return nil
+			})
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1208,6 +1238,14 @@ type policyWriterFunc func(rules []policydomain.Rule, def policydomain.Effect, a
 
 func (f policyWriterFunc) WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error {
 	return f(rules, def, appliedBy)
+}
+
+// budgetWriterFunc adapts a plain function to dashboardadapter.BudgetWriter,
+// matching policyWriterFunc's pattern immediately above.
+type budgetWriterFunc func(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error
+
+func (f budgetWriterFunc) WriteAndReload(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error {
+	return f(def, tenantOverrides, toolOverrides, appliedBy)
 }
 
 // newCallerInfoResolver builds the dashboardadapter.CallerInfoResolver

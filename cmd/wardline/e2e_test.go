@@ -3692,6 +3692,210 @@ default: deny
 	}
 }
 
+// putBudget PUTs the dashboard Budget editor's exact wire shape to
+// /dashboard/api/budget as identity, mirroring putPolicy's exact
+// pattern for the Policy editor's own write endpoint.
+func putBudget(t *testing.T, listenAddr, identity string, requestsPerWindow, windowSeconds int, tenantOverrides []map[string]any) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"default":          map[string]any{"requests_per_window": requestsPerWindow, "window_seconds": windowSeconds},
+		"tenant_overrides": tenantOverrides,
+		"tool_overrides":   []map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, "http://"+listenAddr+"/dashboard/api/budget", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// startBudgetReloadServer mirrors startPolicyReloadServer's exact
+// pattern (real binary, rbac on, "operator" bound to admin/config:edit)
+// but with budget_enforcement on and the given initial budget: section,
+// for the Budget editor's own e2e tests.
+func startBudgetReloadServer(t *testing.T, initialBudgetBody string) (listenAddr, configPath string, stderr *safeBuffer) {
+	t.Helper()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "wardline")
+	policyPath := filepath.Join(dir, "policy.yaml")
+	rbacPath := filepath.Join(dir, "rbac.yaml")
+	configPath = filepath.Join(dir, "wardline.yaml")
+
+	if err := os.WriteFile(policyPath, []byte(`default: allow`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rbacPath, []byte(`
+bindings:
+  - subject: operator
+    role: admin
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"result":"ok"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	listenAddr = reserveAddr(t)
+	configBody := fmt.Sprintf(`
+listen: "%s"
+upstream: "%s"
+policy_file: "%s"
+features:
+  web_ui: true
+  rbac: true
+  budget_enforcement: true
+rbac:
+  config_file: "%s"
+%s
+audit:
+  output: stdout
+`, listenAddr, upstream.URL, policyPath, rbacPath, initialBudgetBody)
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(binPath, "serve", "--config", configPath)
+	stderr = &safeBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wardline: %v", err)
+	}
+	waiter := waitFor(cmd)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waiter.done
+	})
+	waitForServer(t, "http://"+listenAddr)
+	return listenAddr, configPath, stderr
+}
+
+// TestServeEndToEnd_BudgetEditorWriteTakesEffectWithoutRestart proves
+// the dashboard's Budget editor -- PUT /dashboard/api/budget -- is a
+// real write-validate-persist-reload path, mirroring
+// TestServeEndToEnd_PolicyRuleEditorWriteTakesEffectWithoutRestart's
+// exact claim for Policy: the very next proxied call reflects the new
+// limit with no restart, and every OTHER key in the shared config file
+// (listen/upstream/policy_file/rbac/features) survives the surgical
+// budget-only edit untouched.
+func TestServeEndToEnd_BudgetEditorWriteTakesEffectWithoutRestart(t *testing.T) {
+	listenAddr, configPath, stderr := startBudgetReloadServer(t, `
+budget:
+  requests_per_window: 2
+  window_seconds: 300
+`)
+
+	// Consume the initial 2-request window entirely.
+	for i := 0; i < 2; i++ {
+		resp := postToolCall(t, listenAddr, "alice", "read_file")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for alice's warm-up call %d/2, got %d (stderr: %s)", i+1, resp.StatusCode, stderr.String())
+		}
+	}
+	throttledResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if throttledResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 once alice exhausts the initial 2-request window, got %d (stderr: %s)", throttledResp.StatusCode, stderr.String())
+	}
+
+	resp := putBudget(t, listenAddr, "operator", 10, 300, nil)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected the budget editor write to succeed, got %d: %s (stderr: %s)", resp.StatusCode, b, stderr.String())
+	}
+
+	// Same running process, no restart: the remaining allowance is
+	// (new limit - already consumed) = 10-2 = 8, proving live state
+	// (not a fresh counter) was preserved across the edit -- same
+	// invariant TestServeEndToEnd_BudgetReloadPreservesConsumedUsage
+	// establishes for a direct-file-edit reload.
+	for i := 0; i < 8; i++ {
+		allowedResp := postToolCall(t, listenAddr, "alice", "read_file")
+		if allowedResp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for alice's post-write call %d/8, got %d (stderr: %s)", i+1, allowedResp.StatusCode, stderr.String())
+		}
+	}
+	nowThrottledResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if nowThrottledResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 once the raised 10-request window is also exhausted, got %d (stderr: %s)", nowThrottledResp.StatusCode, stderr.String())
+	}
+
+	// Every other config key survived the surgical budget-only edit.
+	cfg, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "rbac:") || !strings.Contains(string(cfg), "config_file:") {
+		t.Errorf("expected the rbac: section to survive the budget-only edit, got:\n%s", cfg)
+	}
+}
+
+// TestServeEndToEnd_BudgetEditorInvalidWriteRejectedConfigNeverTouched
+// proves an invalid budget write (requests_per_window <= 0) is
+// rejected BEFORE anything is persisted, mirroring
+// TestServeEndToEnd_PolicyRuleEditorInvalidWriteRejectedFileNeverTouched's
+// exact claim for Policy.
+func TestServeEndToEnd_BudgetEditorInvalidWriteRejectedConfigNeverTouched(t *testing.T) {
+	listenAddr, configPath, stderr := startBudgetReloadServer(t, `
+budget:
+  requests_per_window: 5
+  window_seconds: 300
+`)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := putBudget(t, listenAddr, "operator", 0, 300, nil) // requests_per_window <= 0 -- invalid
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for an invalid budget, got %d: %s", resp.StatusCode, b)
+	}
+	var errBody struct{ Error string }
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("invalid error response: %v", err)
+	}
+	if errBody.Error == "" {
+		t.Error("expected a non-empty error message explaining the rejection")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("expected the config file to survive a rejected write byte-for-byte untouched, got:\n%s", after)
+	}
+
+	// The original 5-request limit is still in effect.
+	for i := 0; i < 5; i++ {
+		resp := postToolCall(t, listenAddr, "alice", "read_file")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for alice's call %d/5 under the still-original limit, got %d (stderr: %s)", i+1, resp.StatusCode, stderr.String())
+		}
+	}
+	stillThrottledResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if stillThrottledResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 under the still-original 5-request limit, got %d (stderr: %s)", stillThrottledResp.StatusCode, stderr.String())
+	}
+}
+
 // TestServeEndToEnd_RBACReloadPreservesLiveSCIMBinding is the test the
 // Task 3 doc comment on newRBACReloadFn (cmd/wardline/main.go) warns
 // would have caught the "reconstruct instead of reuse the SCIM store" bug
