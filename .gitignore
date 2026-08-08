@@ -1,6 +1,7 @@
 /wardline
 /*.test
 *.out
+/demo/.out/
 .DS_Store
 /docs/superpowers/
 /.superpowers/

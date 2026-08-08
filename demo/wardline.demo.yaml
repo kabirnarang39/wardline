@@ -1,0 +1,27 @@
+listen: ":38300"
+upstream: "http://localhost:39300"
+policy_file: "./demo/policy.demo.yaml"
+
+audit:
+  output: "./demo/.out/audit.jsonl"
+
+features:
+  anomaly_detection: true
+
+anomaly:
+  output: "./demo/.out/anomaly.jsonl"
+  window_seconds: 1
+  novel_tool:
+    enabled: true
+  deny_rate_spike:
+    enabled: true
+    threshold: 0.5
+    min_calls: 4
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 3
+  auto_block:
+    enabled: true
+    score_threshold: 4.0
+    block_duration_seconds: 8
