@@ -514,8 +514,12 @@ func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", path, got)
 		}
-		if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'self'" {
-			t.Errorf("%s: Content-Security-Policy = %q, want \"default-src 'self'\"", path, got)
+		wantCSP := "default-src 'self'; frame-ancestors 'none'"
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+			t.Errorf("%s: Content-Security-Policy = %q, want %q", path, got, wantCSP)
+		}
+		if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", path, got)
 		}
 	}
 }
