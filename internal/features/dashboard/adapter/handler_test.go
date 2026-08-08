@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,10 +13,14 @@ import (
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationdomain "github.com/kabirnarang39/wardline/internal/features/federation/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
+	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
 type fakeAuditSource struct {
@@ -117,6 +122,56 @@ type allowAllUnblockAuthorizer struct{}
 
 func (allowAllUnblockAuthorizer) AllowedFor(r *http.Request, targetTenant string) bool { return true }
 
+// allowReloadAuthorizer and denyReloadAuthorizer are the ReloadAuthorizer
+// equivalents of allowAllUnblockAuthorizer/denyAllUnblockAuthorizer above
+// -- fixed-answer stubs for exercising handleReload's own routing/gating
+// logic without needing a real rbac wiring. allowReloadAuthorizer also
+// returns a settable identity, standing in for the caller identity a real
+// Authorize would resolve.
+type allowReloadAuthorizer struct{ identity string }
+
+func (a allowReloadAuthorizer) Authorize(r *http.Request) (string, bool) { return a.identity, true }
+
+type denyReloadAuthorizer struct{}
+
+func (denyReloadAuthorizer) Authorize(r *http.Request) (string, bool) { return "", false }
+
+// fakePolicyWriter is a settable stub for adapter.PolicyWriter -- records
+// the last call it received (so a test can assert appliedBy came from
+// the ReloadAuthorizer, never the request body) and returns a settable
+// error, matching this file's established fake-with-a-spy pattern.
+type fakePolicyWriter struct {
+	err           error
+	lastRules     []policydomain.Rule
+	lastDefault   policydomain.Effect
+	lastAppliedBy string
+}
+
+func (f *fakePolicyWriter) WriteAndReload(rules []policydomain.Rule, def policydomain.Effect, appliedBy string) error {
+	f.lastRules = rules
+	f.lastDefault = def
+	f.lastAppliedBy = appliedBy
+	return f.err
+}
+
+// fakeBudgetWriter is fakePolicyWriter's exact equivalent for
+// adapter.BudgetWriter.
+type fakeBudgetWriter struct {
+	err                 error
+	lastDefault         budgetdomain.LimitInfo
+	lastTenantOverrides []budgetdomain.OverrideInfo
+	lastToolOverrides   []budgetdomain.OverrideInfo
+	lastAppliedBy       string
+}
+
+func (f *fakeBudgetWriter) WriteAndReload(def budgetdomain.LimitInfo, tenantOverrides, toolOverrides []budgetdomain.OverrideInfo, appliedBy string) error {
+	f.lastDefault = def
+	f.lastTenantOverrides = tenantOverrides
+	f.lastToolOverrides = toolOverrides
+	f.lastAppliedBy = appliedBy
+	return f.err
+}
+
 // recordingUnblockAuthorizer is a spy on top of allowAllUnblockAuthorizer's
 // always-allow behavior: it records the targetTenant it was called with,
 // so a test can prove handleUnblock resolves targetTenant (h.tenantFilter
@@ -143,6 +198,49 @@ func (f fakeTenantScopeResolver) TenantFilter(r *http.Request) string {
 	return f.tenant
 }
 
+// fakeCallerInfoResolver is a settable stub for adapter.CallerInfoResolver,
+// matching fakeTenantScopeResolver's exact pattern immediately above.
+type fakeCallerInfoResolver struct {
+	identity      string
+	canConfigEdit bool
+}
+
+func (f fakeCallerInfoResolver) CallerInfo(r *http.Request) (string, bool) {
+	return f.identity, f.canConfigEdit
+}
+
+// fakeRBACSource is a settable stub for adapter.RBACSource -- returns
+// fixed roles/bindings regardless of what the request carries, matching
+// this file's other fake*Source structs.
+type fakeRBACSource struct {
+	roles               []rbacdomain.Role
+	clusterRoleBindings []rbacdomain.ClusterRoleBinding
+	roleBindings        []rbacdomain.RoleBinding
+}
+
+func (f *fakeRBACSource) Roles() []rbacdomain.Role { return f.roles }
+
+func (f *fakeRBACSource) ClusterRoleBindings() []rbacdomain.ClusterRoleBinding {
+	return f.clusterRoleBindings
+}
+
+func (f *fakeRBACSource) RoleBindings() []rbacdomain.RoleBinding { return f.roleBindings }
+
+// fakeBudgetSource is a settable stub for adapter.BudgetSource -- returns
+// fixed default/overrides regardless of what the request carries,
+// matching this file's other fake*Source structs.
+type fakeBudgetSource struct {
+	defaultLimit    budgetdomain.LimitInfo
+	tenantOverrides []budgetdomain.OverrideInfo
+	toolOverrides   []budgetdomain.OverrideInfo
+}
+
+func (f *fakeBudgetSource) DefaultLimit() budgetdomain.LimitInfo { return f.defaultLimit }
+
+func (f *fakeBudgetSource) TenantOverrides() []budgetdomain.OverrideInfo { return f.tenantOverrides }
+
+func (f *fakeBudgetSource) ToolOverrides() []budgetdomain.OverrideInfo { return f.toolOverrides }
+
 func testAssets() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html": {Data: []byte(`<!doctype html><div id="app">wardline dashboard</div>`)},
@@ -155,7 +253,7 @@ func TestHandler_AuditEndpoint_ReturnsJSON(t *testing.T) {
 		{ID: 1, Identity: "agent-1", Tool: "read_file", Decision: "allow"},
 		{ID: 2, Identity: "agent-2", Tool: "write_file", Decision: "deny"},
 	}}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=0&limit=10", nil)
 	rec := httptest.NewRecorder()
@@ -175,7 +273,7 @@ func TestHandler_AuditEndpoint_ReturnsJSON(t *testing.T) {
 
 func TestHandler_AuditEndpoint_BadQueryParamsDefaultSanely(t *testing.T) {
 	audit := &fakeAuditSource{entries: []domain.LiveEntry{{ID: 1, Identity: "agent-1"}}}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=not-a-number&limit=also-not-a-number", nil)
 	rec := httptest.NewRecorder()
@@ -192,7 +290,7 @@ func TestHandler_AuditEndpoint_LimitClampedToMax(t *testing.T) {
 		entries[i] = domain.LiveEntry{ID: int64(i + 1), Identity: "agent-1"}
 	}
 	audit := &fakeAuditSource{entries: entries}
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?after=0&limit=5000", nil)
 	rec := httptest.NewRecorder()
@@ -212,7 +310,7 @@ func TestHandler_AuditEndpoint_LimitClampedToMax(t *testing.T) {
 
 func TestHandler_PolicyEndpoint_ReturnsJSON(t *testing.T) {
 	policy := domain.PolicyInfo{Backend: "yaml", Source: "rules: []\ndefault: deny\n"}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, policy, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, policy, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/policy", nil)
 	rec := httptest.NewRecorder()
@@ -232,7 +330,7 @@ func TestHandler_PolicyEndpoint_ReturnsJSON(t *testing.T) {
 
 func TestHandler_StatusEndpoint_ReturnsJSON(t *testing.T) {
 	status := domain.StatusInfo{Version: "0.5.0-dev", UptimeSeconds: 42, Listen: ":8080", Upstream: "http://localhost:9000", Features: map[string]bool{"web_ui": true}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{status: status}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{status: status}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -257,7 +355,7 @@ func TestHandler_StatusEndpoint_ReturnsJSON(t *testing.T) {
 func TestHandler_HandleStatus_IncludesCallerTenant(t *testing.T) {
 	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
 	scope := fakeTenantScopeResolver{tenant: "acme"}
-	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, scope, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, scope, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -283,7 +381,7 @@ func TestHandler_HandleStatus_IncludesCallerTenant(t *testing.T) {
 // nil, matching h.tenantFilter's own nil-scope behavior.
 func TestHandler_HandleStatus_CallerTenantEmptyWhenScopeNil(t *testing.T) {
 	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
-	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -301,8 +399,66 @@ func TestHandler_HandleStatus_CallerTenantEmptyWhenScopeNil(t *testing.T) {
 	}
 }
 
+// TestHandler_HandleStatus_IncludesCallerIdentity proves handleStatus's
+// response also carries the per-request CallerIdentity/CallerCanConfigEdit
+// pair derived from h.callerInfo, for the dashboard topbar's identity
+// display -- same "widened response, still embeds StatusInfo" contract
+// as CallerTenant above, independent of it.
+func TestHandler_HandleStatus_IncludesCallerIdentity(t *testing.T) {
+	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
+	info := fakeCallerInfoResolver{identity: "r.narang@acme", canConfigEdit: true}
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, info, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got struct {
+		domain.StatusInfo
+		CallerIdentity      string
+		CallerCanConfigEdit bool
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CallerIdentity != "r.narang@acme" {
+		t.Errorf("CallerIdentity = %q, want %q", got.CallerIdentity, "r.narang@acme")
+	}
+	if !got.CallerCanConfigEdit {
+		t.Error("CallerCanConfigEdit = false, want true")
+	}
+}
+
+// TestHandler_HandleStatus_CallerIdentityEmptyWhenResolverNil proves the
+// "rbac off" half of the contract: CallerIdentity/CallerCanConfigEdit are
+// zero-valued when h.callerInfo is nil, matching CallerTenant's own
+// nil-scope behavior -- the topbar must never fabricate a name.
+func TestHandler_HandleStatus_CallerIdentityEmptyWhenResolverNil(t *testing.T) {
+	status := &fakeStatusSource{status: domain.StatusInfo{Version: "test"}}
+	h := adapter.NewHandler(&fakeAuditSource{}, status, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/status", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got struct {
+		domain.StatusInfo
+		CallerIdentity      string
+		CallerCanConfigEdit bool
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CallerIdentity != "" {
+		t.Errorf("CallerIdentity = %q, want empty when callerInfo is nil (rbac off)", got.CallerIdentity)
+	}
+	if got.CallerCanConfigEdit {
+		t.Error("CallerCanConfigEdit = true, want false when callerInfo is nil (rbac off)")
+	}
+}
+
 func TestHandler_ServesKnownStaticAsset(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/app.js", nil)
 	rec := httptest.NewRecorder()
@@ -317,7 +473,7 @@ func TestHandler_ServesKnownStaticAsset(t *testing.T) {
 }
 
 func TestHandler_UnknownPathFallsBackToIndexHTML(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/some/unknown/client/route", nil)
 	rec := httptest.NewRecorder()
@@ -332,7 +488,7 @@ func TestHandler_UnknownPathFallsBackToIndexHTML(t *testing.T) {
 }
 
 func TestHandler_JSONEndpoints_RejectNonGETMethods(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	for _, path := range []string{"/dashboard/api/audit", "/dashboard/api/policy", "/dashboard/api/status"} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
@@ -346,7 +502,7 @@ func TestHandler_JSONEndpoints_RejectNonGETMethods(t *testing.T) {
 }
 
 func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	for _, path := range []string{"/dashboard/api/audit", "/dashboard/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -363,7 +519,7 @@ func TestHandler_ResponsesCarrySecurityHeaders(t *testing.T) {
 }
 
 func TestHandler_RootServesIndexHTML(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	rec := httptest.NewRecorder()
@@ -388,7 +544,7 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 			Entry:     auditdomain.Entry{Tool: "read_file"},
 		}},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies", nil)
 	rec := httptest.NewRecorder()
@@ -409,7 +565,7 @@ func TestHandler_HandleAnomalies_ReturnsBufferedEntriesAsJSON(t *testing.T) {
 }
 
 func TestHandler_HandleAnomalies_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies", nil)
 	rec := httptest.NewRecorder()
@@ -417,6 +573,138 @@ func TestHandler_HandleAnomalies_NilSourceReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 when anomalies is not wired (feature off), got %d", rec.Code)
+	}
+}
+
+func TestHandler_HandleRBAC_ReturnsRolesAndBindingsAsJSON(t *testing.T) {
+	rbac := &fakeRBACSource{
+		roles: []rbacdomain.Role{
+			{Name: "admin", Permissions: []rbacdomain.Permission{rbacdomain.PermissionDashboardView, rbacdomain.PermissionCredentialRevoke}},
+			{Name: "viewer", Permissions: []rbacdomain.Permission{rbacdomain.PermissionDashboardView}},
+		},
+		clusterRoleBindings: []rbacdomain.ClusterRoleBinding{
+			{Subject: "alice", RoleName: "admin"},
+		},
+		roleBindings: []rbacdomain.RoleBinding{
+			{Subject: "bob", RoleName: "viewer", Tenant: "acme"},
+			{Subject: "carol", RoleName: "viewer", Tenant: "globex"},
+		},
+	}
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, rbac, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/rbac", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Roles    []domain.RoleEntry    `json:"roles"`
+		Bindings []domain.BindingEntry `json:"bindings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if len(got.Roles) != 2 {
+		t.Fatalf("expected 2 roles, got %d: %+v", len(got.Roles), got.Roles)
+	}
+	if got.Roles[0].Name != "admin" || got.Roles[0].BindingCount != 1 || len(got.Roles[0].Permissions) != 2 {
+		t.Errorf("admin role entry = %+v, want BindingCount=1, 2 permissions", got.Roles[0])
+	}
+	if got.Roles[1].Name != "viewer" || got.Roles[1].BindingCount != 2 {
+		t.Errorf("viewer role entry = %+v, want BindingCount=2 (bob's and carol's role bindings both reference viewer)", got.Roles[1])
+	}
+	if len(got.Bindings) != 3 {
+		t.Fatalf("expected 3 bindings (1 cluster + 2 role), got %d: %+v", len(got.Bindings), got.Bindings)
+	}
+	var aliceBinding, bobBinding *domain.BindingEntry
+	for i := range got.Bindings {
+		switch got.Bindings[i].Subject {
+		case "alice":
+			aliceBinding = &got.Bindings[i]
+		case "bob":
+			bobBinding = &got.Bindings[i]
+		}
+	}
+	if aliceBinding == nil || aliceBinding.Role != "admin" || aliceBinding.Tenant != "" {
+		t.Errorf("alice binding = %+v, want role=admin tenant=\"\" (cluster-scoped)", aliceBinding)
+	}
+	if bobBinding == nil || bobBinding.Role != "viewer" || bobBinding.Tenant != "acme" {
+		t.Errorf("bob binding = %+v, want role=viewer tenant=acme", bobBinding)
+	}
+}
+
+func TestHandler_HandleRBAC_NilSourceReturns404(t *testing.T) {
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/rbac", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when rbac is not wired (feature off), got %d", rec.Code)
+	}
+}
+
+func TestHandler_HandleBudget_ReturnsDefaultAndOverridesAsJSON(t *testing.T) {
+	budget := &fakeBudgetSource{
+		defaultLimit: budgetdomain.LimitInfo{RequestsPerWindow: 25, Window: 60 * time.Second},
+		tenantOverrides: []budgetdomain.OverrideInfo{
+			{Scope: "tenant", Name: "globex", LimitInfo: budgetdomain.LimitInfo{RequestsPerWindow: 10, Window: 60 * time.Second}},
+		},
+		toolOverrides: []budgetdomain.OverrideInfo{
+			{Scope: "tool", Name: "run_query", LimitInfo: budgetdomain.LimitInfo{RequestsPerWindow: 15, Window: 30 * time.Second}},
+		},
+	}
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, budget, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/budget", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Default   domain.BudgetDefaultEntry    `json:"default"`
+		Overrides []domain.BudgetOverrideEntry `json:"overrides"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got.Default.RequestsPerWindow != 25 || got.Default.WindowSeconds != 60 {
+		t.Errorf("default = %+v, want {25 60}", got.Default)
+	}
+	if len(got.Overrides) != 2 {
+		t.Fatalf("expected 2 overrides (1 tenant + 1 tool), got %d: %+v", len(got.Overrides), got.Overrides)
+	}
+	var tenantOverride, toolOverride *domain.BudgetOverrideEntry
+	for i := range got.Overrides {
+		switch got.Overrides[i].Scope {
+		case "tenant":
+			tenantOverride = &got.Overrides[i]
+		case "tool":
+			toolOverride = &got.Overrides[i]
+		}
+	}
+	if tenantOverride == nil || tenantOverride.Name != "globex" || tenantOverride.RequestsPerWindow != 10 || tenantOverride.WindowSeconds != 60 {
+		t.Errorf("tenant override = %+v, want name=globex limit=10 window=60", tenantOverride)
+	}
+	if toolOverride == nil || toolOverride.Name != "run_query" || toolOverride.RequestsPerWindow != 15 || toolOverride.WindowSeconds != 30 {
+		t.Errorf("tool override = %+v, want name=run_query limit=15 window=30", toolOverride)
+	}
+}
+
+func TestHandler_HandleBudget_NilSourceReturns404(t *testing.T) {
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/budget", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when budget is not wired (feature off), got %d", rec.Code)
 	}
 }
 
@@ -428,7 +716,7 @@ func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *test
 			InstanceIDs: []string{"eu-cluster", "us-cluster"},
 		}},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
 	rec := httptest.NewRecorder()
@@ -456,7 +744,7 @@ func TestHandler_HandleFederationCorrelated_ReturnsBufferedEntriesAsJSON(t *test
 }
 
 func TestHandler_HandleFederationCorrelated_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
 	rec := httptest.NewRecorder()
@@ -472,7 +760,7 @@ func TestHandler_HandleBlocked_ReturnsListAsJSON(t *testing.T) {
 	blocked := &fakeBlockedSource{entries: []anomalydomain.BlockedEntry{
 		{Identity: "alice", BlockedUntil: until, Reason: "rate_spike"},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked", nil)
 	rec := httptest.NewRecorder()
@@ -491,7 +779,7 @@ func TestHandler_HandleBlocked_ReturnsListAsJSON(t *testing.T) {
 }
 
 func TestHandler_HandleBlocked_NilSourceReturns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked", nil)
 	rec := httptest.NewRecorder()
@@ -526,7 +814,7 @@ func tenantScopedFixtures() (*fakeAuditSource, *fakeAnomalySource, *fakeBlockedS
 // every endpoint Task 23 touches.
 func TestHandler_TenantScopedCaller_OnlySeesOwnTenant(t *testing.T) {
 	audit, anomalies, blocked := tenantScopedFixtures()
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"}, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
 	rec := httptest.NewRecorder()
@@ -567,7 +855,7 @@ func TestHandler_TenantScopedCaller_OnlySeesOwnTenant(t *testing.T) {
 // tenant's entries, unfiltered -- today's behavior, preserved.
 func TestHandler_GloballyGrantedCaller_SeesAllTenants(t *testing.T) {
 	audit, anomalies, blocked := tenantScopedFixtures()
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: ""}, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: ""}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
 	rec := httptest.NewRecorder()
@@ -587,7 +875,7 @@ func TestHandler_GloballyGrantedCaller_SeesAllTenants(t *testing.T) {
 // file), every endpoint stays unfiltered exactly as before this task.
 func TestHandler_NilScopeResolver_Unfiltered(t *testing.T) {
 	audit, anomalies, blocked := tenantScopedFixtures()
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, nil, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit", nil)
 	rec := httptest.NewRecorder()
@@ -609,7 +897,7 @@ func TestHandler_NilScopeResolver_Unfiltered(t *testing.T) {
 // caller identity), never from r.URL.Query() or headers.
 func TestHandler_TenantFilterIgnoresClientSuppliedTenantParam(t *testing.T) {
 	audit, anomalies, blocked := tenantScopedFixtures()
-	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"}, nil)
+	h := adapter.NewHandler(audit, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), anomalies, nil, blocked, fakeTenantScopeResolver{tenant: "acme"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/audit?tenant=widgets-inc", nil)
 	req.Header.Set("X-Tenant", "widgets-inc")
@@ -637,7 +925,7 @@ func TestHandler_FederationRoute_StaysUnfiltered(t *testing.T) {
 		{ID: 1, CorrelatedAlert: federationdomain.CorrelatedAlert{Fingerprint: "fp1", InstanceIDs: []string{"eu-cluster"}}},
 		{ID: 2, CorrelatedAlert: federationdomain.CorrelatedAlert{Fingerprint: "fp2", InstanceIDs: []string{"us-cluster"}}},
 	}}
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, fakeTenantScopeResolver{tenant: "acme"}, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, federation, nil, fakeTenantScopeResolver{tenant: "acme"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/federation/correlated", nil)
 	rec := httptest.NewRecorder()
@@ -657,7 +945,7 @@ func TestHandler_FederationRoute_StaysUnfiltered(t *testing.T) {
 func TestHandler_UnblockRoute_RequiresUnblockAuthorizer(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: "acme"}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, denyAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, denyAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -671,7 +959,7 @@ func TestHandler_UnblockRoute_RequiresUnblockAuthorizer(t *testing.T) {
 func TestHandler_UnblockRoute_CallsUnblockWithResolvedTenant(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: "acme"}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -694,7 +982,7 @@ func TestHandler_UnblockRoute_CallsUnblockWithResolvedTenant(t *testing.T) {
 func TestHandler_UnblockRoute_UnfilteredCallerWithoutTenantParam_Returns400(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: ""}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -716,7 +1004,7 @@ func TestHandler_UnblockRoute_UnfilteredCallerWithoutTenantParam_Returns400(t *t
 func TestHandler_UnblockRoute_UnfilteredCallerWithTenantParam_Succeeds(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: ""}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
 	rec := httptest.NewRecorder()
@@ -740,7 +1028,7 @@ func TestHandler_UnblockRoute_AllowedForReceivesResolvedTargetTenant(t *testing.
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: ""}
 	authz := &recordingUnblockAuthorizer{}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, authz)
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, authz, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
 	rec := httptest.NewRecorder()
@@ -755,7 +1043,7 @@ func TestHandler_UnblockRoute_AllowedForReceivesResolvedTargetTenant(t *testing.
 }
 
 func TestHandler_UnblockRoute_NilBlockedOrUnblock_Returns404(t *testing.T) {
-	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil)
+	h := adapter.NewHandler(&fakeAuditSource{}, &fakeStatusSource{}, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -768,7 +1056,7 @@ func TestHandler_UnblockRoute_NilBlockedOrUnblock_Returns404(t *testing.T) {
 
 func TestHandler_UnblockRoute_NonDeleteMethod_Returns405(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil, allowAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, nil, allowAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/anomalies/blocked/alice", nil)
 	rec := httptest.NewRecorder()
@@ -791,7 +1079,7 @@ func TestHandler_UnblockRoute_NonDeleteMethod_Returns405(t *testing.T) {
 func TestHandler_UnblockRoute_TenantFilterIgnoresClientSuppliedTenantParam(t *testing.T) {
 	blocked := &fakeBlockedSource{unblockResult: true}
 	scope := fakeTenantScopeResolver{tenant: "acme"}
-	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{})
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, blocked, scope, allowAllUnblockAuthorizer{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/anomalies/blocked/alice?tenant=widgets-inc", nil)
 	rec := httptest.NewRecorder()
@@ -802,5 +1090,493 @@ func TestHandler_UnblockRoute_TenantFilterIgnoresClientSuppliedTenantParam(t *te
 	}
 	if blocked.lastUnblockIdentity != "alice" || blocked.lastUnblockTenant != "acme" {
 		t.Errorf("client-supplied ?tenant= must be ignored for a scoped caller -- Unblock called with (%q,%q), want (\"alice\",\"acme\")", blocked.lastUnblockIdentity, blocked.lastUnblockTenant)
+	}
+}
+
+// --- Task 5: POST /dashboard/api/reload/{domain} ---
+
+func TestHandler_ReloadRoute_NonPostMethod_Returns405(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{Reloaders: map[string]func() error{}, OnAudit: func(reload.ReloadResult) {}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/reload/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405 for non-POST method, got %d", rec.Code)
+	}
+}
+
+// TestHandler_ReloadRoute_NilCoordinatorOrAuth_Returns404 covers both nil
+// halves of the pair, mirroring TestHandler_UnblockRoute_NilBlockedOrUnblock_Returns404:
+// reload is unavailable (404, not merely ungated) whenever either the
+// coordinator or its authorizer isn't wired -- e.g. rbac is off, since
+// reloadAuth is nil in that case (see newReloadAuthorizer's wiring in
+// main.go).
+func TestHandler_ReloadRoute_NilCoordinatorOrAuth_Returns404(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when reload is not wired (feature off or rbac off), got %d", rec.Code)
+	}
+}
+
+func TestHandler_ReloadRoute_EmptyDomain_Returns400(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{Reloaders: map[string]func() error{}, OnAudit: func(reload.ReloadResult) {}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 when domain is empty, got %d", rec.Code)
+	}
+}
+
+// TestHandler_ReloadRoute_AuthorizerDenies_Returns403 also proves the
+// coordinator is never reached when ReloadAuthorizer denies -- the
+// registered reloader panics if invoked.
+func TestHandler_ReloadRoute_AuthorizerDenies_Returns403(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{
+		Reloaders: map[string]func() error{"policy": func() error { panic("must not be called when denied") }},
+		OnAudit:   func(reload.ReloadResult) {},
+	}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, denyReloadAuthorizer{}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("want 403 when ReloadAuthorizer denies, got %d", rec.Code)
+	}
+}
+
+// TestHandler_ReloadRoute_Success_ReturnsResultWithAppliedByFromAuthorizer
+// proves AppliedBy comes from ReloadAuthorizer.Authorize's resolved
+// identity, never from anything the client supplies (no request body or
+// query parameter names it here).
+func TestHandler_ReloadRoute_Success_ReturnsResultWithAppliedByFromAuthorizer(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{
+		Reloaders: map[string]func() error{"policy": func() error { return nil }},
+		OnAudit:   func(reload.ReloadResult) {},
+	}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got reload.ReloadResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !got.OK || got.Domain != "policy" || got.AppliedBy != "alice" {
+		t.Errorf("got %+v, want OK=true Domain=policy AppliedBy=alice", got)
+	}
+}
+
+// TestHandler_ReloadRoute_UnknownDomain_ReturnsOKFalseNot404 proves an
+// unknown domain is the coordinator's own rejected-result path (OK=false,
+// still HTTP 200), not a 404 -- handleReload's own domain-required check
+// only rejects an EMPTY domain (see TestHandler_ReloadRoute_EmptyDomain_Returns400);
+// anything else, known or not, is dispatched to the coordinator.
+func TestHandler_ReloadRoute_UnknownDomain_ReturnsOKFalseNot404(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{Reloaders: map[string]func() error{}, OnAudit: func(reload.ReloadResult) {}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/nonsense", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the coordinator, not the HTTP layer, reports unknown-domain failure); body=%s", rec.Code, rec.Body.String())
+	}
+	var got reload.ReloadResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got.OK {
+		t.Errorf("expected OK=false for an unknown domain, got %+v", got)
+	}
+}
+
+// --- Task 6: GET /dashboard/api/reload/history ---
+
+type fakeReloadHistorySource struct {
+	entries []reload.ReloadEvent
+}
+
+func (f *fakeReloadHistorySource) Since(afterID int64, limit int) []reload.ReloadEvent {
+	var out []reload.ReloadEvent
+	for _, e := range f.entries {
+		if e.ID <= afterID {
+			continue
+		}
+		out = append(out, e)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+func TestHandler_HandleReloadHistory_ReturnsBufferedEntriesAsJSON(t *testing.T) {
+	history := &fakeReloadHistorySource{entries: []reload.ReloadEvent{
+		{ID: 1, ReloadResult: reload.ReloadResult{
+			Domain:    "policy",
+			OK:        false,
+			Error:     "unknown domain",
+			AppliedBy: "alice",
+			Timestamp: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC),
+		}},
+	}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, history, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/reload/history", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got []domain.ReloadEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if len(got) != 1 || got[0].Domain != "policy" || got[0].OK || got[0].Error != "unknown domain" || got[0].AppliedBy != "alice" {
+		t.Errorf("unexpected decoded response: %+v", got)
+	}
+}
+
+// TestHandler_HandleReloadHistory_TakesPrecedenceOverReloadPrefixRoute
+// proves the exact "/dashboard/api/reload/history" registration wins over
+// "/dashboard/api/reload/"'s subtree match (handleReload) for this one
+// literal path -- ServeMux always prefers the more specific pattern, so
+// GET /dashboard/api/reload/history must never be treated as a reload of
+// a domain literally named "history".
+func TestHandler_HandleReloadHistory_TakesPrecedenceOverReloadPrefixRoute(t *testing.T) {
+	coordinator := &reload.ReloadCoordinator{
+		Reloaders: map[string]func() error{"history": func() error { panic("must not be dispatched to the reload coordinator") }},
+		OnAudit:   func(reload.ReloadResult) {},
+	}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, coordinator, allowReloadAuthorizer{identity: "alice"}, &fakeReloadHistorySource{}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/reload/history", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_HandleReloadHistory_NilSourceReturns404(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/reload/history", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when reload history is not wired, got %d", rec.Code)
+	}
+}
+
+func TestHandler_HandleReloadHistory_NonGetMethod_Returns405(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, &fakeReloadHistorySource{}, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/reload/history", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405 for non-GET method, got %d", rec.Code)
+	}
+}
+
+var errPolicyWriteFailed = errors.New("refusing to write invalid policy: rule 0: identity must not be empty")
+var errBudgetWriteFailed = errors.New("refusing to write invalid config: budget.requests_per_window must be > 0")
+
+// policyWritePayload is the exact PUT /dashboard/api/policy JSON shape
+// handlePolicyWrite decodes -- kept as a small helper so every test
+// below builds a request body the same way.
+func policyWritePayload(t *testing.T, rules []map[string]string, def string) *bytes.Reader {
+	t.Helper()
+	body := map[string]any{"rules": rules, "default": def}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(data)
+}
+
+func TestHandler_PolicyWriteRoute_GetStillReturnsPolicyInfo(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{Backend: "yaml", Source: "rules: []\ndefault: allow\n"}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got domain.PolicyInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got.Backend != "yaml" {
+		t.Errorf("expected Backend = %q, got %q", "yaml", got.Backend)
+	}
+}
+
+func TestHandler_PolicyWriteRoute_NilWriterOrAuth_Returns404(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", policyWritePayload(t, nil, "allow"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when policyWriter/reloadAuth are not wired, got %d", rec.Code)
+	}
+}
+
+func TestHandler_PolicyWriteRoute_AuthorizerDenies_Returns403(t *testing.T) {
+	writer := &fakePolicyWriter{}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, denyReloadAuthorizer{}, nil, nil, writer, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", policyWritePayload(t, nil, "allow"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("want 403 when ReloadAuthorizer denies, got %d", rec.Code)
+	}
+	if writer.lastAppliedBy != "" {
+		t.Error("expected WriteAndReload to never be called when the authorizer denies")
+	}
+}
+
+// TestHandler_PolicyWriteRoute_Success_AppliedByFromAuthorizer proves
+// appliedBy comes from ReloadAuthorizer.Authorize's resolved identity,
+// never from the request body -- mirrors
+// TestHandler_ReloadRoute_Success_ReturnsResultWithAppliedByFromAuthorizer's
+// exact claim for the reload endpoint.
+func TestHandler_PolicyWriteRoute_Success_AppliedByFromAuthorizer(t *testing.T) {
+	writer := &fakePolicyWriter{}
+	updated := domain.PolicyInfo{Backend: "yaml", Source: "rules:\n  - identity: alice\n    tool: search\n    effect: allow\ndefault: deny\n"}
+	h := adapter.NewHandler(nil, nil, updated, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, writer, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", policyWritePayload(t,
+		[]map[string]string{{"identity": "alice", "tool": "search", "effect": "allow"}}, "deny"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.lastAppliedBy != "alice" {
+		t.Errorf("expected appliedBy = %q (from the authorizer), got %q", "alice", writer.lastAppliedBy)
+	}
+	if len(writer.lastRules) != 1 || writer.lastRules[0].Identity != "alice" || writer.lastRules[0].Tool != "search" || writer.lastRules[0].Effect != policydomain.EffectAllow {
+		t.Errorf("expected the decoded rule to reach WriteAndReload unchanged, got %+v", writer.lastRules)
+	}
+	if writer.lastDefault != policydomain.EffectDeny {
+		t.Errorf("expected default = deny, got %q", writer.lastDefault)
+	}
+	var got domain.PolicyInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got.Source != updated.Source {
+		t.Error("expected the response body to reflect the post-write policy.Current(), proving the caller doesn't need a second GET")
+	}
+}
+
+func TestHandler_PolicyWriteRoute_WriterError_Returns400WithMessage(t *testing.T) {
+	writer := &fakePolicyWriter{err: errPolicyWriteFailed}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, writer, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", policyWritePayload(t, nil, "allow"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct{ Error string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got.Error != errPolicyWriteFailed.Error() {
+		t.Errorf("expected the write error surfaced verbatim, got %q", got.Error)
+	}
+}
+
+func TestHandler_PolicyWriteRoute_MalformedBody_Returns400(t *testing.T) {
+	writer := &fakePolicyWriter{}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, writer, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/policy", bytes.NewReader([]byte("not json")))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for a malformed body, got %d", rec.Code)
+	}
+	if writer.lastAppliedBy != "" {
+		t.Error("expected WriteAndReload to never be called for a malformed body")
+	}
+}
+
+func TestHandler_PolicyRoute_UnsupportedMethod_Returns405(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/policy", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405 for DELETE, got %d", rec.Code)
+	}
+}
+
+func budgetWritePayload(t *testing.T, requestsPerWindow, windowSeconds int, tenantOverrides []map[string]any) *bytes.Reader {
+	t.Helper()
+	body := map[string]any{
+		"default":          map[string]any{"requests_per_window": requestsPerWindow, "window_seconds": windowSeconds},
+		"tenant_overrides": tenantOverrides,
+		"tool_overrides":   []map[string]any{},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(data)
+}
+
+func TestHandler_BudgetWriteRoute_GetStillReturnsBudget(t *testing.T) {
+	src := &fakeBudgetSource{defaultLimit: budgetdomain.LimitInfo{RequestsPerWindow: 25, Window: 60 * time.Second}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, src, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/budget", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_BudgetWriteRoute_NilWriterOrAuth_Returns404(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/budget", budgetWritePayload(t, 25, 60, nil))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when budgetWriter/reloadAuth are not wired, got %d", rec.Code)
+	}
+}
+
+func TestHandler_BudgetWriteRoute_AuthorizerDenies_Returns403(t *testing.T) {
+	writer := &fakeBudgetWriter{}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, denyReloadAuthorizer{}, nil, nil, nil, writer)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/budget", budgetWritePayload(t, 25, 60, nil))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("want 403 when ReloadAuthorizer denies, got %d", rec.Code)
+	}
+	if writer.lastAppliedBy != "" {
+		t.Error("expected WriteAndReload to never be called when the authorizer denies")
+	}
+}
+
+// TestHandler_BudgetWriteRoute_Success_AppliedByFromAuthorizer mirrors
+// TestHandler_PolicyWriteRoute_Success_AppliedByFromAuthorizer exactly,
+// for the Budget editor's own write path.
+func TestHandler_BudgetWriteRoute_Success_AppliedByFromAuthorizer(t *testing.T) {
+	writer := &fakeBudgetWriter{}
+	src := &fakeBudgetSource{defaultLimit: budgetdomain.LimitInfo{RequestsPerWindow: 25, Window: 60 * time.Second}}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, src, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, writer)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/budget", budgetWritePayload(t, 10, 30,
+		[]map[string]any{{"scope": "tenant", "name": "acme", "requests_per_window": 5, "window_seconds": 60}}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if writer.lastAppliedBy != "alice" {
+		t.Errorf("expected appliedBy = %q (from the authorizer), got %q", "alice", writer.lastAppliedBy)
+	}
+	if writer.lastDefault.RequestsPerWindow != 10 || writer.lastDefault.Window != 30*time.Second {
+		t.Errorf("expected the decoded default limit to reach WriteAndReload unchanged, got %+v", writer.lastDefault)
+	}
+	if len(writer.lastTenantOverrides) != 1 || writer.lastTenantOverrides[0].Name != "acme" {
+		t.Errorf("expected the decoded tenant override to reach WriteAndReload unchanged, got %+v", writer.lastTenantOverrides)
+	}
+}
+
+func TestHandler_BudgetWriteRoute_WriterError_Returns400WithMessage(t *testing.T) {
+	writer := &fakeBudgetWriter{err: errBudgetWriteFailed}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, writer)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/budget", budgetWritePayload(t, 25, 60, nil))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct{ Error string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got.Error != errBudgetWriteFailed.Error() {
+		t.Errorf("expected the write error surfaced verbatim, got %q", got.Error)
+	}
+}
+
+func TestHandler_BudgetWriteRoute_MalformedBody_Returns400(t *testing.T) {
+	writer := &fakeBudgetWriter{}
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, allowReloadAuthorizer{identity: "alice"}, nil, nil, nil, writer)
+
+	req := httptest.NewRequest(http.MethodPut, "/dashboard/api/budget", bytes.NewReader([]byte("not json")))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for a malformed body, got %d", rec.Code)
+	}
+	if writer.lastAppliedBy != "" {
+		t.Error("expected WriteAndReload to never be called for a malformed body")
+	}
+}
+
+func TestHandler_BudgetRoute_UnsupportedMethod_Returns405(t *testing.T) {
+	h := adapter.NewHandler(nil, nil, domain.PolicyInfo{}, testAssets(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/dashboard/api/budget", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405 for DELETE, got %d", rec.Code)
 	}
 }

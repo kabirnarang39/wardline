@@ -57,14 +57,24 @@ func TestDetector_RateSpike_AboveMultiplierAndFloorFlags(t *testing.T) {
 		d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 	}
 
-	found := false
-	for _, a := range writer.anomalies {
+	var found *domain.Anomaly
+	for i, a := range writer.anomalies {
 		if a.Kind == domain.KindRateSpike {
-			found = true
+			found = &writer.anomalies[i]
 		}
 	}
-	if !found {
-		t.Errorf("expected a rate_spike anomaly, got %+v", writer.anomalies)
+	if found == nil {
+		t.Fatalf("expected a rate_spike anomaly, got %+v", writer.anomalies)
+	}
+	// rate_spike is a threshold-crossing rule detector, not a
+	// magnitude-scoring one like ml_score -- it has no real Score to
+	// report, so AnomalyEntry.Score must stay nil (rendered "—" by the
+	// dashboard), never a fabricated 0.
+	if found.Score != nil {
+		t.Errorf("expected a nil Score for a rate_spike anomaly (no real magnitude to report), got %v", *found.Score)
+	}
+	if found.AutoBlockSeconds != 0 {
+		t.Errorf("expected AutoBlockSeconds = 0 for a rate_spike anomaly (only ml_score correlates with auto_block today), got %d", found.AutoBlockSeconds)
 	}
 }
 
@@ -921,10 +931,12 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	clock.t = clock.t.Add(61 * time.Second)
 	d.Publish(auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"})
 
+	var logged *domain.Anomaly
 	count := 0
-	for _, a := range writer.anomalies {
+	for i, a := range writer.anomalies {
 		if a.Kind == domain.KindMLScore {
 			count++
+			logged = &writer.anomalies[i]
 		}
 	}
 	if count != 1 {
@@ -932,6 +944,12 @@ func TestDetector_MLScore_LogsBelowAutoBlockThreshold_NeverBlocks(t *testing.T) 
 	}
 	if len(blocker.calls) != 0 {
 		t.Fatalf("expected zero Block calls for a score below auto_block.score_threshold, got %+v", blocker.calls)
+	}
+	if logged.Score == nil {
+		t.Error("expected a non-nil Score even for an anomaly that only logs (doesn't block)")
+	}
+	if logged.AutoBlockSeconds != 0 {
+		t.Errorf("expected AutoBlockSeconds = 0 for an anomaly that never triggered a real block, got %d", logged.AutoBlockSeconds)
 	}
 }
 
@@ -1266,6 +1284,18 @@ func TestDetector_MLScore_DenySpike_StillBlocks(t *testing.T) {
 		// would pass just as happily at 4.01.
 		if want := "ml_score 4.97 (feature: deny_ratio)"; !strings.Contains(blocker.calls[0].reason, want) {
 			t.Errorf("expected the block reason to be %q, got %q", want, blocker.calls[0].reason)
+		}
+		// AnomalyEntry.Score/AutoBlockSeconds are what the dashboard's
+		// Anomalies view uses for its Severity/Score/Auto-block columns --
+		// real fields, not decoration, so assert them directly rather than
+		// only through Detail's free-text string.
+		if logged[0].Score == nil {
+			t.Fatal("expected a non-nil Score for a real ml_score anomaly")
+		} else if got := *logged[0].Score; got < 10.8 || got > 11.0 {
+			t.Errorf("expected Score ~= 10.89 (the logged two-sided score), got %.2f", got)
+		}
+		if logged[0].AutoBlockSeconds != 300 {
+			t.Errorf("expected AutoBlockSeconds = 300 (declineCfg's BlockDurationSeconds) for an anomaly that actually blocked, got %d", logged[0].AutoBlockSeconds)
 		}
 	})
 

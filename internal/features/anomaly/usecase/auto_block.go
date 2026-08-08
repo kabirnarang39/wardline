@@ -8,6 +8,7 @@ import (
 )
 
 type blockEntry struct {
+	since  time.Time
 	until  time.Time
 	reason string
 	// tenant and identity recover the two parts of the map key for List's
@@ -50,8 +51,9 @@ func (b *BlockChecker) Block(identity, tenantName, reason string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	until := b.now().Add(time.Duration(b.cfg.BlockDurationSeconds) * time.Second)
-	b.blocked[tenantIdentityKey(tenantName, identity)] = blockEntry{until: until, reason: reason, tenant: tenantName, identity: identity}
+	since := b.now()
+	until := since.Add(time.Duration(b.cfg.BlockDurationSeconds) * time.Second)
+	b.blocked[tenantIdentityKey(tenantName, identity)] = blockEntry{since: since, until: until, reason: reason, tenant: tenantName, identity: identity}
 }
 
 // Check reports whether (identity, tenantName) may proceed at time now. A
@@ -109,7 +111,7 @@ func (b *BlockChecker) List(tenantFilter string) []domain.BlockedEntry {
 		if tenantFilter != "" && e.tenant != tenantFilter {
 			continue
 		}
-		entries = append(entries, domain.BlockedEntry{Identity: e.identity, Tenant: e.tenant, BlockedUntil: e.until, Reason: e.reason})
+		entries = append(entries, domain.BlockedEntry{Identity: e.identity, Tenant: e.tenant, BlockedSince: e.since, BlockedUntil: e.until, Reason: e.reason})
 	}
 	return entries
 }

@@ -9,39 +9,70 @@
 <body>
   <div id="app">
     <nav class="sidebar" aria-label="Dashboard sections">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">│</span>Wardline</div>
-      <button class="nav-item is-active" data-view="overview" aria-current="page">
-        <span class="nav-icon" data-icon="overview"></span>
-        <span>Overview</span>
-      </button>
-      <button class="nav-item" data-view="activity">
-        <span class="nav-icon" data-icon="activity"></span>
-        <span>Activity</span>
-      </button>
-      <button class="nav-item" data-view="anomalies">
-        <span class="nav-icon" data-icon="anomalies"></span>
-        <span>Anomalies</span>
-      </button>
-      <button class="nav-item" data-view="blocked">
-        <span class="nav-icon" data-icon="blocked"></span>
-        <span>Blocked</span>
-      </button>
-      <button class="nav-item" data-view="federation">
-        <span class="nav-icon" data-icon="federation"></span>
-        <span>Federation</span>
-      </button>
-      <button class="nav-item" data-view="credentials">
-        <span class="nav-icon" data-icon="credentials"></span>
-        <span>Credentials</span>
-      </button>
-      <button class="nav-item" data-view="policy">
-        <span class="nav-icon" data-icon="policy"></span>
-        <span>Policy</span>
-      </button>
-      <button class="nav-item" data-view="status">
-        <span class="nav-icon" data-icon="status"></span>
-        <span>Status</span>
-      </button>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-word">Wardline</span></div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Overview</div>
+        <button class="nav-item is-active" data-view="overview" aria-current="page">
+          <span class="nav-icon" data-icon="overview"></span>
+          <span>Overview</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Observability</div>
+        <button class="nav-item" data-view="activity">
+          <span class="nav-icon" data-icon="activity"></span>
+          <span>Activity</span>
+        </button>
+        <button class="nav-item" data-view="anomalies">
+          <span class="nav-icon" data-icon="anomalies"></span>
+          <span>Anomalies</span>
+          <span class="nav-count" id="nav-count-anomalies" hidden></span>
+        </button>
+        <button class="nav-item" data-view="blocked">
+          <span class="nav-icon" data-icon="blocked"></span>
+          <span>Blocked</span>
+          <span class="nav-count" id="nav-count-blocked" hidden></span>
+        </button>
+        <button class="nav-item" data-view="federation">
+          <span class="nav-icon" data-icon="federation"></span>
+          <span>Federation</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Configuration</div>
+        <button class="nav-item" data-view="policy">
+          <span class="nav-icon" data-icon="policy"></span>
+          <span>Policy</span>
+        </button>
+        <button class="nav-item" data-view="rbac">
+          <span class="nav-icon" data-icon="rbac"></span>
+          <span>RBAC</span>
+        </button>
+        <button class="nav-item" data-view="budget">
+          <span class="nav-icon" data-icon="budget"></span>
+          <span>Budget</span>
+        </button>
+        <button class="nav-item" data-view="credentials">
+          <span class="nav-icon" data-icon="credentials"></span>
+          <span>Credentials</span>
+        </button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">System</div>
+        <button class="nav-item" data-view="status">
+          <span class="nav-icon" data-icon="status"></span>
+          <span>Status</span>
+        </button>
+        <button class="nav-item" data-view="reload-log">
+          <span class="nav-icon" data-icon="reload-log"></span>
+          <span>Reload log</span>
+        </button>
+      </div>
+
       <div class="live-indicator" id="live-indicator" role="status" aria-live="polite">
         <span class="live-dot" id="live-dot"></span>
         <span id="live-label">Live</span>
@@ -55,20 +86,33 @@
           <input type="search" id="global-search" placeholder="Search..." aria-label="Search current view">
         </div>
         <div class="topbar-right">
+          <span class="role-pill" id="config-edit-pill" role="status" hidden>
+            <span data-icon="lock" aria-hidden="true"></span>
+            <span>config:edit</span>
+          </span>
+          <button class="topbar-icon-btn" id="theme-toggle-btn" aria-label="Switch to light theme">
+            <span data-icon="moon" aria-hidden="true"></span>
+          </button>
           <button class="topbar-icon-btn" id="notifications-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
             <span data-icon="bell" aria-hidden="true"></span>
             <span class="notification-badge" id="notification-badge" hidden>0</span>
           </button>
           <div class="topbar-identity" id="topbar-identity">
-            <span class="identity-avatar" data-icon="user" aria-hidden="true"></span>
-            <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+            <span class="identity-avatar" id="identity-avatar" data-icon="user" aria-hidden="true"></span>
+            <span class="identity-text" id="identity-text" hidden>
+              <span class="identity-name" id="identity-name"></span>
+              <span class="identity-tenant-badge" id="identity-tenant-badge" hidden></span>
+            </span>
           </div>
         </div>
       </header>
 
       <section id="view-overview" class="view is-active" aria-labelledby="view-overview-heading">
         <div class="view-header">
-          <h1 id="view-overview-heading">Overview</h1>
+          <div>
+            <h1 id="view-overview-heading">Overview</h1>
+            <p class="view-sub" id="overview-subtitle"></p>
+          </div>
         </div>
 
         <div class="status-band" id="status-band" data-state="nominal">
@@ -79,38 +123,44 @@
         <div class="kpi-row">
           <div class="kpi-tile">
             <div class="kpi-label">Requests</div>
-            <div class="kpi-value" id="kpi-total-requests">—</div>
+            <div class="kpi-value"><span id="kpi-total-requests">—</span> <span class="kpi-delta" id="kpi-total-requests-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
             <div class="kpi-label">Deny rate</div>
-            <div class="kpi-value" id="kpi-deny-rate">—</div>
+            <div class="kpi-value"><span id="kpi-deny-rate">—</span> <span class="kpi-delta" id="kpi-deny-rate-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
             <div class="kpi-label">Anomalies</div>
-            <div class="kpi-value" id="kpi-anomalies">—</div>
+            <div class="kpi-value"><span id="kpi-anomalies">—</span> <span class="kpi-delta" id="kpi-anomalies-delta" hidden></span></div>
           </div>
           <div class="kpi-tile">
-            <div class="kpi-label">Blocked</div>
-            <div class="kpi-value" id="kpi-blocked">—</div>
+            <div class="kpi-label">Blocked identities</div>
+            <div class="kpi-value"><span id="kpi-blocked">—</span> <span class="kpi-delta-active" id="kpi-blocked-active" hidden>active</span></div>
           </div>
         </div>
 
         <div class="card-grid">
-          <div class="card" id="chart-card">
-            <h2 class="card-title">Recent activity</h2>
-            <svg id="activity-chart" viewBox="0 0 400 180" role="img" aria-label="Bar chart of recent request volume over time"></svg>
-            <p class="card-caption" id="chart-caption"></p>
+          <div class="card panel" id="chart-card">
+            <div class="panel-title-bar"><h2 class="card-title">Recent activity</h2></div>
+            <table class="audit-table">
+              <thead><tr><th scope="col">Identity</th><th scope="col">Tool</th><th scope="col">Decision</th><th scope="col">Latency</th></tr></thead>
+              <tbody id="overview-recent-rows"></tbody>
+            </table>
+            <p id="overview-recent-empty" class="empty-state" hidden>No activity yet — requests through Wardline will show up here.</p>
           </div>
 
-          <div class="card" id="needs-review-card">
-            <h2 class="card-title">Needs review</h2>
+          <div class="card panel" id="needs-review-card">
+            <div class="panel-title-bar"><h2 class="card-title">Needs review</h2></div>
             <p id="needs-review-summary"></p>
             <button class="btn-primary" id="needs-review-cta">Review anomalies</button>
           </div>
 
-          <div class="card card-dark" id="live-pulse-card">
-            <h2 class="card-title">Live pulse</h2>
+          <div class="card card-dark panel" id="live-pulse-card">
+            <div class="panel-title-bar"><h2 class="card-title">Live pulse</h2></div>
             <div class="pulse-value" id="pulse-rate">0.0 <span class="pulse-unit">req/s</span></div>
+            <svg class="pulse-chart" id="pulse-chart" viewBox="0 0 240 56" preserveAspectRatio="none" aria-hidden="true">
+              <polyline id="pulse-chart-line" fill="none" stroke="var(--status-info)" stroke-width="1.6" points=""></polyline>
+            </svg>
             <button class="pulse-toggle" id="pulse-toggle" aria-label="Pause live updates">
               <span data-icon="pause" aria-hidden="true"></span>
             </button>
@@ -120,7 +170,10 @@
 
       <section id="view-activity" class="view" aria-labelledby="view-activity-heading" hidden>
         <div class="view-header">
-          <h1 id="view-activity-heading">Activity</h1>
+          <div>
+            <h1 id="view-activity-heading">Activity</h1>
+            <p class="view-sub" id="activity-subtitle"></p>
+          </div>
           <div class="filters">
             <input type="text" id="filter-identity" placeholder="Filter by identity" aria-label="Filter by identity">
             <input type="text" id="filter-tool" placeholder="Filter by tool" aria-label="Filter by tool">
@@ -131,6 +184,24 @@
               <button class="chip" data-decision="error" aria-pressed="false">error</button>
               <button class="chip" data-decision="passthrough" aria-pressed="false">passthrough</button>
               <button class="chip" data-decision="blocked" aria-pressed="false">blocked</button>
+            </div>
+          </div>
+          <button class="facet-toggle" id="facet-toggle" aria-expanded="false" aria-controls="facet-panel">
+            <span data-icon="chevron" aria-hidden="true"></span>
+            Filter by value
+          </button>
+          <div class="facet-panel" id="facet-panel" hidden>
+            <div class="facet-group">
+              <h3>Identity</h3>
+              <ul id="facet-identity"></ul>
+            </div>
+            <div class="facet-group">
+              <h3>Tool</h3>
+              <ul id="facet-tool"></ul>
+            </div>
+            <div class="facet-group">
+              <h3>Decision</h3>
+              <ul id="facet-decision"></ul>
             </div>
           </div>
         </div>
@@ -156,7 +227,10 @@
 
       <section id="view-anomalies" class="view" aria-labelledby="view-anomalies-heading" hidden>
         <div class="view-header">
-          <h1 id="view-anomalies-heading">Anomalies</h1>
+          <div>
+            <h1 id="view-anomalies-heading">Anomalies</h1>
+            <p class="view-sub">Read-only — detection runs in-process per replica</p>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="audit-table">
@@ -166,6 +240,9 @@
                 <th scope="col">Identity</th>
                 <th scope="col">Tenant</th>
                 <th scope="col">Kind</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Score</th>
+                <th scope="col">Auto-block</th>
                 <th scope="col">Detail</th>
               </tr>
             </thead>
@@ -177,7 +254,10 @@
 
       <section id="view-blocked" class="view" aria-labelledby="view-blocked-heading" hidden>
         <div class="view-header">
-          <h1 id="view-blocked-heading">Blocked</h1>
+          <div>
+            <h1 id="view-blocked-heading">Blocked</h1>
+            <p class="view-sub" id="blocked-subtitle"></p>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="audit-table">
@@ -186,6 +266,7 @@
                 <th scope="col">Identity</th>
                 <th scope="col">Tenant</th>
                 <th scope="col">Reason</th>
+                <th scope="col">Since</th>
                 <th scope="col">Expires</th>
                 <th scope="col"></th>
               </tr>
@@ -234,10 +315,113 @@
 
       <section id="view-policy" class="view" aria-labelledby="view-policy-heading" hidden>
         <div class="view-header">
-          <h1 id="view-policy-heading">Policy</h1>
-          <span class="badge" id="policy-backend"></span>
+          <div>
+            <h1 id="view-policy-heading">Policy</h1>
+            <p class="view-sub" id="policy-subtitle"></p>
+          </div>
+          <div class="tab-toggle" role="tablist" id="policy-tabs">
+            <button class="tab-toggle-btn is-active" data-policy-tab="editor" role="tab" aria-selected="true">Rule editor</button>
+            <button class="tab-toggle-btn" data-policy-tab="source" role="tab" aria-selected="false">Source</button>
+          </div>
         </div>
-        <pre class="policy-source" id="policy-source" tabindex="0"></pre>
+
+        <div id="policy-editor-tab">
+          <div class="panel" id="policy-editor-panel" hidden>
+            <div class="panel-title-bar">
+              <span>Rules</span>
+              <button class="btn-secondary" id="policy-add-rule" type="button">+ Add rule</button>
+            </div>
+            <div class="table-wrap">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Identity</th>
+                    <th scope="col">Tool</th>
+                    <th scope="col">Tenant</th>
+                    <th scope="col">Effect</th>
+                    <th scope="col">Priority</th>
+                    <th scope="col"></th>
+                  </tr>
+                </thead>
+                <tbody id="policy-rule-rows"></tbody>
+              </table>
+              <p id="policy-rules-empty" class="empty-state" hidden>No rules yet — every call falls through to the default effect below.</p>
+            </div>
+          </div>
+          <div class="policy-editor-footer" id="policy-editor-footer" hidden>
+            <label class="policy-default-label" for="policy-default-select">Default effect
+              <select id="policy-default-select">
+                <option value="allow">allow</option>
+                <option value="deny">deny</option>
+              </select>
+            </label>
+            <button class="btn-primary" id="policy-validate-apply" type="button">Validate &amp; apply</button>
+            <span class="policy-editor-hint">Old rules keep serving until the new set validates clean — no downtime on a bad edit.</span>
+          </div>
+          <p id="policy-write-result" role="status" aria-live="polite" hidden></p>
+          <p id="policy-editor-unavailable" class="empty-state" hidden>Rule editor is only available for the yaml policy backend, and requires config:edit. Use Source below to view the active policy.</p>
+        </div>
+
+        <pre class="policy-source" id="policy-source" tabindex="0" hidden></pre>
+      </section>
+
+      <section id="view-rbac" class="view" aria-labelledby="view-rbac-heading" hidden>
+        <div class="view-header">
+          <h1 id="view-rbac-heading">RBAC</h1>
+        </div>
+        <div class="two-col-rbac">
+          <div class="panel">
+            <div class="panel-title-bar">Roles</div>
+            <div class="table-wrap">
+              <table class="audit-table">
+                <thead><tr><th scope="col">Role</th><th scope="col">Permissions</th><th scope="col">Bindings</th></tr></thead>
+                <tbody id="rbac-role-rows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-title-bar">Bindings</div>
+            <div id="rbac-binding-list" class="rbac-binding-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-budget" class="view" aria-labelledby="view-budget-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-budget-heading">Budget</h1>
+            <p class="view-sub">Requests-per-window limits</p>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="panel-title-bar">Default limit</div>
+          <div class="budget-default-fields">
+            <label>Requests / window
+              <input type="number" id="budget-default-requests" min="1" inputmode="numeric">
+            </label>
+            <label>Window (seconds)
+              <input type="number" id="budget-default-window" min="1" inputmode="numeric">
+            </label>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title-bar">
+            <span>Overrides</span>
+            <button class="btn-secondary" id="budget-add-override" type="button">+ Add override</button>
+          </div>
+          <div class="table-wrap">
+            <table class="audit-table">
+              <thead><tr><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Limit</th><th scope="col">Window (s)</th><th scope="col"></th></tr></thead>
+              <tbody id="budget-override-rows"></tbody>
+            </table>
+            <p id="budget-override-empty" class="empty-state" hidden>No tenant or tool overrides configured — every identity uses the default limit above.</p>
+          </div>
+        </div>
+        <div class="policy-editor-footer" id="budget-editor-footer">
+          <button class="btn-primary" id="budget-validate-apply" type="button">Validate &amp; apply</button>
+          <span class="policy-editor-hint">Thresholds update in place — nobody's already-counted usage resets.</span>
+        </div>
+        <p id="budget-write-result" role="status" aria-live="polite" hidden></p>
       </section>
 
       <section id="view-status" class="view" aria-labelledby="view-status-heading" hidden>
@@ -247,6 +431,30 @@
         <dl class="status-grid" id="status-grid"></dl>
         <h2 class="status-subheading">Features</h2>
         <ul class="feature-list" id="feature-list"></ul>
+      </section>
+
+      <section id="view-reload-log" class="view" aria-labelledby="view-reload-log-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-reload-log-heading">Reload log</h1>
+            <p class="view-sub">Every config-edit attempt, accepted or rejected</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Domain</th>
+                <th scope="col">Result</th>
+                <th scope="col">Applied by</th>
+                <th scope="col">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="reload-log-rows"></tbody>
+          </table>
+          <p id="reload-log-empty" class="empty-state" hidden>No config-reload attempts yet.</p>
+        </div>
       </section>
     </main>
   </div>

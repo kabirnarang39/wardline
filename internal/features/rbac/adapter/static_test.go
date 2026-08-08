@@ -36,11 +36,17 @@ bindings:
 	if !a.Authorize("alice", "default", domain.PermissionCredentialRevoke) {
 		t.Error("expected alice (admin, cluster-scoped) to have credential:revoke")
 	}
+	if !a.Authorize("alice", "default", domain.PermissionConfigEdit) {
+		t.Error("expected alice (admin, cluster-scoped) to have config:edit")
+	}
 	if !a.Authorize("bob", "default", domain.PermissionDashboardView) {
 		t.Error("expected bob (viewer, cluster-scoped) to have dashboard:view")
 	}
 	if a.Authorize("bob", "default", domain.PermissionCredentialRevoke) {
 		t.Error("expected bob (viewer) to NOT have credential:revoke")
+	}
+	if a.Authorize("bob", "default", domain.PermissionConfigEdit) {
+		t.Error("expected bob (viewer) to NOT have config:edit")
 	}
 }
 
@@ -205,6 +211,63 @@ func TestLoadAuthorizer_EmptyFileLoadsSuccessfully(t *testing.T) {
 	}
 	if a.Authorize("nobody", "default", domain.PermissionDashboardView) {
 		t.Error("expected zero bindings (and thus no granted permissions) from an empty rbac.yaml")
+	}
+}
+
+// TestRoles_IncludesBuiltinAndCustomSortedByName covers the new
+// dashboard-facing read accessor: both built-in roles (admin, viewer)
+// and a custom rbac.yaml role (auditor) must come back, sorted by name.
+func TestRoles_IncludesBuiltinAndCustomSortedByName(t *testing.T) {
+	path := writeRBACFile(t, `
+roles:
+  - name: auditor
+    permissions: ["dashboard:view"]
+bindings: []
+`)
+	a, err := adapter.LoadAuthorizer(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	roles := a.Roles()
+	if len(roles) != 3 {
+		t.Fatalf("expected 3 roles (admin, auditor, viewer), got %d: %+v", len(roles), roles)
+	}
+	names := make([]string, len(roles))
+	for i, r := range roles {
+		names[i] = r.Name
+	}
+	want := []string{"admin", "auditor", "viewer"}
+	for i, w := range want {
+		if names[i] != w {
+			t.Errorf("roles[%d] = %q, want %q (want sorted order %v, got %v)", i, names[i], w, want, names)
+		}
+	}
+}
+
+// TestClusterRoleBindingsAndRoleBindings_ReturnRealBoundData covers the
+// new dashboard-facing read accessors for bindings -- a cluster-scoped
+// (global) binding must land in ClusterRoleBindings(), a tenant-scoped
+// one in RoleBindings(), with the real subject/role/tenant data intact.
+func TestClusterRoleBindingsAndRoleBindings_ReturnRealBoundData(t *testing.T) {
+	path := writeRBACFile(t, `
+bindings:
+  - subject: alice
+    role: admin
+  - subject: dave
+    role: viewer
+    tenant: team-payments
+`)
+	a, err := adapter.LoadAuthorizer(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	clusterBindings := a.ClusterRoleBindings()
+	if len(clusterBindings) != 1 || clusterBindings[0].Subject != "alice" || clusterBindings[0].RoleName != "admin" {
+		t.Errorf("ClusterRoleBindings() = %+v, want one binding for alice/admin", clusterBindings)
+	}
+	roleBindings := a.RoleBindings()
+	if len(roleBindings) != 1 || roleBindings[0].Subject != "dave" || roleBindings[0].RoleName != "viewer" || roleBindings[0].Tenant != "team-payments" {
+		t.Errorf("RoleBindings() = %+v, want one binding for dave/viewer/team-payments", roleBindings)
 	}
 }
 
