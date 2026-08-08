@@ -691,23 +691,28 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
    override needed or the panel never actually hides. */
 .facet-panel {
   display: flex;
-  gap: 24px;
+  gap: 28px;
   flex-wrap: wrap;
-  padding: 16px;
+  padding: 15px;
   margin-top: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
 }
 .facet-panel[hidden] { display: none; }
+/* Fixed-width columns instead of content-sized flex items -- without
+   this, three groups of differently-long values (identity names vs tool
+   names vs decision words) produce a ragged, unaligned layout instead of
+   reading as a clean 3-column grid. */
+.facet-group { min-width: 160px; }
 
 .facet-group h3 {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
 }
 
 .facet-group ul {
@@ -716,42 +721,57 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
   max-height: 160px;
   overflow-y: auto;
 }
 
 .facet-group button {
+  position: relative;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  min-height: 44px;
+  min-height: 30px;
   padding: 4px 8px;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text);
   text-align: left;
 }
+/* Visible control is a compact 30px row, but keep this project's 44px
+   minimum tap target via an invisible expanded hit area. */
+.facet-group button::before { content: ''; position: absolute; inset: -7px 0; }
 
 .facet-group button:hover {
   background: var(--surface-raised);
 }
 
 .facet-group button.is-active {
-  background: var(--surface-raised);
+  background: var(--status-info-soft);
   color: var(--status-info);
   font-weight: 600;
 }
 
+/* Pill-badge count, matching .nav-item .nav-count's exact treatment --
+   a bare trailing number read as unstyled/placeholder text next to the
+   rest of the app's chip-and-pill vocabulary. */
 .facet-count {
+  font-size: 11px;
+  font-family: var(--font-data);
   color: var(--text-muted);
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
   font-variant-numeric: tabular-nums;
 }
+.facet-group button.is-active .facet-count { color: var(--status-info); border-color: var(--status-info); }
 
 /* Shared Grafana-style panel treatment (dashboard-visual-v4 Task 3). Every
    bordered-card view surface converges on this: --surface fill, --border
