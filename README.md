@@ -101,20 +101,26 @@ curl -X POST http://localhost:8080 \
 (This matches the `agent-abc123` / `read_file` allow rule in
 `policy.yaml.example`.)
 
-**Scope note:** policy, budget enforcement, and audit decisions apply to
-tool calls (`tools/call`) only. Other MCP protocol methods — the
-`initialize` handshake every client performs, `notifications/initialized`,
-`tools/list`, and (if your upstream MCP server exposes them) `resources/*`
-and `prompts/*` — are forwarded to the upstream server without policy or
-budget evaluation, recorded in the audit log with a `"passthrough"`
-decision so they're visible but distinguishable from an actual policy
-`"allow"`. If your upstream server exposes sensitive resources or
-prompts, be aware they are not currently gated by Wardline's policy
-engine — only tool calls are. `auto_block` (see [Auto-block](#auto-block))
-is the one deliberate exception to this scope note: once an identity is
-auto-blocked, every one of its calls is rejected, protocol-lifecycle
-passthrough included — a blocked identity shouldn't get a handshake
-either.
+**Scope note:** policy decisions apply to tool calls (`tools/call`) and,
+if your upstream MCP server exposes them, `resources/*`/`prompts/*`
+methods (e.g. `resources/read`, `prompts/get`) — a rule can target a
+resource URI or prompt name the same way it targets a tool name (see
+`policy.yaml.example`'s `method:` key; omitted/blank means `tools/call`,
+so every rule written before this existed keeps matching exactly what it
+matched before). **Budget enforcement stays tool-call-scoped only** —
+budget buckets are keyed by tool name, and widening that key space to
+arbitrary resource URIs is a real, separate design question, deliberately
+not solved here (see
+`docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md`).
+True protocol-lifecycle methods — the `initialize` handshake every client
+performs, `notifications/initialized`, `tools/list` — are still forwarded
+to the upstream server without any policy or budget evaluation, recorded
+in the audit log with a `"passthrough"` decision so they're visible but
+distinguishable from an actual policy `"allow"`. `auto_block` (see
+[Auto-block](#auto-block)) is the one deliberate exception to all of the
+above: once an identity is auto-blocked, every one of its calls is
+rejected, protocol-lifecycle passthrough included — a blocked identity
+shouldn't get a handshake either.
 
 ## Policy backends
 

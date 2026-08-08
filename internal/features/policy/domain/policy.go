@@ -13,8 +13,10 @@ const (
 	EffectDeny  Effect = "deny"
 )
 
-// Rule grants or denies a specific identity access to a specific tool.
-// Tool may be "*" to match any tool for that identity.
+// Rule grants or denies a specific identity access to a specific tool (or,
+// since the resources/prompts widening, a specific resource URI or prompt
+// name — see Method). Tool may be "*" to match any target for that
+// identity+method.
 //
 // Tenant scopes the rule to a single tenant; "" means the rule is global
 // and matches any tenant, the same "empty means global" convention used by
@@ -24,6 +26,14 @@ type Rule struct {
 	Tool     string
 	Effect   Effect
 	Tenant   string
+
+	// Method is the JSON-RPC method this rule applies to: "tools/call",
+	// or an MCP resources/*/prompts/* method (e.g. "resources/read",
+	// "prompts/get", "resources/list"). "" means "tools/call" — every
+	// rule written before this field existed keeps matching exactly what
+	// it matched before, with zero required edits to an existing
+	// policy.yaml.
+	Method string
 }
 
 // Decision is the result of evaluating a Context against policy.
@@ -77,6 +87,12 @@ type Context struct {
 	// Tenant is the calling identity's tenant. "" means no tenant scoping
 	// applies to this call (matches only untenanted, global Rules).
 	Tenant string
+
+	// Method is the JSON-RPC method this call arrived as: "tools/call",
+	// or a gated resources/*/prompts/* method (e.g. "resources/read").
+	// A rule with Method == "" is treated as "tools/call" when matching
+	// against this field — see Rule.Method.
+	Method string
 }
 
 // Engine evaluates whether a Context's identity may make its tool call.

@@ -5,4 +5,14 @@ rules:
   - identity: "agent-abc123"
     tool: "*"
     effect: deny
+  # method is optional; omitted/blank means "tools/call" (the rules above
+  # are ordinary tool-call rules). Set it to "resources/read", "prompts/get",
+  # or any other resources/*/prompts/* method to scope a rule to that MCP
+  # method instead -- tool then holds the resource uri or prompt name (or
+  # "*" for any). Budget enforcement stays tool-call-scoped only; a
+  # resources/prompts rule only affects the policy decision.
+  - identity: "agent-abc123"
+    method: "resources/read"
+    tool: "file:///data/report.csv"
+    effect: allow
 default: deny

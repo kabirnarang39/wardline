@@ -885,6 +885,28 @@ function setLive(ok) {
 let policyRules = [];
 let policyDefault = 'allow';
 
+// POLICY_RULE_METHODS mirrors proxy/usecase/parse.go's isGatedMethod set
+// -- the only JSON-RPC methods a policy rule can ever match against, see
+// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
+// list-style methods (resources/list, prompts/list) carry no target, so
+// their Tool field only ever matches a "*" or the policy's default.
+const POLICY_RULE_METHODS = ['tools/call', 'resources/read', 'resources/list', 'prompts/get', 'prompts/list'];
+
+// policyToolPlaceholder gives the Tool column input a placeholder that
+// names what it actually holds for the row's method -- a tool name means
+// something different from a resource URI or a prompt name, and a
+// list-style method has no target at all.
+function policyToolPlaceholder(method) {
+  switch (method) {
+    case 'resources/read': return 'resource uri (or * for any)';
+    case 'prompts/get': return 'prompt name (or * for any)';
+    case 'resources/list':
+    case 'prompts/list':
+      return '* (list calls have no single target)';
+    default: return 'tool name (or * for any)';
+  }
+}
+
 async function loadPolicy() {
   try {
     const policy = await fetchPolicy();
@@ -921,7 +943,7 @@ function renderPolicyEditor(policy) {
   footer.hidden = false;
   unavailable.hidden = true;
 
-  policyRules = policy.Rules.map((r) => ({ identity: r.identity, tool: r.tool, tenant: r.tenant || '', effect: r.effect }));
+  policyRules = policy.Rules.map((r) => ({ identity: r.identity, tool: r.tool, tenant: r.tenant || '', effect: r.effect, method: r.method || 'tools/call' }));
   policyDefault = policy.Default || 'allow';
   document.getElementById('policy-default-select').value = policyDefault;
   renderPolicyRuleRows();
@@ -941,7 +963,12 @@ function renderPolicyRuleRows() {
   tbody.innerHTML = policyRules.map((rule, i) => `
     <tr>
       <td><input type="text" class="policy-rule-input" data-field="identity" data-index="${i}" value="${escapeHTML(rule.identity)}" placeholder="identity" aria-label="Rule ${i + 1} identity"></td>
-      <td><input type="text" class="policy-rule-input" data-field="tool" data-index="${i}" value="${escapeHTML(rule.tool)}" placeholder="tool" aria-label="Rule ${i + 1} tool"></td>
+      <td>
+        <select class="policy-rule-select policy-rule-method" data-index="${i}" aria-label="Rule ${i + 1} method">
+          ${POLICY_RULE_METHODS.map((m) => `<option value="${m}" ${rule.method === m ? 'selected' : ''}>${m}</option>`).join('')}
+        </select>
+      </td>
+      <td><input type="text" class="policy-rule-input" data-field="tool" data-index="${i}" value="${escapeHTML(rule.tool)}" placeholder="${policyToolPlaceholder(rule.method)}" aria-label="Rule ${i + 1} tool"></td>
       <td><input type="text" class="policy-rule-input" data-field="tenant" data-index="${i}" value="${escapeHTML(rule.tenant)}" placeholder="all tenants" aria-label="Rule ${i + 1} tenant"></td>
       <td>
         <select class="policy-rule-select" data-index="${i}" aria-label="Rule ${i + 1} effect">
@@ -964,7 +991,13 @@ function renderPolicyRuleRows() {
       policyRules[Number(input.dataset.index)][input.dataset.field] = input.value;
     });
   });
-  tbody.querySelectorAll('.policy-rule-select').forEach((select) => {
+  tbody.querySelectorAll('.policy-rule-method').forEach((select) => {
+    select.addEventListener('change', () => {
+      policyRules[Number(select.dataset.index)].method = select.value;
+      renderPolicyRuleRows();
+    });
+  });
+  tbody.querySelectorAll('.policy-rule-select:not(.policy-rule-method)').forEach((select) => {
     select.addEventListener('change', () => {
       policyRules[Number(select.dataset.index)].effect = select.value;
     });
@@ -986,7 +1019,7 @@ function renderPolicyRuleRows() {
 
 function wirePolicyEditor() {
   document.getElementById('policy-add-rule').addEventListener('click', () => {
-    policyRules.push({ identity: '', tool: '', tenant: '', effect: 'allow' });
+    policyRules.push({ identity: '', tool: '', tenant: '', effect: 'allow', method: 'tools/call' });
     renderPolicyRuleRows();
     const inputs = document.querySelectorAll('#policy-rule-rows tr:last-child input');
     if (inputs.length) inputs[0].focus();

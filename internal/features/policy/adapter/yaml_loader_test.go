@@ -145,6 +145,65 @@ default: deny
 	}
 }
 
+func TestLoadFile_ResourcesReadMethodRule(t *testing.T) {
+	path := writeTemp(t, `
+rules:
+  - identity: "agent-abc123"
+    method: "resources/read"
+    tool: "file:///data/report.csv"
+    effect: allow
+default: deny
+`)
+	m, err := adapter.LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "resources/read"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for matching resources/read rule, got %q", got.Effect)
+	}
+	got = m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "file:///data/report.csv", Method: "tools/call"})
+	if got.Effect != domain.EffectDeny {
+		t.Errorf("expected default deny -- same target via tools/call must not match a resources/read-scoped rule, got %q", got.Effect)
+	}
+}
+
+func TestLoadFile_OmittedMethodDefaultsToToolsCall(t *testing.T) {
+	path := writeTemp(t, `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+	m, err := adapter.LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := m.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Method: "tools/call"})
+	if got.Effect != domain.EffectAllow {
+		t.Errorf("expected allow -- omitted method must default to tools/call, got %q", got.Effect)
+	}
+}
+
+func TestLoadFile_InvalidMethodRejected(t *testing.T) {
+	path := writeTemp(t, `
+rules:
+  - identity: "agent-abc123"
+    method: "bogus"
+    tool: "read_file"
+    effect: allow
+default: deny
+`)
+	_, err := adapter.LoadFile(path)
+	if err == nil {
+		t.Fatal("expected error for a method that could never match a real gated request, got nil")
+	}
+	if !strings.Contains(err.Error(), "method") {
+		t.Errorf("expected error to mention the invalid method, got: %v", err)
+	}
+}
+
 func TestLoadFile_UnknownTopLevelKey(t *testing.T) {
 	path := writeTemp(t, `
 rulez:
