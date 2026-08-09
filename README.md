@@ -1,8 +1,11 @@
 # Wardline
 
+[![CI](https://github.com/kabirnarang39/wardline/actions/workflows/ci.yml/badge.svg)](https://github.com/kabirnarang39/wardline/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kabirnarang39/wardline)](https://goreportcard.com/report/github.com/kabirnarang39/wardline)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kabirnarang39/wardline.svg)](https://pkg.go.dev/github.com/kabirnarang39/wardline)
+[![Release](https://img.shields.io/github/v/release/kabirnarang39/wardline?sort=semver)](https://github.com/kabirnarang39/wardline/releases)
 [![Docs](https://img.shields.io/badge/docs-website-15803D)](https://kabirnarang39.github.io/wardline/docs/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-15803D)](LICENSE)
-[![Deploy site and docs](https://github.com/kabirnarang39/wardline/actions/workflows/docs.yml/badge.svg)](https://github.com/kabirnarang39/wardline/actions/workflows/docs.yml)
 [Website](https://kabirnarang39.github.io/wardline/)
 
 Open source control-plane proxy for AI agents: identity, policy, budget, and
@@ -1159,6 +1162,37 @@ already on that same port. This is precisely why `web_ui` defaults to
 off — only enable it when you're comfortable with every caller the
 proxy already accepts also being able to read full audit reasons and
 the complete policy source.
+
+## Performance
+
+Reproducible with `go test -bench`, not marketing numbers — regenerate
+them yourself from the checked-in benchmarks.
+
+- **Policy-decision overhead** (default YAML backend, in-process, excludes
+  upstream network) — `BenchmarkDecider_Decide` in
+  `internal/features/proxy/usecase/decider_bench_test.go`, on the author's
+  machine (Apple Silicon, `go test -bench=Decide -benchmem`):
+
+  | Policy size | Time / decision | Allocations |
+  |---|---|---|
+  | 10 rules | ~33 ns | 0 |
+  | 100 rules | ~260 ns | 0 |
+  | 1000 rules | ~2.4 µs | 0 |
+
+  The YAML matcher is a linear scan (worst case = the matching rule is
+  last), and adds zero heap allocations per decision. OPA/Cedar backends
+  trade this for richer policies — benchmark your own policy if evaluation
+  cost matters at your rule count.
+
+- **Anomaly detector false-positive rate on steady traffic** — the
+  flagship `ml_score` claim (normal agents don't get auto-blocked) has a
+  regression-guarded test:
+  `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic`
+  (`internal/features/anomaly/usecase/false_positive_test.go`) feeds ~30
+  calls/window with ordinary ±20% jitter across 300 windows and asserts a
+  **0% false-positive rate** (budget: <2%) against the shipped example
+  config's `score_threshold: 4.0`. The warmup and relative-stddev floors
+  in `online_stat.go` are what hold that line.
 
 ## Postgres storage
 

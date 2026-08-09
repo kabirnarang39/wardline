@@ -1,0 +1,43 @@
+name: Bug report
+description: Report incorrect or unexpected behavior in Wardline
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For **security vulnerabilities**, do not file a
+        public issue — see [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal config / policy / request that triggers it. Redact secrets.
+      placeholder: |
+        1. config: ...
+        2. policy: ...
+        3. request: curl ...
+        4. observed: ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `wardline version`, or the git commit.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Audit/anomaly log lines or server output. Redact identities/secrets.
+      render: shell
+    validations:
+      required: false

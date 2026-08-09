@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new capability or change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and why does it matter?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Wardline do? If it touches a domain interface or the composition root, note that.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: checkboxes
+    id: flag
+    attributes:
+      label: Feature-flag expectation
+      description: Capabilities beyond the v0.1 baseline ship behind a config flag (see CLAUDE.md).
+      options:
+        - label: This is a post-v0.1 capability and should ship behind a feature flag
