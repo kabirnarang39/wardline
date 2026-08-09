@@ -629,13 +629,14 @@ persisted row is keyed on `(instance_id, tenant, identity)`, not just
 hostname (the same derivation federation's own instance ID uses — see
 [Federation](#federation)), so two replicas sharing one Postgres DSN each
 get their own row per identity instead of last-writer-wins overwriting
-each other's checkpoint. A consequence worth knowing: if a replica's
-hostname ever changes (e.g. pod recreation on a rolling deploy), its old
-rows are orphaned under the previous hostname — never reloaded again,
-and not currently pruned — which is an acceptable, if unbounded, cost
-matching this feature's existing "reappears as novel" fallback posture;
-see [Anomaly detection](/features/anomaly-detection/)'s Known
-Limitations for the pruning caveat. See
+each other's checkpoint. If a replica's hostname ever changes (e.g. pod
+recreation on a rolling deploy), its old rows are orphaned under the
+previous hostname — never reloaded again — but they no longer accumulate
+unbounded: every live replica's GC tick prunes baseline rows (any
+instance's) that haven't been re-checkpointed in the last few GC
+intervals, so an abandoned or renamed replica's rows are cleaned up
+automatically while a live replica's own rows — re-upserted every tick —
+are never caught. See
 [Credential issuance](#credential-issuance) for the same
 `postgres_storage`-gated pattern applied to revocation state, and the
 "Still per-replica" list in [HA deployment](#ha-deployment) for what

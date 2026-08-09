@@ -5,6 +5,24 @@ import (
 	"time"
 )
 
+// stalePruner is the optional extension a baselineStore may implement to
+// delete rows left behind by an instance that no longer checkpoints (a
+// permanently scaled-down replica, or one whose hostname changed and
+// orphaned its old rows). Only the Postgres store implements it; the
+// in-memory (nil-store) path never reaches the prune call below.
+type stalePruner interface {
+	PruneStale(olderThan time.Duration) (int64, error)
+}
+
+// abandonedInstancePruneFactor sets the prune cutoff at this many GC
+// intervals: a baseline row not re-upserted in that long belongs to an
+// instance that has stopped checkpointing entirely. It is deliberately
+// well beyond the 2x-interval in-memory eviction window and tolerant of a
+// couple of consecutively-failed checkpoints, so a live replica -- which
+// re-upserts every one of its rows each tick -- can never have its own
+// rows pruned out from under it.
+const abandonedInstancePruneFactor = 4
+
 // gc drops identityState entries whose lastSeen is more than 2x
 // interval before now. Dropping an identity's state is safe: it simply
 // reappears as "novel" on its next call (both the rate-spike baseline
@@ -61,6 +79,17 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 			// -- an operator debugging a checkpoint-save failure would
 			// grep the wrong subsystem name.
 			d.onError(fmt.Errorf("anomaly baseline checkpoint save failed: %w", err))
+		}
+		// Clean up rows abandoned by instances that no longer checkpoint.
+		// Runs after SaveAll so this tick's own upserts have already
+		// refreshed every live row's updated_at -- only genuinely
+		// abandoned rows can be older than the cutoff. Idempotent and
+		// safe to run from every replica each tick (see
+		// PostgresBaselineStore.PruneStale).
+		if pruner, ok := d.store.(stalePruner); ok {
+			if _, err := pruner.PruneStale(abandonedInstancePruneFactor * interval); err != nil && d.onError != nil {
+				d.onError(fmt.Errorf("anomaly baseline stale-prune failed: %w", err))
+			}
 		}
 	}
 }

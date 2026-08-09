@@ -522,13 +522,16 @@ func TestDetector_MLScore_BlockedEntriesExcludedFromState(t *testing.T) {
 // assert Publish never reaches the store at all -- the load-bearing
 // constraint this task exists to prove.
 type fakeBaselineStore struct {
-	loadResult  map[string]IdentityStateSnapshot
-	loadErr     error
-	saved       map[string]IdentityStateSnapshot
-	deletedKeys []string
-	saveErr     error
-	loadCalls   int
-	saveCalls   int
+	loadResult      map[string]IdentityStateSnapshot
+	loadErr         error
+	saved           map[string]IdentityStateSnapshot
+	deletedKeys     []string
+	saveErr         error
+	loadCalls       int
+	saveCalls       int
+	pruneCalls      int
+	prunedOlderThan time.Duration
+	pruneErr        error
 }
 
 func (f *fakeBaselineStore) LoadAll() (map[string]IdentityStateSnapshot, error) {
@@ -541,6 +544,29 @@ func (f *fakeBaselineStore) SaveAll(m map[string]IdentityStateSnapshot, deletedK
 	f.saved = m
 	f.deletedKeys = deletedKeys
 	return f.saveErr
+}
+
+// PruneStale makes fakeBaselineStore a stalePruner, so gc() exercises the
+// abandoned-row prune path.
+func (f *fakeBaselineStore) PruneStale(olderThan time.Duration) (int64, error) {
+	f.pruneCalls++
+	f.prunedOlderThan = olderThan
+	return 0, f.pruneErr
+}
+
+// saveOnlyBaselineStore implements only the baselineStore interface (no
+// PruneStale), so gc()'s optional stalePruner type assertion resolves to
+// ok==false -- proving a store that doesn't support pruning is skipped
+// cleanly rather than panicking.
+type saveOnlyBaselineStore struct{ saveCalls int }
+
+func (s *saveOnlyBaselineStore) LoadAll() (map[string]IdentityStateSnapshot, error) {
+	return map[string]IdentityStateSnapshot{}, nil
+}
+
+func (s *saveOnlyBaselineStore) SaveAll(map[string]IdentityStateSnapshot, []string) error {
+	s.saveCalls++
+	return nil
 }
 
 func TestDetector_PublishNeverCallsBaselineStore(t *testing.T) {
