@@ -968,6 +968,16 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
+	// Startup security posture: the proxy fails closed on policy, but by
+	// default identity is trusted from the X-Wardline-Identity header
+	// (spoofable) and the dashboard's read views are unauthenticated. Warn
+	// loudly so an operator never mistakes "off by default" for "secure by
+	// default" -- see README Hardening. credential_issuance verifies a
+	// bearer token instead of trusting the header; rbac gates the dashboard.
+	for _, w := range insecureDefaultWarnings(credentialIssuanceEnabled, webUIEnabled, rbacEnabled) {
+		logger.Warn(w)
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           topHandler,
@@ -1551,6 +1561,22 @@ func jwksHandlerFunc(h *credentialadapter.JWKSHandler) http.HandlerFunc {
 // asset (I1).
 func noiseRouteHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// insecureDefaultWarnings returns the startup security warnings implied by
+// the current flag posture: a spoofable trusted-header identity when
+// credential_issuance is off, and an unauthenticated dashboard when the web
+// UI is on without rbac. Pure and flag-only so the branch is testable
+// without standing up a server.
+func insecureDefaultWarnings(credentialIssuance, webUI, rbac bool) []string {
+	var warnings []string
+	if !credentialIssuance {
+		warnings = append(warnings, "insecure default: identity is trusted from the X-Wardline-Identity header and is spoofable; enable credential_issuance to verify a bearer token")
+	}
+	if webUI && !rbac {
+		warnings = append(warnings, "insecure default: dashboard read views are unauthenticated; enable rbac to gate dashboard access")
+	}
+	return warnings
 }
 
 func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) http.Handler {

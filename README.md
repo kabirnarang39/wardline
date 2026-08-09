@@ -124,13 +124,41 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 | Web dashboard | [Dashboard](https://kabirnarang39.github.io/wardline/docs/features/web-dashboard/) |
 | OpenTelemetry tracing | [Observability](https://kabirnarang39.github.io/wardline/docs/deployment/observability/) |
 
+## How Wardline compares
+
+Wardline is new and unproven in production; the projects below are more mature and more widely adopted. Pick Wardline when you specifically want **real-time enforcement (auto-block, not just alerts) in one zero-dependency Go binary** with policy, identity, budget, and audit built in.
+
+| | Wardline | LiteLLM | Portkey Gateway | MCP gateways (agentgateway, IBM mcp-context-forge) |
+|---|---|---|---|---|
+| Primary job | Governance + enforcement for agents→MCP/tools | LLM routing + spend | AI gateway + guardrails | Route/secure MCP tool calls |
+| Real-time anomaly **auto-block** (no training data) | ✅ | ❌ | ❌ (guardrails, rule-based) | ❌ |
+| Policy engines in one binary | YAML · OPA · Cedar | ❌ | limited | varies |
+| Runtime | single static Go binary, no DB/IdP to start | Python | Node/managed | varies (often a stack) |
+| Identity / RBAC / SCIM / tenancy | ✅ built in | partial | managed | via IdP integration |
+| Maturity / adoption | **early, unproven** | very high | high | growing |
+| License | Apache-2.0 | MIT | MIT | mixed |
+
+Choose a competitor instead if you need proven scale, a large community, or a managed offering today. Wardline trades that maturity for enforcement-first design and operational simplicity.
+
 ## Performance
 
 Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%).
 
 ## Security
 
-The dashboard and the `X-Wardline-Identity` header are **unauthenticated by default** — pair with `credential_issuance` and/or `rbac` for real security value. Every optional capability ships off by default and fails closed. Report vulnerabilities per [SECURITY.md](SECURITY.md).
+The dashboard and the `X-Wardline-Identity` header are **unauthenticated by default** — pair with `credential_issuance` and/or `rbac` for real security value. Every optional capability ships off by default and fails closed. On startup Wardline logs a `WARN` for each insecure default still in effect, so the posture is never silent. Report vulnerabilities per [SECURITY.md](SECURITY.md).
+
+### Hardening
+
+Out of the box the proxy fails closed on *policy*, but identity and the dashboard are open. For any real deployment, turn on:
+
+```yaml
+features:
+  credential_issuance: true   # verify a signed bearer token instead of trusting X-Wardline-Identity
+  rbac: true                  # gate the dashboard and admin actions on real permissions
+```
+
+With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. Anomaly detection catches *abrupt* abuse but not *low-and-slow* ramps (see [its known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/)), so keep explicit policy + budget limits as the hard floor.
 
 ## Project status
 

@@ -1504,6 +1504,32 @@ func TestRBACReload_InvalidNewRBACFileLeavesOldAuthorizerServing(t *testing.T) {
 	}
 }
 
+func TestInsecureDefaultWarnings(t *testing.T) {
+	tests := []struct {
+		name                                string
+		credentialIssuance, webUI, rbac     bool
+		wantIdentityWarn, wantDashboardWarn bool
+	}{
+		{"all off", false, false, false, true, false},
+		{"credential_issuance on", true, false, false, false, false},
+		{"web_ui on, rbac off", false, true, false, true, true},
+		{"web_ui on, rbac on", false, true, true, true, false},
+		{"fully hardened", true, true, true, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := insecureDefaultWarnings(tc.credentialIssuance, tc.webUI, tc.rbac)
+			joined := strings.Join(got, "\n")
+			if hasIdentity := strings.Contains(joined, "X-Wardline-Identity"); hasIdentity != tc.wantIdentityWarn {
+				t.Errorf("identity warning present=%v, want %v (warnings: %q)", hasIdentity, tc.wantIdentityWarn, got)
+			}
+			if hasDashboard := strings.Contains(joined, "dashboard read views"); hasDashboard != tc.wantDashboardWarn {
+				t.Errorf("dashboard warning present=%v, want %v (warnings: %q)", hasDashboard, tc.wantDashboardWarn, got)
+			}
+		})
+	}
+}
+
 // readBundleFile extracts one named file's contents from a gzip+tar
 // evidence bundle written by complianceadapter.WriteBundle.
 func readBundleFile(t *testing.T, bundlePath, name string) []byte {
