@@ -23,9 +23,7 @@ The same run is visible in the built-in web dashboard — the block, the
 anomaly that triggered it, and the policy behind it, all read-only
 (`features.web_ui: true`; every recording here is real, no mockups):
 
-<video src="https://raw.githubusercontent.com/kabirnarang39/wardline/main/docs/images/wardline-dashboard-demo.mp4" controls muted width="100%"></video>
-
-_▶ Video not playing? [Watch the dashboard walkthrough](https://raw.githubusercontent.com/kabirnarang39/wardline/main/docs/images/wardline-dashboard-demo.mp4) — or see the [still](docs/images/wardline-dashboard-poster.png)._
+![Wardline dashboard: the blocked agent, its ml_score anomaly, and the policy](docs/images/wardline-dashboard-demo.webp)
 
 v0.1 scope: a reverse proxy in front of one MCP server, a policy backend
 (a static YAML allow/deny rule list, or an embedded OPA/Rego evaluator) per
