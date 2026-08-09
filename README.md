@@ -1,7 +1,6 @@
 # Wardline
 
 [![CI](https://github.com/kabirnarang39/wardline/actions/workflows/ci.yml/badge.svg)](https://github.com/kabirnarang39/wardline/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/kabirnarang39/wardline)](https://goreportcard.com/report/github.com/kabirnarang39/wardline)
 [![Go Reference](https://pkg.go.dev/badge/github.com/kabirnarang39/wardline.svg)](https://pkg.go.dev/github.com/kabirnarang39/wardline)
 [![Release](https://img.shields.io/github/v/release/kabirnarang39/wardline?sort=semver)](https://github.com/kabirnarang39/wardline/releases)
 [![Docs](https://img.shields.io/badge/docs-website-15803D)](https://kabirnarang39.github.io/wardline/docs/)
