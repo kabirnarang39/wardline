@@ -41,25 +41,41 @@ The same run in the built-in read-only dashboard — the block, the anomaly that
 Every agent call passes through one in-process decision pipeline before it can reach the upstream. Any stage can deny, throttle, or block — and every outcome is written to the audit trail.
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 50, "rankSpacing": 70}}}%%
 flowchart LR
-    A[AI Agent] -->|"MCP / gRPC call<br/>X-Wardline-Identity"| W
+    A(["AI Agent"])
 
-    subgraph W["Wardline proxy · one Go binary"]
+    subgraph W ["Wardline &nbsp;·&nbsp; one Go binary"]
         direction TB
-        I[Identity<br/>JWT · OIDC · mTLS] --> P[Policy<br/>YAML · OPA · Cedar]
-        P --> B[Budget<br/>identity + tenant]
-        B --> D[Anomaly detection<br/>+ auto-block]
+        I["Identity<br/>JWT · OIDC · mTLS"]
+        P["Policy<br/>YAML · OPA · Cedar"]
+        B["Budget<br/>identity + tenant"]
+        D["Anomaly + auto-block<br/>self-baselining z-score"]
+        I --> P --> B --> D
     end
 
-    A --> W
-    W -->|allow| U[Upstream<br/>MCP server]
-    W -.->|deny · throttle · block| X[(rejected)]
-    W ==>|every decision| L[(Audit log<br/>JSONL / Postgres)]
+    A -->|"MCP / gRPC call"| W
+    W ==>|"allow"| U(["Upstream MCP server"])
+    W -.->|"deny · throttle · block"| X["rejected"]
+    D ==>|"every decision"| L[("Audit log<br/>JSONL / Postgres")]
 
-    classDef ward fill:#15803D,stroke:#0f5c2e,color:#ffffff;
-    classDef edge fill:#f1f5f9,stroke:#94a3b8,color:#0f172a;
-    class W ward;
-    class A,U,X,L edge;
+    classDef agent fill:#0EA5E9,stroke:#0369A1,color:#ffffff;
+    classDef stage fill:#15803D,stroke:#0B4A24,color:#ffffff;
+    classDef up fill:#334155,stroke:#1E293B,color:#ffffff;
+    classDef bad fill:#B91C1C,stroke:#7F1D1D,color:#ffffff;
+    classDef store fill:#475569,stroke:#1E293B,color:#ffffff;
+
+    class A agent;
+    class I,P,B,D stage;
+    class U up;
+    class X bad;
+    class L store;
+
+    style W fill:none,stroke:#15803D,stroke-width:2px,color:#15803D;
+
+    linkStyle default stroke:#94A3B8,stroke-width:1.5px;
+    linkStyle 4 stroke:#15803D,stroke-width:2.5px;
+    linkStyle 6 stroke:#15803D,stroke-width:2.5px;
 ```
 
 Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concepts/architecture/).
