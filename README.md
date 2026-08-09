@@ -12,6 +12,7 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/kabirnarang39/wardline?style=flat&logo=go&label=go&color=15803D)](go.mod)
 [![Go Reference](https://img.shields.io/badge/go-reference-15803D?logo=go)](https://pkg.go.dev/github.com/kabirnarang39/wardline)
 [![Docs](https://img.shields.io/badge/docs-website-15803D)](https://kabirnarang39.github.io/wardline/docs/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/kabirnarang39/wardline)
 [![License](https://img.shields.io/badge/license-Apache%202.0-15803D)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-15803D)](CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/kabirnarang39/wardline?style=flat&logo=github&label=stars&color=15803D)](https://github.com/kabirnarang39/wardline/stargazers)
