@@ -59,21 +59,13 @@ flowchart LR
     W -.->|"deny · throttle · block"| X["rejected"]
     D ==>|"every decision"| L[("Audit log<br/>JSONL / Postgres")]
 
-    classDef agent fill:#0EA5E9,stroke:#0369A1,color:#ffffff;
-    classDef stage fill:#15803D,stroke:#0B4A24,color:#ffffff;
-    classDef up fill:#334155,stroke:#1E293B,color:#ffffff;
-    classDef bad fill:#B91C1C,stroke:#7F1D1D,color:#ffffff;
-    classDef store fill:#475569,stroke:#1E293B,color:#ffffff;
-
-    class A agent;
+    %% Only the Wardline pipeline is branded; every other node inherits
+    %% GitHub's native mermaid theme so it matches in both light and dark.
+    classDef stage fill:#15803D,stroke:#15803D,color:#ffffff;
     class I,P,B,D stage;
-    class U up;
-    class X bad;
-    class L store;
 
-    style W fill:none,stroke:#15803D,stroke-width:2px,color:#15803D;
+    style W stroke:#15803D,stroke-width:2px;
 
-    linkStyle default stroke:#94A3B8,stroke-width:1.5px;
     linkStyle 4 stroke:#15803D,stroke-width:2.5px;
     linkStyle 6 stroke:#15803D,stroke-width:2.5px;
 ```
