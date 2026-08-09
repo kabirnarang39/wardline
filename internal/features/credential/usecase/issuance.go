@@ -35,7 +35,11 @@ func (s *IssuanceService) Bootstrap(secret string) (accessToken, refreshToken st
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err = mintAndStoreRefreshToken(s.refreshStore, identity, tenantName, time.Now().Add(s.refreshTokenTTL))
+	family, err := newRefreshFamily()
+	if err != nil {
+		return "", "", err
+	}
+	refreshToken, err = mintAndStoreRefreshToken(s.refreshStore, identity, tenantName, family, time.Now().Add(s.refreshTokenTTL))
 	if err != nil {
 		return "", "", err
 	}

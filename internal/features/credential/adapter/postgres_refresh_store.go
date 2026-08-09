@@ -30,18 +30,43 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 	expires_at TIMESTAMPTZ NOT NULL
 )`
 
-// issueRefreshTokenSQL stores tenant and identity verbatim -- no
-// encoding step, so no decoding step on redeem either.
-const issueRefreshTokenSQL = `
-INSERT INTO refresh_tokens (token, tenant, identity, expires_at)
-VALUES ($1, $2, $3, $4)`
+// alterRefreshTokensAddFamilySQL and alterRefreshTokensAddConsumedSQL
+// migrate a pre-reuse-detection table in place: ADD COLUMN IF NOT EXISTS
+// is a no-op on a table that already has them (fresh installs get them
+// from a later CREATE run just the same). Existing rows get family=”
+// and consumed=false, which Redeem handles safely -- a legacy empty-family
+// row that is reused deletes only itself, never a whole family (see
+// Redeem). The updated_at index for anomaly baselines has no analogue
+// here: refresh_tokens lookups are all by the token primary key.
+const alterRefreshTokensAddFamilySQL = `
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS family TEXT NOT NULL DEFAULT ''`
 
-// redeemRefreshTokenSQL atomically deletes and returns the row in one
-// round trip -- Postgres's DELETE ... RETURNING is exactly the
-// find-and-single-use-consume primitive this needs, with no
-// read-then-delete race window a two-statement version would have.
-const redeemRefreshTokenSQL = `
-DELETE FROM refresh_tokens WHERE token = $1 RETURNING tenant, identity, expires_at`
+const alterRefreshTokensAddConsumedSQL = `
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS consumed BOOLEAN NOT NULL DEFAULT false`
+
+const createRefreshTokensFamilyIndexSQL = `
+CREATE INDEX IF NOT EXISTS refresh_tokens_family_idx ON refresh_tokens (family)`
+
+// issueRefreshTokenSQL stores tenant and identity verbatim -- no
+// encoding step, so no decoding step on redeem either. consumed defaults
+// to false via the column default.
+const issueRefreshTokenSQL = `
+INSERT INTO refresh_tokens (token, tenant, identity, family, expires_at)
+VALUES ($1, $2, $3, $4, $5)`
+
+// selectRefreshForUpdateSQL locks the row for the duration of the Redeem
+// transaction so two concurrent redeems of the same token -- from any
+// replica sharing this database -- serialize: the first transitions the
+// row, the second sees the already-transitioned state and takes the
+// reuse branch, rather than both reading "active" and both succeeding.
+const selectRefreshForUpdateSQL = `
+SELECT tenant, identity, family, expires_at, consumed FROM refresh_tokens WHERE token = $1 FOR UPDATE`
+
+const markRefreshConsumedSQL = `UPDATE refresh_tokens SET consumed = true WHERE token = $1`
+
+const deleteRefreshTokenSQL = `DELETE FROM refresh_tokens WHERE token = $1`
+
+const deleteRefreshFamilySQL = `DELETE FROM refresh_tokens WHERE family = $1`
 
 // revokeAllForIdentityScopedSQL deletes only the named tenant's refresh
 // tokens for this identity, leaving other tenants' rows for the same
@@ -104,41 +129,89 @@ func NewPostgresRefreshStore(dsn string) (*PostgresRefreshStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create refresh_tokens table: %w", err)
 	}
+	for _, stmt := range []string{alterRefreshTokensAddFamilySQL, alterRefreshTokensAddConsumedSQL, createRefreshTokensFamilyIndexSQL} {
+		if _, err := db.ExecContext(createCtx, stmt); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate refresh_tokens table: %w", err)
+		}
+	}
 
 	return &PostgresRefreshStore{db: db}, nil
 }
 
-func (s *PostgresRefreshStore) Issue(token, identity, tenantName string, expiresAt time.Time) error {
+func (s *PostgresRefreshStore) Issue(token, identity, tenantName, family string, expiresAt time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, issueRefreshTokenSQL, token, tenantName, identity, expiresAt); err != nil {
+	if _, err := s.db.ExecContext(ctx, issueRefreshTokenSQL, token, tenantName, identity, family, expiresAt); err != nil {
 		return fmt.Errorf("issue refresh token for %q (tenant %q): %w", identity, tenantName, err)
 	}
 	return nil
 }
 
-// Redeem is single-use by construction: DELETE ... RETURNING removes
-// the row atomically, so a concurrent second Redeem of the same token
-// (from any replica, since this is the shared database) gets
-// sql.ErrNoRows, indistinguishable from "never existed" -- exactly the
-// non-enumerable failure this store's callers want.
-func (s *PostgresRefreshStore) Redeem(token string) (string, string, error) {
+// Redeem runs the reuse-detecting state machine (see domain.RefreshStore)
+// in one transaction, locking the row with SELECT ... FOR UPDATE so
+// concurrent redeems of the same token -- from any replica sharing this
+// database -- serialize rather than both succeeding. An active token is
+// marked consumed (kept, so a replay is detectable); a replay of an
+// already-consumed token deletes its whole family and returns
+// ErrRefreshTokenReused; an unknown or expired token returns
+// ErrRefreshTokenInvalid.
+func (s *PostgresRefreshStore) Redeem(token string) (string, string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer cancel()
 
-	var tenantName, identity string
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", "", fmt.Errorf("begin redeem transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	var tenantName, identity, family string
 	var expiresAt time.Time
-	err := s.db.QueryRowContext(ctx, redeemRefreshTokenSQL, token).Scan(&tenantName, &identity, &expiresAt)
+	var consumed bool
+	err = tx.QueryRowContext(ctx, selectRefreshForUpdateSQL, token).Scan(&tenantName, &identity, &family, &expiresAt, &consumed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", "", domain.ErrRefreshTokenInvalid
+			return "", "", "", domain.ErrRefreshTokenInvalid
 		}
-		return "", "", fmt.Errorf("redeem refresh token: %w", err)
+		return "", "", "", fmt.Errorf("redeem refresh token: %w", err)
 	}
+
+	if consumed {
+		// Reuse of a consumed token: theft signal. Wipe the whole family.
+		// A legacy row migrated from before this feature has family='' --
+		// there deleting the whole "family" would nuke every other legacy
+		// row, so scope the delete to just this token instead.
+		delSQL, delArg := deleteRefreshFamilySQL, family
+		if family == "" {
+			delSQL, delArg = deleteRefreshTokenSQL, token
+		}
+		if _, err := tx.ExecContext(ctx, delSQL, delArg); err != nil {
+			return "", "", "", fmt.Errorf("revoke reused refresh token family: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", "", "", fmt.Errorf("commit family revocation: %w", err)
+		}
+		return "", "", "", domain.ErrRefreshTokenReused
+	}
+
 	if time.Now().After(expiresAt) {
-		return "", "", domain.ErrRefreshTokenInvalid
+		if _, err := tx.ExecContext(ctx, deleteRefreshTokenSQL, token); err != nil {
+			return "", "", "", fmt.Errorf("delete expired refresh token: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", "", "", fmt.Errorf("commit expired-token delete: %w", err)
+		}
+		return "", "", "", domain.ErrRefreshTokenInvalid
 	}
-	return identity, tenantName, nil
+
+	if _, err := tx.ExecContext(ctx, markRefreshConsumedSQL, token); err != nil {
+		return "", "", "", fmt.Errorf("mark refresh token consumed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", "", "", fmt.Errorf("commit refresh consume: %w", err)
+	}
+	return identity, tenantName, family, nil
 }
 
 // RevokeAllForIdentity matches InMemoryRefreshStore's semantics exactly:

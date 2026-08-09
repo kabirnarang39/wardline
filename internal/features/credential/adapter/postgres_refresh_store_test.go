@@ -61,19 +61,19 @@ func TestPostgresRefreshStore_IssueThenRedeemRoundTrips(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Issue("tok-1", "agent-abc123", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	identity, tenantName, err := s.Redeem("tok-1")
+	identity, tenantName, family, err := s.Redeem("tok-1")
 	if err != nil {
 		t.Fatalf("Redeem: %v", err)
 	}
-	if identity != "agent-abc123" || tenantName != "acme" {
-		t.Errorf("got (%q, %q), want (\"agent-abc123\", \"acme\")", identity, tenantName)
+	if identity != "agent-abc123" || tenantName != "acme" || family != "fam-1" {
+		t.Errorf("got (%q, %q, %q), want (\"agent-abc123\", \"acme\", \"fam-1\")", identity, tenantName, family)
 	}
 }
 
-func TestPostgresRefreshStore_RedeemIsSingleUse(t *testing.T) {
+func TestPostgresRefreshStore_ReplayingAConsumedTokenIsReuse(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
@@ -83,14 +83,52 @@ func TestPostgresRefreshStore_RedeemIsSingleUse(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Issue("tok-1", "agent-abc123", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, _, err := s.Redeem("tok-1"); err != nil {
+	if _, _, _, err := s.Redeem("tok-1"); err != nil {
 		t.Fatalf("first Redeem: %v", err)
 	}
-	if _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
-		t.Errorf("expected ErrRefreshTokenInvalid redeeming an already-used token, got %v", err)
+	if _, _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenReused) {
+		t.Errorf("expected ErrRefreshTokenReused replaying a consumed token, got %v", err)
+	}
+}
+
+// TestPostgresRefreshStore_ReuseRevokesTheWholeFamily proves the theft
+// response at the store level: replaying a consumed token deletes every
+// token in its family (including the legitimate current rotation) while a
+// different family's token survives.
+func TestPostgresRefreshStore_ReuseRevokesTheWholeFamily(t *testing.T) {
+	dsn := refreshTestDSN(t)
+	dropRefreshTokensTable(t, dsn)
+
+	s, err := adapter.NewPostgresRefreshStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresRefreshStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if err := s.Issue("old-tok", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Issue old-tok: %v", err)
+	}
+	if err := s.Issue("current-tok", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Issue current-tok: %v", err)
+	}
+	if err := s.Issue("other-family-tok", "agent-abc123", "acme", "fam-2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Issue other-family-tok: %v", err)
+	}
+
+	if _, _, _, err := s.Redeem("old-tok"); err != nil {
+		t.Fatalf("consume old-tok: %v", err)
+	}
+	if _, _, _, err := s.Redeem("old-tok"); !errors.Is(err, domain.ErrRefreshTokenReused) {
+		t.Fatalf("expected reuse on replay, got %v", err)
+	}
+	if _, _, _, err := s.Redeem("current-tok"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+		t.Errorf("expected the family's current token revoked, got %v", err)
+	}
+	if _, _, _, err := s.Redeem("other-family-tok"); err != nil {
+		t.Errorf("expected a different family's token to survive, got %v", err)
 	}
 }
 
@@ -104,7 +142,7 @@ func TestPostgresRefreshStore_RedeemUnknownTokenFails(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	if _, _, err := s.Redeem("never-issued"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+	if _, _, _, err := s.Redeem("never-issued"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected ErrRefreshTokenInvalid for a never-issued token, got %v", err)
 	}
 }
@@ -119,10 +157,10 @@ func TestPostgresRefreshStore_RedeemExpiredTokenFails(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Issue("tok-1", "agent-abc123", "acme", time.Now().Add(-time.Minute)); err != nil {
+	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+	if _, _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected ErrRefreshTokenInvalid for an expired token, got %v", err)
 	}
 }
@@ -137,10 +175,10 @@ func TestPostgresRefreshStore_RevokeAllForIdentityInvalidatesItsTokens(t *testin
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Issue("tok-1", "agent-abc123", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue tok-1: %v", err)
 	}
-	if err := s.Issue("tok-2", "agent-xyz789", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-2", "agent-xyz789", "acme", "fam-2", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue tok-2: %v", err)
 	}
 
@@ -148,10 +186,10 @@ func TestPostgresRefreshStore_RevokeAllForIdentityInvalidatesItsTokens(t *testin
 		t.Fatalf("RevokeAllForIdentity: %v", err)
 	}
 
-	if _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+	if _, _, _, err := s.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected tok-1 to be invalidated, got err=%v", err)
 	}
-	if _, _, err := s.Redeem("tok-2"); err != nil {
+	if _, _, _, err := s.Redeem("tok-2"); err != nil {
 		t.Errorf("expected a different identity's token to survive, got err=%v", err)
 	}
 }
@@ -166,10 +204,10 @@ func TestPostgresRefreshStore_WildcardRevokeAffectsEveryTenant(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := s.Issue("tok-acme", "bob", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-acme", "bob", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if err := s.Issue("tok-widgets", "bob", "widgets-inc", time.Now().Add(time.Hour)); err != nil {
+	if err := s.Issue("tok-widgets", "bob", "widgets-inc", "fam-2", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -177,10 +215,10 @@ func TestPostgresRefreshStore_WildcardRevokeAffectsEveryTenant(t *testing.T) {
 		t.Fatalf("RevokeAllForIdentity: %v", err)
 	}
 
-	if _, _, err := s.Redeem("tok-acme"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+	if _, _, _, err := s.Redeem("tok-acme"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected wildcard revoke to invalidate acme's bob token, got err=%v", err)
 	}
-	if _, _, err := s.Redeem("tok-widgets"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
+	if _, _, _, err := s.Redeem("tok-widgets"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected wildcard revoke to invalidate widgets-inc's bob token, got err=%v", err)
 	}
 }
@@ -212,8 +250,9 @@ func TestNewPostgresRefreshStore_BadDSNFailsFast(t *testing.T) {
 // TestPostgresRefreshStore_CrossInstanceRedeemPropagates is the actual HA
 // scenario: two separate *PostgresRefreshStore instances (simulating two
 // replicas) against the same DSN -- a token issued through one is
-// redeemable through the other, and the redeem's single-use deletion is
-// visible cross-instance too.
+// redeemable through the other, and a replay through the first is detected
+// as reuse cross-instance too (the SELECT ... FOR UPDATE state transition
+// is visible across replicas).
 func TestPostgresRefreshStore_CrossInstanceRedeemPropagates(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
@@ -230,14 +269,14 @@ func TestPostgresRefreshStore_CrossInstanceRedeemPropagates(t *testing.T) {
 	}
 	defer func() { _ = replicaB.Close() }()
 
-	if err := replicaA.Issue("tok-1", "agent-abc123", "acme", time.Now().Add(time.Hour)); err != nil {
+	if err := replicaA.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, _, err := replicaB.Redeem("tok-1"); err != nil {
+	if _, _, _, err := replicaB.Redeem("tok-1"); err != nil {
 		t.Fatalf("expected replicaB to redeem a token issued through replicaA: %v", err)
 	}
-	if _, _, err := replicaA.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
-		t.Error("expected replicaA to see the token as already-redeemed (single-use is cross-instance)")
+	if _, _, _, err := replicaA.Redeem("tok-1"); !errors.Is(err, domain.ErrRefreshTokenReused) {
+		t.Error("expected replicaA to see a replay of the consumed token as reuse (state transition is cross-instance)")
 	}
 }
 

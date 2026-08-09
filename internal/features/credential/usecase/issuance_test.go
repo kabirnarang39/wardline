@@ -40,7 +40,7 @@ func TestIssuanceService_BootstrapReturnsAccessAndRefreshTokens(t *testing.T) {
 	// The refresh token issued at bootstrap must actually be redeemable
 	// afterward -- proves IssuanceService and RefreshService share the
 	// same RefreshStore correctly, not two independent stores.
-	identity, tenantName, err := store.Redeem(refreshToken)
+	identity, tenantName, _, err := store.Redeem(refreshToken)
 	if err != nil {
 		t.Fatalf("expected the bootstrap-issued refresh token to be redeemable: %v", err)
 	}

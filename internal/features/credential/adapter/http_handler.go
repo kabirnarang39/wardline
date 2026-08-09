@@ -2,11 +2,13 @@ package adapter
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 	"github.com/kabirnarang39/wardline/internal/features/credential/usecase"
 )
 
@@ -150,11 +152,19 @@ func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	accessToken, newRefreshToken, err := h.refresh.Refresh(req.RefreshToken)
 	if err != nil {
-		// Generic message regardless of cause (unknown token, already
-		// rotated/used, expired, revoked identity) — avoids leaking which
-		// specific reason a refresh token was rejected, same discipline as
-		// HandleToken. The refresh token value itself must never be logged.
-		h.logger.Warn("credential refresh failed", "remote_addr", r.RemoteAddr)
+		// Generic client response regardless of cause (unknown token,
+		// already rotated/used, expired, revoked identity, reuse) — avoids
+		// leaking which specific reason a refresh token was rejected, same
+		// discipline as HandleToken. The refresh token value itself must
+		// never be logged. Reuse is logged distinctly (a theft signal the
+		// store has already responded to by revoking the family) but still
+		// returns the identical 401 so the remote caller can't tell reuse
+		// from any other rejection.
+		if errors.Is(err, domain.ErrRefreshTokenReused) {
+			h.logger.Warn("SECURITY: refresh token reuse detected; token family revoked", "remote_addr", r.RemoteAddr)
+		} else {
+			h.logger.Warn("credential refresh failed", "remote_addr", r.RemoteAddr)
+		}
 		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
