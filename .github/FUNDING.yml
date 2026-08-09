@@ -1,0 +1,14 @@
+# Wardline funding — GitHub renders a "Sponsor" button from this file.
+#
+# HOW TO ACTIVATE: enroll in a platform (steps below), then UNCOMMENT its line
+# and replace the placeholder with your real handle. A commented or
+# placeholder value renders nothing / a dead button, so only uncomment once
+# the account is live.
+#
+# India note: GitHub Sponsors needs eligibility approval (waitlist possible);
+# Ko-fi is instant but pays out via PayPal (~8% effective) — no UPI for donors.
+# For Indian supporters, add a Razorpay/UPI page under `custom:`.
+
+# github: kabirnarang39           # after GitHub Sponsors is approved for your account
+# ko_fi: your-ko-fi-handle        # instant; https://ko-fi.com/<handle>
+# custom: ["https://razorpay.me/@your-handle"]   # optional India-friendly UPI/card page
