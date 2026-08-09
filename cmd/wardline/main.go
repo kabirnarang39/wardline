@@ -97,6 +97,18 @@ const (
 	// period with headroom.
 	tracingShutdownTimeout = 5 * time.Second
 
+	// readinessDrainWindow holds the listener open briefly after /readyz
+	// flips to 503 (SetDraining) and before srv.Shutdown starts refusing
+	// new connections. Without it the not-ready window is only a few
+	// scheduler ticks wide -- unobservable to a polling readiness probe
+	// (which is the whole point of the drain: let the orchestrator pull
+	// this replica out of rotation before connections start being
+	// refused), and the reason the e2e drain test flaked under -race/CI
+	// load. Deliberately small: it adds at most this much to shutdown,
+	// negligible against the 10s HTTP drain and any orchestrator grace
+	// period, but wide enough for a fast poller to reliably catch the 503.
+	readinessDrainWindow = 150 * time.Millisecond
+
 	// ringBufferCapacity bounds the dashboard's in-memory live audit view.
 	// It's a code constant, not operator-configurable — see
 	// docs/superpowers/specs/2026-07-27-web-ui-design.md "Config".
@@ -1112,6 +1124,10 @@ func runServe(logger *slog.Logger, args []string) {
 		// fires.
 		stop()
 		logger.Info("shutting down")
+		// Bounded observable-drain window: /readyz has been 503 since
+		// SetDraining above; hold here so a readiness probe reliably sees it
+		// before srv.Shutdown closes the listener. See readinessDrainWindow.
+		time.Sleep(readinessDrainWindow)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
