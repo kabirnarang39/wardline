@@ -37,11 +37,17 @@ token, and the one just redeemed can never be used again.
   mtls`) trusts a single static header — see [mTLS/SPIFFE
   Bootstrap](/features/mtls-bootstrap/) for its trust-boundary
   requirements before enabling it.
-- Refresh-token reuse is rejected the same as any other invalid token,
-  but there's no reuse-DETECTION signal or cascading family revocation
-  (a real theft-response mechanism some OAuth2 implementations add) --
-  a stolen-and-already-used refresh token simply fails the same generic
-  way an expired or never-issued one does, with no extra alert.
+- Refresh tokens rotate with **reuse detection and family revocation**:
+  each bootstrap starts a token *family*, every rotation carries it
+  forward, and a redeemed token is kept (marked consumed) rather than
+  deleted so a later replay is detectable. Replaying an
+  already-consumed token is treated as a theft signal — the entire
+  family (the legitimate current token included) is revoked atomically,
+  a `SECURITY: refresh token reuse detected` line is logged, and the
+  caller gets the same generic `401` as any other rejection (no oracle).
+  The one residual: access tokens already minted in that family are not
+  force-revoked on reuse; they expire on their own short TTL
+  (`access_token_ttl_seconds`, default 15m).
 - Revocation state is per-process unless `postgres_storage` is also on
   (see [HA deployment](/features/ha-deployment/)).
 - **Revocation is keyed by `(tenant, identity)`, with one residual

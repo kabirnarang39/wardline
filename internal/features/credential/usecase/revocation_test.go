@@ -17,7 +17,7 @@ import (
 // this call while the test keeps passing.
 func TestRevocationService_RevokeAlsoInvalidatesRefreshTokens(t *testing.T) {
 	refreshStore := newFakeRefreshStore()
-	_ = refreshStore.Issue("outstanding-refresh-tok", "agent-abc123", "acme", time.Now().Add(time.Hour))
+	_ = refreshStore.Issue("outstanding-refresh-tok", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour))
 	revoker := &fakeRevoker{}
 	svc := usecase.NewRevocationService(revoker, refreshStore)
 
@@ -25,7 +25,7 @@ func TestRevocationService_RevokeAlsoInvalidatesRefreshTokens(t *testing.T) {
 		t.Fatalf("Revoke: %v", err)
 	}
 
-	if _, _, err := refreshStore.Redeem("outstanding-refresh-tok"); err == nil {
+	if _, _, _, err := refreshStore.Redeem("outstanding-refresh-tok"); err == nil {
 		t.Error("expected Revoke to have invalidated the outstanding refresh token")
 	}
 	if refreshStore.revokedIdent != "agent-abc123" || refreshStore.revokedTenant != "acme" {

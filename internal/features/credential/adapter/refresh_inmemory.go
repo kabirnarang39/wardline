@@ -7,12 +7,16 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 )
 
-// refreshEntry is one issued-but-not-yet-redeemed refresh token's
-// server-side state.
+// refreshEntry is one issued refresh token's server-side state. A
+// consumed entry is kept (not deleted) until it expires so a later
+// replay of it is detectable as reuse; family ties every entry to its
+// bootstrap lineage so a reused token can revoke the whole chain.
 type refreshEntry struct {
 	identity  string
 	tenant    string
+	family    string
 	expiresAt time.Time
+	consumed  bool
 }
 
 // InMemoryRefreshStore is a domain.RefreshStore backed by a token->entry
@@ -43,19 +47,21 @@ func NewInMemoryRefreshStore() *InMemoryRefreshStore {
 	return &InMemoryRefreshStore{byTok: make(map[string]refreshEntry), now: time.Now}
 }
 
-func (s *InMemoryRefreshStore) Issue(token, identity, tenantName string, expiresAt time.Time) error {
+func (s *InMemoryRefreshStore) Issue(token, identity, tenantName, family string, expiresAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.byTok[token] = refreshEntry{identity: identity, tenant: tenantName, expiresAt: expiresAt}
+	s.byTok[token] = refreshEntry{identity: identity, tenant: tenantName, family: family, expiresAt: expiresAt}
 	return nil
 }
 
-// Redeem deletes the entry unconditionally once found (whether or not
-// it's expired) -- an expired-but-not-yet-swept entry must never be
-// redeemable, and deleting it here rather than leaving it for the
-// periodic sweep is itself a form of self-healing, same as
-// RevocationList.checkAndSelfHeal.
-func (s *InMemoryRefreshStore) Redeem(token string) (string, string, error) {
+// Redeem implements the reuse-detecting state machine (see
+// domain.RefreshStore): an active token is marked consumed and returned;
+// replaying an already-consumed token revokes its whole family and
+// returns ErrRefreshTokenReused; an unknown or expired token returns
+// ErrRefreshTokenInvalid. All under s.mu, so the whole transition is
+// atomic against concurrent redeems in this process (this store is
+// single-process by construction).
+func (s *InMemoryRefreshStore) Redeem(token string) (string, string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,13 +72,34 @@ func (s *InMemoryRefreshStore) Redeem(token string) (string, string, error) {
 
 	entry, ok := s.byTok[token]
 	if !ok {
-		return "", "", domain.ErrRefreshTokenInvalid
+		return "", "", "", domain.ErrRefreshTokenInvalid
 	}
-	delete(s.byTok, token)
+	if entry.consumed {
+		// Reuse of a consumed token: theft signal. Wipe the whole family
+		// -- the legitimate current token in this lineage dies with the
+		// attacker's replayed one.
+		s.revokeFamilyLocked(entry.family)
+		return "", "", "", domain.ErrRefreshTokenReused
+	}
 	if s.now().After(entry.expiresAt) {
-		return "", "", domain.ErrRefreshTokenInvalid
+		delete(s.byTok, token)
+		return "", "", "", domain.ErrRefreshTokenInvalid
 	}
-	return entry.identity, entry.tenant, nil
+	// Mark consumed but keep it -- a later replay must be detectable as
+	// reuse, not indistinguishable from "never existed".
+	entry.consumed = true
+	s.byTok[token] = entry
+	return entry.identity, entry.tenant, entry.family, nil
+}
+
+// revokeFamilyLocked deletes every token sharing the given family.
+// Called with s.mu already held.
+func (s *InMemoryRefreshStore) revokeFamilyLocked(family string) {
+	for tok, entry := range s.byTok {
+		if entry.family == family {
+			delete(s.byTok, tok)
+		}
+	}
 }
 
 // RevokeAllForIdentity scans the full map for every entry matching
