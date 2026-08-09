@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720" font-family="'Inter','Helvetica Neue',Arial,sans-serif" role="img" aria-label="Wardline control plane architecture">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22C55E" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#15803D" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#15803D" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E1A12"/>
+      <stop offset="100%" stop-color="#0A0F14"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#7C8AA5" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+    <style>
+      .title{fill:#E5E7EB;font-size:15px;font-weight:600}
+      .sub{fill:#7C8AA5;font-size:11px;font-weight:400}
+      .chip{fill:#C7D2DA;font-size:12.5px;font-weight:500}
+      .label{fill:#7C8AA5;font-size:12px;font-weight:600;letter-spacing:3px}
+      .foot{fill:#E5E7EB;font-size:13px;font-weight:600;letter-spacing:4px}
+      .ic{fill:none;stroke:#22C55E;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="1280" height="720" rx="18" fill="#0A0F14"/>
+  <rect x="0" y="0" width="1280" height="720" rx="18" fill="url(#grid)"/>
+  <ellipse cx="640" cy="360" rx="360" ry="300" fill="url(#glow)"/>
+
+  <!-- top label -->
+  <line x1="616" y1="98" x2="664" y2="98" stroke="#22C55E" stroke-opacity="0.6" stroke-width="1.5"/>
+  <text x="640" y="122" text-anchor="middle" class="label">WARDLINE &#183; CONTROL PLANE</text>
+
+  <!-- ================= connectors (drawn under boxes) ================= -->
+  <g fill="none" stroke="#22C55E" stroke-opacity="0.35" stroke-width="1.5">
+    <!-- left callers -> core -->
+    <path d="M308 256 H430 Q446 256 446 272 V330 Q446 344 460 344 H565"/>
+    <path d="M308 360 H565"/>
+    <path d="M308 464 H430 Q446 464 446 448 V390 Q446 376 460 376 H565"/>
+    <!-- core -> right upstreams -->
+    <path d="M715 344 H838 Q854 344 854 328 V200 Q854 184 868 184 H972"/>
+    <path d="M715 352 H860 Q876 352 876 336 V296 Q876 280 890 280 H972"/>
+    <path d="M715 360 H972"/>
+    <path d="M715 368 H860 Q876 368 876 384 V424 Q876 440 890 440 H972"/>
+    <path d="M715 376 H838 Q854 376 854 392 V520 Q854 536 868 536 H972"/>
+  </g>
+  <!-- chip tethers -->
+  <g fill="none" stroke="#22C55E" stroke-opacity="0.25" stroke-width="1.4" stroke-dasharray="2 5">
+    <path d="M598 285 L560 269"/>
+    <path d="M682 285 L720 269"/>
+    <path d="M598 435 L560 471"/>
+    <path d="M682 435 L720 471"/>
+  </g>
+  <!-- connector dots -->
+  <g fill="#22C55E">
+    <circle cx="565" cy="344" r="2.5"/><circle cx="565" cy="360" r="2.5"/><circle cx="565" cy="376" r="2.5"/>
+    <circle cx="715" cy="344" r="2.5"/><circle cx="715" cy="360" r="2.5"/><circle cx="715" cy="376" r="2.5"/>
+  </g>
+
+  <!-- ================= left: callers ================= -->
+  <!-- AI agents -->
+  <g>
+    <rect x="64" y="222" width="244" height="68" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="80" y="240" width="34" height="34" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(89,249)"><rect x="0" y="2" width="16" height="12" rx="3"/><line x1="5" y1="7" x2="5" y2="9"/><line x1="11" y1="7" x2="11" y2="9"/><line x1="8" y1="-2" x2="8" y2="2"/></g>
+    <text x="126" y="250" class="title">AI agents</text>
+    <text x="126" y="268" class="sub">LangChain, CrewAI, LlamaIndex</text>
+  </g>
+  <!-- CLI / IDE -->
+  <g>
+    <rect x="64" y="326" width="244" height="68" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="80" y="344" width="34" height="34" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(89,353)"><path d="M2 3 L6 8 L2 13"/><line x1="9" y1="13" x2="15" y2="13"/></g>
+    <text x="126" y="354" class="title">CLI / IDE</text>
+    <text x="126" y="372" class="sub">Claude, Cursor, Codex</text>
+  </g>
+  <!-- Apps & clients -->
+  <g>
+    <rect x="64" y="430" width="244" height="68" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="80" y="448" width="34" height="34" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(90,456)"><circle cx="8" cy="5" r="3.5"/><path d="M2 17 Q8 10 14 17"/></g>
+    <text x="126" y="458" class="title">Apps &amp; clients</text>
+    <text x="126" y="476" class="sub">Any MCP or gRPC caller</text>
+  </g>
+
+  <!-- ================= center: core ================= -->
+  <rect x="565" y="285" width="150" height="150" rx="20" fill="url(#core)" stroke="#22C55E" stroke-opacity="0.7" stroke-width="1.5"/>
+  <!-- corner brackets -->
+  <g fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round">
+    <path d="M578 300 v-6 h6 M702 300 v-6 h-6 M578 420 v6 h6 M702 420 v6 h-6"/>
+  </g>
+  <!-- wardline mark: shield + gate line -->
+  <g transform="translate(640,360)">
+    <rect x="-26" y="-26" width="52" height="52" rx="13" fill="none" stroke="#22C55E" stroke-width="3.5"/>
+    <line x1="-26" y1="0" x2="26" y2="0" stroke="#22C55E" stroke-width="3.5"/>
+    <circle cx="0" cy="-13" r="4.5" fill="#22C55E"/>
+    <circle cx="0" cy="13" r="4.5" fill="#22C55E" opacity="0.35"/>
+  </g>
+
+  <!-- capability chips -->
+  <g>
+    <rect x="470" y="229" width="156" height="40" rx="20" fill="#0F1729" stroke="#1F2A44"/>
+    <text x="548" y="253" text-anchor="middle" class="chip">Identity &amp; RBAC</text>
+    <rect x="654" y="229" width="172" height="40" rx="20" fill="#0F1729" stroke="#1F2A44"/>
+    <text x="740" y="253" text-anchor="middle" class="chip">Policy · YAML/OPA/Cedar</text>
+    <rect x="470" y="451" width="156" height="40" rx="20" fill="#0F1729" stroke="#1F2A44"/>
+    <text x="548" y="475" text-anchor="middle" class="chip">Budget &amp; limits</text>
+    <rect x="646" y="451" width="188" height="40" rx="20" fill="#0F1729" stroke="#1F2A44"/>
+    <text x="740" y="475" text-anchor="middle" class="chip">Anomaly + auto-block</text>
+  </g>
+
+  <!-- ================= right: upstreams ================= -->
+  <!-- MCP servers -->
+  <g>
+    <rect x="972" y="152" width="244" height="64" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="988" y="168" width="32" height="32" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(996,175)"><rect x="0" y="0" width="16" height="6" rx="2"/><rect x="0" y="10" width="16" height="6" rx="2"/><circle cx="4" cy="3" r="0.8"/><circle cx="4" cy="13" r="0.8"/></g>
+    <text x="1032" y="189" class="title">MCP servers</text>
+  </g>
+  <!-- Tools & functions -->
+  <g>
+    <rect x="972" y="248" width="244" height="64" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="988" y="264" width="32" height="32" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(996,272)"><path d="M11 2 a4 4 0 1 0 3 6 l2 2 -3 3 -2 -2 a4 4 0 0 1 -6 -3"/></g>
+    <text x="1032" y="285" class="title">Tools &amp; functions</text>
+  </g>
+  <!-- Resources / Prompts -->
+  <g>
+    <rect x="972" y="328" width="244" height="64" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="988" y="344" width="32" height="32" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(998,351)"><path d="M2 1 h9 l3 3 v13 h-12 z"/><line x1="4" y1="8" x2="11" y2="8"/><line x1="4" y1="12" x2="11" y2="12"/></g>
+    <text x="1032" y="365" class="title">Resources / Prompts</text>
+  </g>
+  <!-- gRPC upstreams -->
+  <g>
+    <rect x="972" y="408" width="244" height="64" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="988" y="424" width="32" height="32" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(996,431)"><path d="M3 6 L0 9 L3 12"/><path d="M13 6 L16 9 L13 12"/><line x1="9" y1="3" x2="7" y2="15"/></g>
+    <text x="1032" y="445" class="title">gRPC upstreams</text>
+  </g>
+  <!-- APIs / Services -->
+  <g>
+    <rect x="972" y="488" width="244" height="64" rx="12" fill="#0F1729" stroke="#1F2A44"/>
+    <rect x="988" y="504" width="32" height="32" rx="8" fill="#12351F" stroke="#22C55E" stroke-opacity="0.5"/>
+    <g class="ic" transform="translate(996,511)"><path d="M5 4 L1 9 L5 14"/><path d="M11 4 L15 9 L11 14"/></g>
+    <text x="1032" y="525" class="title">APIs / Services</text>
+  </g>
+
+  <!-- footer tagline -->
+  <text x="640" y="632" text-anchor="middle" class="foot">IDENTITY · POLICY · BUDGET · ANOMALY · AUDIT</text>
+  <g fill="none" stroke="#22C55E" stroke-opacity="0.55" stroke-width="1.5">
+    <line x1="500" y1="656" x2="768" y2="656"/>
+    <path d="M768 656 l-8 -4 M768 656 l-8 4"/>
+  </g>
+</svg>
