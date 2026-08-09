@@ -172,49 +172,8 @@ func runServe(logger *slog.Logger, args []string) {
 	// anomalyDetectionEnabled -- retention purges the audit log even when
 	// anomaly detection is off, and scheduled export needs only the
 	// audit trail to be queryable, not anomaly detection.
-	var retentionStop chan struct{}
-	if featureFlags.Enabled("log_retention") {
-		var purgers []complianceusecase.NamedPurger
-		if p := buildAuditPurger(featureFlags, cfg.Audit, writer); p != nil {
-			purgers = append(purgers, complianceusecase.NamedPurger{Name: "audit", RetentionDays: cfg.Audit.RetentionDays, Purge: p.Purge})
-		}
-		if p := buildAnomalyPurger(cfg.Anomaly); p != nil {
-			purgers = append(purgers, complianceusecase.NamedPurger{Name: "anomaly", RetentionDays: cfg.Anomaly.RetentionDays, Purge: p.Purge})
-		}
-		if len(purgers) > 0 {
-			interval := time.Duration(cfg.Retention.CheckIntervalSeconds) * time.Second
-			if interval <= 0 {
-				interval = 24 * time.Hour
-			}
-			retentionStop = make(chan struct{})
-			go startRetentionJob(logger, purgers, interval, retentionStop)
-			logger.Info("log retention enabled", "check_interval", interval, "purgers", len(purgers))
-		}
-	}
-
-	var scheduledExportStop chan struct{}
-	if featureFlags.Enabled("compliance_scheduled_export") {
-		var signingKey *rsa.PrivateKey
-		if cfg.Compliance.SigningKeyFile != "" {
-			var err error
-			signingKey, err = loadSigningKey(cfg.Compliance.SigningKeyFile)
-			if err != nil {
-				logger.Error("failed to load compliance scheduled-export signing key", "error", err)
-				os.Exit(1)
-			}
-		}
-		// 0700: the output directory holds evidence bundles (already
-		// individually 0600), so the directory itself must not be
-		// world-traversable either.
-		if err := os.MkdirAll(cfg.Compliance.ScheduledExportOutputDir, 0o700); err != nil {
-			logger.Error("failed to create scheduled export output directory", "path", cfg.Compliance.ScheduledExportOutputDir, "error", err)
-			os.Exit(1)
-		}
-		interval := time.Duration(cfg.Compliance.ScheduledExportIntervalSeconds) * time.Second
-		scheduledExportStop = make(chan struct{})
-		go startScheduledExportJob(logger, cfg, featureFlags, interval, signingKey, scheduledExportStop)
-		logger.Info("compliance scheduled export enabled", "interval", interval, "output_dir", cfg.Compliance.ScheduledExportOutputDir, "signed", signingKey != nil)
-	}
+	retentionStop := maybeStartRetention(logger, featureFlags, cfg, writer)
+	scheduledExportStop := maybeStartScheduledExport(logger, featureFlags, cfg)
 
 	var ringBuffer *dashboardusecase.RingBuffer
 	if webUIEnabled {
@@ -234,113 +193,14 @@ func runServe(logger *slog.Logger, args []string) {
 	var autoBlockGCStop chan struct{}
 	var anomalyBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
-		anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
-		if err != nil {
-			logger.Error("failed to open anomaly output file", "path", cfg.Anomaly.Output, "error", err)
-			os.Exit(1)
-		}
-		bufferCapacity := cfg.Anomaly.BufferCapacity
-		if bufferCapacity <= 0 {
-			bufferCapacity = ringBufferCapacity
-		}
-		anomalyBuffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
-		heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
-
-		// Always positive: config.validate() defaults gc_interval_seconds
-		// when anomaly_detection is on. A second fallback here is what let an
-		// omitted gc_interval_seconds bypass the auto_block/GC-interval
-		// cross-validation, which runs before this line ever does.
-		gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
-
-		if cfg.Anomaly.AutoBlock.Enabled {
-			blockDuration := time.Duration(cfg.Anomaly.AutoBlock.BlockDurationSeconds) * time.Second
-			if postgresStorageEnabled {
-				// Shared across HA replicas: a block written by one replica
-				// is visible to every replica on its next Check. Self-reaps
-				// expired rows in SQL, so no separate GC ticker is started
-				// (the in-memory StartBlockGC below is only for the map).
-				pbs, err := anomalyadapter.NewPostgresBlockStore(cfg.Audit.PostgresDSN, blockDuration, logger)
-				if err != nil {
-					logger.Error("failed to initialize postgres block store", "error", err)
-					os.Exit(1)
-				}
-				blocker = pbs
-				blockStoreCloser = pbs
-				logger.Info("auto-block enabled (shared via postgres)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
-			} else {
-				bc := anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
-				blocker = bc
-				// auto_block has no gc_interval_seconds field of its own (see
-				// config.AutoBlockConfig) -- it's a sub-feature of anomaly
-				// detection, so its GC just reuses the same gcInterval already
-				// derived above for the detector's own per-identity state GC
-				// rather than inventing a second, independently-tunable knob
-				// for what's a tiny in-memory map.
-				autoBlockGCStop = make(chan struct{})
-				go anomalyusecase.StartBlockGC(bc, gcInterval, autoBlockGCStop)
-				logger.Info("auto-block enabled (per-replica, in-memory -- enable postgres_storage to share across replicas)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
-			}
-		}
-
-		onAnomalyWriteErr := func(err error) {
-			logger.Error("anomaly write failed", "error", err)
-		}
-
-		// Gated on anomaly_detection as well as postgres_storage, mirroring
-		// how scim, credential_issuance, and budget_enforcement each gate
-		// their own Postgres branch on their own feature flag first. Without
-		// the anomaly_detection check, an operator who turned on
-		// postgres_storage alone would get the anomaly_baselines table
-		// touched and a connection pool opened for a feature they never
-		// enabled.
-		var baselineStore *anomalyadapter.PostgresBaselineStore
-		if postgresStorageEnabled {
-			// Reuses deriveInstanceID -- the same hostname-based (random-
-			// suffix-on-failure) identity federation already derives for its
-			// own instance ID -- rather than inventing a second ID scheme.
-			// Deliberately independent of federation's own instance_id
-			// config field and derived unconditionally here (no override,
-			// and regardless of federationEnabled): the baseline store's
-			// instance ID must answer "what stably identifies this replica"
-			// even when federation is off, so this feature isn't coupled to
-			// that one.
-			anomalyInstanceID := deriveInstanceID(logger, "")
-			bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
-			if err != nil {
-				logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
-				os.Exit(1)
-			}
-			baselineStore = bs
-			anomalyBaselineStoreCloser = bs
-			logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
-		} else {
-			logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
-		}
-
-		// blocker is now an interface-typed var (anomalydomain.Blocker),
-		// nil-when-unset rather than a possibly-nil concrete pointer, so it
-		// can be passed straight into NewDetector's blocker parameter
-		// without the typed-nil hazard the old 4-arm switch existed to
-		// dodge: assigning a nil *BlockChecker into an interface produces a
-		// non-nil interface wrapping a nil pointer, but `var blocker
-		// anomalydomain.Blocker` left unassigned is a genuine nil interface
-		// Detector's own guard sees correctly. baselineStore is still a
-		// concrete pointer (its adapter type isn't behind a shared
-		// interface), so it keeps its explicit nil branch.
-		if baselineStore != nil {
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blocker, onAnomalyWriteErr, time.Now, baselineStore)
-		} else {
-			anomalyDetector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, anomalyBuffer, blocker, onAnomalyWriteErr, time.Now, nil)
-		}
-
-		if err := anomalyDetector.LoadBaselines(); err != nil {
-			logger.Error("failed to load persisted anomaly baselines", "error", err)
-			os.Exit(1)
-		}
-
-		anomalyGCStop = make(chan struct{})
-		go anomalyusecase.StartGC(anomalyDetector, gcInterval, anomalyGCStop)
-		logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
+		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled)
+		anomalyDetector = as.detector
+		anomalyBuffer = as.buffer
+		blocker = as.blocker
+		anomalyGCStop = as.gcStop
+		autoBlockGCStop = as.autoBlockGCStop
+		blockStoreCloser = as.blockStoreCloser
+		anomalyBaselineStoreCloser = as.baselineCloser
 	}
 
 	// federation requires anomaly_detection (enforced by config.validate()),
@@ -2371,6 +2231,197 @@ func runVerifyEvidence(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 	logger.Info("signature verified: bundle authenticity confirmed")
+}
+
+// maybeStartRetention starts the background log-retention purge job when
+// the log_retention flag is on and there is at least one purgeable sink,
+// returning its stop channel (nil when retention is off or there's nothing
+// to purge, so the caller's shutdown nil-checks it like before).
+func maybeStartRetention(logger *slog.Logger, featureFlags flags.Provider, cfg *config.Config, writer auditdomain.Writer) chan struct{} {
+	if !featureFlags.Enabled("log_retention") {
+		return nil
+	}
+	var purgers []complianceusecase.NamedPurger
+	if p := buildAuditPurger(featureFlags, cfg.Audit, writer); p != nil {
+		purgers = append(purgers, complianceusecase.NamedPurger{Name: "audit", RetentionDays: cfg.Audit.RetentionDays, Purge: p.Purge})
+	}
+	if p := buildAnomalyPurger(cfg.Anomaly); p != nil {
+		purgers = append(purgers, complianceusecase.NamedPurger{Name: "anomaly", RetentionDays: cfg.Anomaly.RetentionDays, Purge: p.Purge})
+	}
+	if len(purgers) == 0 {
+		return nil
+	}
+	interval := time.Duration(cfg.Retention.CheckIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	stop := make(chan struct{})
+	go startRetentionJob(logger, purgers, interval, stop)
+	logger.Info("log retention enabled", "check_interval", interval, "purgers", len(purgers))
+	return stop
+}
+
+// maybeStartScheduledExport starts the periodic compliance-evidence export
+// job when the compliance_scheduled_export flag is on, returning its stop
+// channel (nil when the flag is off). Fatal on signing-key load or output
+// directory creation failure — the same fail-fast behavior the inline
+// composition-root code had.
+func maybeStartScheduledExport(logger *slog.Logger, featureFlags flags.Provider, cfg *config.Config) chan struct{} {
+	if !featureFlags.Enabled("compliance_scheduled_export") {
+		return nil
+	}
+	var signingKey *rsa.PrivateKey
+	if cfg.Compliance.SigningKeyFile != "" {
+		var err error
+		signingKey, err = loadSigningKey(cfg.Compliance.SigningKeyFile)
+		if err != nil {
+			logger.Error("failed to load compliance scheduled-export signing key", "error", err)
+			os.Exit(1)
+		}
+	}
+	// 0700: the output directory holds evidence bundles (already
+	// individually 0600), so the directory itself must not be
+	// world-traversable either.
+	if err := os.MkdirAll(cfg.Compliance.ScheduledExportOutputDir, 0o700); err != nil {
+		logger.Error("failed to create scheduled export output directory", "path", cfg.Compliance.ScheduledExportOutputDir, "error", err)
+		os.Exit(1)
+	}
+	interval := time.Duration(cfg.Compliance.ScheduledExportIntervalSeconds) * time.Second
+	stop := make(chan struct{})
+	go startScheduledExportJob(logger, cfg, featureFlags, interval, signingKey, stop)
+	logger.Info("compliance scheduled export enabled", "interval", interval, "output_dir", cfg.Compliance.ScheduledExportOutputDir, "signed", signingKey != nil)
+	return stop
+}
+
+// anomalyStack is the set of anomaly-detection components buildAnomalyStack
+// wires up, handed back to the composition root as one value. Fields are
+// nil when their sub-feature is off (no auto-block, no postgres), which the
+// caller's later wiring and shutdown already nil-check exactly as before.
+type anomalyStack struct {
+	detector         *anomalyusecase.Detector
+	buffer           *anomalyusecase.AlertBuffer
+	blocker          anomalydomain.Blocker
+	gcStop           chan struct{}
+	autoBlockGCStop  chan struct{}
+	blockStoreCloser io.Closer
+	baselineCloser   io.Closer
+}
+
+// buildAnomalyStack constructs the detector, alert buffer, auto-block
+// surface, baseline store, and their GC tickers/closers from config. Fatal
+// (os.Exit) on any store-open failure — the same fail-fast the inline
+// composition-root code had. Call only when the anomaly_detection flag is on.
+func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageEnabled bool) anomalyStack {
+	var s anomalyStack
+
+	anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
+	if err != nil {
+		logger.Error("failed to open anomaly output file", "path", cfg.Anomaly.Output, "error", err)
+		os.Exit(1)
+	}
+	bufferCapacity := cfg.Anomaly.BufferCapacity
+	if bufferCapacity <= 0 {
+		bufferCapacity = ringBufferCapacity
+	}
+	s.buffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
+	heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
+
+	// Always positive: config.validate() defaults gc_interval_seconds
+	// when anomaly_detection is on. A second fallback here is what let an
+	// omitted gc_interval_seconds bypass the auto_block/GC-interval
+	// cross-validation, which runs before this line ever does.
+	gcInterval := time.Duration(cfg.Anomaly.GCIntervalSeconds) * time.Second
+
+	if cfg.Anomaly.AutoBlock.Enabled {
+		blockDuration := time.Duration(cfg.Anomaly.AutoBlock.BlockDurationSeconds) * time.Second
+		if postgresStorageEnabled {
+			// Shared across HA replicas: a block written by one replica
+			// is visible to every replica on its next Check. Self-reaps
+			// expired rows in SQL, so no separate GC ticker is started
+			// (the in-memory StartBlockGC below is only for the map).
+			pbs, err := anomalyadapter.NewPostgresBlockStore(cfg.Audit.PostgresDSN, blockDuration, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres block store", "error", err)
+				os.Exit(1)
+			}
+			s.blocker = pbs
+			s.blockStoreCloser = pbs
+			logger.Info("auto-block enabled (shared via postgres)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+		} else {
+			bc := anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
+			s.blocker = bc
+			// auto_block has no gc_interval_seconds field of its own (see
+			// config.AutoBlockConfig) -- it's a sub-feature of anomaly
+			// detection, so its GC just reuses the same gcInterval already
+			// derived above for the detector's own per-identity state GC
+			// rather than inventing a second, independently-tunable knob
+			// for what's a tiny in-memory map.
+			s.autoBlockGCStop = make(chan struct{})
+			go anomalyusecase.StartBlockGC(bc, gcInterval, s.autoBlockGCStop)
+			logger.Info("auto-block enabled (per-replica, in-memory -- enable postgres_storage to share across replicas)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
+		}
+	}
+
+	onAnomalyWriteErr := func(err error) {
+		logger.Error("anomaly write failed", "error", err)
+	}
+
+	// Gated on anomaly_detection as well as postgres_storage, mirroring
+	// how scim, credential_issuance, and budget_enforcement each gate
+	// their own Postgres branch on their own feature flag first. Without
+	// the anomaly_detection check, an operator who turned on
+	// postgres_storage alone would get the anomaly_baselines table
+	// touched and a connection pool opened for a feature they never
+	// enabled.
+	var baselineStore *anomalyadapter.PostgresBaselineStore
+	if postgresStorageEnabled {
+		// Reuses deriveInstanceID -- the same hostname-based (random-
+		// suffix-on-failure) identity federation already derives for its
+		// own instance ID -- rather than inventing a second ID scheme.
+		// Deliberately independent of federation's own instance_id
+		// config field and derived unconditionally here (no override,
+		// and regardless of federationEnabled): the baseline store's
+		// instance ID must answer "what stably identifies this replica"
+		// even when federation is off, so this feature isn't coupled to
+		// that one.
+		anomalyInstanceID := deriveInstanceID(logger, "")
+		bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+		if err != nil {
+			logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
+			os.Exit(1)
+		}
+		baselineStore = bs
+		s.baselineCloser = bs
+		logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
+	} else {
+		logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
+	}
+
+	// blocker is an interface-typed field (anomalydomain.Blocker),
+	// nil-when-unset rather than a possibly-nil concrete pointer, so it
+	// can be passed straight into NewDetector's blocker parameter
+	// without the typed-nil hazard the old 4-arm switch existed to
+	// dodge: assigning a nil *BlockChecker into an interface produces a
+	// non-nil interface wrapping a nil pointer, but an unassigned
+	// anomalydomain.Blocker is a genuine nil interface Detector's own
+	// guard sees correctly. baselineStore is still a concrete pointer
+	// (its adapter type isn't behind a shared interface), so it keeps its
+	// explicit nil branch.
+	if baselineStore != nil {
+		s.detector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, baselineStore)
+	} else {
+		s.detector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, nil)
+	}
+
+	if err := s.detector.LoadBaselines(); err != nil {
+		logger.Error("failed to load persisted anomaly baselines", "error", err)
+		os.Exit(1)
+	}
+
+	s.gcStop = make(chan struct{})
+	go anomalyusecase.StartGC(s.detector, gcInterval, s.gcStop)
+	logger.Info("anomaly detection enabled", "output", cfg.Anomaly.Output)
+	return s
 }
 
 // buildAuditSink picks the audit Writer for the current postgres_storage
