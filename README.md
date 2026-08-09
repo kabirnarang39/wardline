@@ -46,8 +46,8 @@ requirements.
 # From source (always works)
 go build -o wardline ./cmd/wardline
 
-# Or run the published multi-arch image (built for each tagged release)
-docker run --rm ghcr.io/kabirnarang39/wardline:latest --help
+# Or pull the published multi-arch image (built for each tagged release)
+docker pull ghcr.io/kabirnarang39/wardline:latest
 ```
 
 Prebuilt binaries (linux/darwin/windows, amd64/arm64) and multi-arch
