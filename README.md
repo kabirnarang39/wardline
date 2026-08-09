@@ -1,6 +1,9 @@
 <div align="center">
 
-# Wardline
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.svg">
+  <img alt="Wardline" src="docs/images/banner-light.svg" width="460">
+</picture>
 
 **The control-plane proxy that auto-blocks compromised AI agents — in one static Go binary.**
 
