@@ -86,6 +86,19 @@ section.
 
 ## Known limitations
 
+- **Low-and-slow evasion.** Because the baseline is self-learned per
+  identity (Welford, unsupervised), an attacker who ramps activity
+  gradually — staying within a few standard deviations of the moving
+  baseline each window — is never auto-blocked: the baseline adapts
+  upward and absorbs the ramp. Wardline blocks *abrupt* deviations, not
+  *patient* ones. This is an inherent tradeoff of unsupervised baselining,
+  not a tunable threshold (tightening it would raise the false-positive
+  rate the detector is regression-guarded to keep near zero). Both the
+  abrupt-spike block and the low-and-slow evasion are pinned by tests
+  (`TestDetector_AutoBlock_AbruptSpikeIsBlocked` and
+  `TestDetector_AutoBlock_LowAndSlowEvades`). Pair anomaly detection with
+  explicit policy and budget limits, which bound absolute behavior
+  regardless of ramp speed.
 - Scoped to a single identity's history on a single Wardline instance —
   no cross-identity or cross-instance correlation. Federation has
   already shipped (see [Roadmap](/advanced/roadmap/)'s "v2.0 (shipped)"
