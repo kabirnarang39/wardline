@@ -72,6 +72,21 @@ const deleteBaselinesSQL = `DELETE FROM anomaly_baselines WHERE instance_id = $1
 
 const selectAllBaselinesSQL = `SELECT key, state FROM anomaly_baselines WHERE instance_id = $1`
 
+// createBaselinesUpdatedAtIndexSQL indexes updated_at so PruneStale's
+// range delete is an index scan rather than a full table scan -- the
+// table can hold one row per (instance, tenant, identity) across a whole
+// fleet, and every live replica runs PruneStale on its own GC tick.
+const createBaselinesUpdatedAtIndexSQL = `CREATE INDEX IF NOT EXISTS anomaly_baselines_updated_at_idx ON anomaly_baselines (updated_at)`
+
+// pruneStaleBaselinesSQL deletes every row -- across all instance IDs, not
+// just this store's own -- whose updated_at is older than the cutoff. A
+// live replica re-upserts every one of its in-memory identities' rows on
+// each GC tick (see usecase/gc.go), advancing their updated_at, so only
+// rows belonging to an instance that has stopped checkpointing entirely (a
+// scaled-down replica, or one whose hostname changed and orphaned its old
+// rows) ever fall past a cutoff set safely beyond one GC interval.
+const pruneStaleBaselinesSQL = `DELETE FROM anomaly_baselines WHERE updated_at < $1`
+
 // PostgresBaselineStore persists Detector's per-identity baselines
 // (internal/features/anomaly/usecase.IdentityStateSnapshot) to a shared
 // Postgres database -- the persistence half of this plan. key is the
@@ -123,6 +138,10 @@ func NewPostgresBaselineStore(dsn string, instanceID string, logger *slog.Logger
 	if _, err := db.ExecContext(createCtx, createBaselinesTableSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create anomaly_baselines table: %w", err)
+	}
+	if _, err := db.ExecContext(createCtx, createBaselinesUpdatedAtIndexSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create anomaly_baselines updated_at index: %w", err)
 	}
 
 	return &PostgresBaselineStore{db: db, logger: logger, instanceID: instanceID}, nil
@@ -276,6 +295,33 @@ func (s *PostgresBaselineStore) deleteBatch(batchKeys []string) error {
 		return fmt.Errorf("commit baseline delete: %w", err)
 	}
 	return nil
+}
+
+// PruneStale deletes every baseline row -- across all instance IDs -- whose
+// updated_at is older than olderThan before now, returning how many rows
+// were removed. It exists to clean up rows left behind by an instance that
+// has stopped checkpointing entirely (a permanently scaled-down replica, or
+// one whose hostname changed and orphaned its old rows): SaveAll's
+// per-eviction delete only removes rows for identities a still-running
+// instance evicts, never a whole abandoned instance's set. Callers must
+// pass an olderThan comfortably larger than the GC interval so a live
+// replica's own rows -- re-upserted every tick -- are never caught (see
+// usecase/gc.go's prune wiring). Safe to run from every replica each tick:
+// the delete is idempotent, and rows already removed by another replica's
+// prune simply match nothing.
+func (s *PostgresBaselineStore) PruneStale(olderThan time.Duration) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
+	defer cancel()
+
+	res, err := s.db.ExecContext(ctx, pruneStaleBaselinesSQL, time.Now().Add(-olderThan))
+	if err != nil {
+		return 0, fmt.Errorf("prune stale baselines: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned baselines: %w", err)
+	}
+	return n, nil
 }
 
 // Close releases the underlying connection pool, draining in-flight

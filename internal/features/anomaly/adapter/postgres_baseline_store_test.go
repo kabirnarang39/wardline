@@ -184,6 +184,74 @@ func TestPostgresBaselineStore_LoadAllSkipsCorruptRowsAndLogsWarn(t *testing.T) 
 	}
 }
 
+func TestPostgresBaselineStore_PruneStaleRemovesOnlyAbandonedRowsAcrossInstances(t *testing.T) {
+	dsn := baselineTestDSN(t)
+	dropBaselinesTable(t, dsn)
+
+	// Instance A (soon to be "abandoned") and instance B (still live), each
+	// saving one row under its own instance ID.
+	sA, err := adapter.NewPostgresBaselineStore(dsn, "instance-A", nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore A: %v", err)
+	}
+	defer func() { _ = sA.Close() }()
+	sB, err := adapter.NewPostgresBaselineStore(dsn, "instance-B", nil)
+	if err != nil {
+		t.Fatalf("NewPostgresBaselineStore B: %v", err)
+	}
+	defer func() { _ = sB.Close() }()
+
+	if err := sA.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{"4:acme:alice": sampleSnapshot()}, nil); err != nil {
+		t.Fatalf("SaveAll A: %v", err)
+	}
+	if err := sB.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{"4:acme:bob": sampleSnapshot()}, nil); err != nil {
+		t.Fatalf("SaveAll B: %v", err)
+	}
+
+	// Simulate instance A having stopped checkpointing: backdate its row's
+	// updated_at to an hour ago. Instance B's row keeps its fresh timestamp.
+	rawDB, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer func() { _ = rawDB.Close() }()
+	if _, err := rawDB.Exec(
+		`UPDATE anomaly_baselines SET updated_at = now() - interval '1 hour' WHERE instance_id = $1`,
+		"instance-A",
+	); err != nil {
+		t.Fatalf("backdate instance-A row: %v", err)
+	}
+
+	// Prune from instance B's store (cross-instance cleanup): rows older
+	// than 10 minutes go, i.e. instance A's backdated row but not B's fresh one.
+	n, err := sB.PruneStale(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("PruneStale: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 abandoned row pruned, got %d", n)
+	}
+
+	// Instance A's row is gone; instance B's survives.
+	if loaded, err := sA.LoadAll(); err != nil {
+		t.Fatalf("LoadAll A: %v", err)
+	} else if len(loaded) != 0 {
+		t.Errorf("expected instance A's abandoned rows pruned, got %v", loaded)
+	}
+	if loaded, err := sB.LoadAll(); err != nil {
+		t.Fatalf("LoadAll B: %v", err)
+	} else if _, ok := loaded["4:acme:bob"]; !ok {
+		t.Errorf("expected instance B's fresh row to survive the prune, got %v", loaded)
+	}
+
+	// A second prune with nothing stale removes nothing (idempotent).
+	if n, err := sB.PruneStale(10 * time.Minute); err != nil {
+		t.Fatalf("second PruneStale: %v", err)
+	} else if n != 0 {
+		t.Errorf("expected 0 rows pruned on the second pass, got %d", n)
+	}
+}
+
 func TestPostgresBaselineStore_LoadAllOnEmptyTableReturnsEmptyMap(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)

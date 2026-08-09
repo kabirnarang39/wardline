@@ -111,14 +111,15 @@ section.
   `instance_id` defaults to the replica's own hostname, so a hostname
   change (pod recreation on a rolling deploy) orphans that replica's old
   rows under the previous hostname — never reloaded again, harmless
-  (same "reappears as novel" fallback as any other eviction) but not
-  currently pruned either; see the next bullet.
-- Rows for an instance ID that never restarts again (a replica
-  permanently scaled down, or one whose hostname changed) are not
-  pruned — only rows belonging to identities evicted by a still-running
-  instance's own GC pass are deleted. Cleaning up a fully-abandoned
-  instance ID's rows is a coarser, lower-priority problem left for a
-  future cycle.
+  (same "reappears as novel" fallback as any other eviction). Such
+  orphaned rows, and those of any permanently scaled-down replica, are
+  cleaned up automatically: every live replica's GC tick prunes baseline
+  rows not re-checkpointed in the last few GC intervals (any instance's,
+  not just its own). Because a live replica re-upserts all of its own
+  rows every tick, only rows belonging to an instance that has stopped
+  checkpointing entirely ever fall past that cutoff. The one residual
+  limitation is that there's no schema-migration mechanism for the
+  persisted JSON shape if it ever needs to change.
 - Currently-blocked identities are surfaced both as the `GET
   /dashboard/api/anomalies/blocked` JSON API and, when `web_ui` is on, a
   dedicated **Blocked** panel in the dashboard. A block can be cleared

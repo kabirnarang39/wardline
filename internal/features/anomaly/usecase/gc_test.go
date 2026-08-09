@@ -94,3 +94,32 @@ func TestGC_SkipsDeletedKeysWhenNothingEvicted(t *testing.T) {
 		t.Errorf("expected no deletedKeys when nothing was evicted, got %v", store.deletedKeys)
 	}
 }
+
+func TestGC_PrunesAbandonedRowsWithFactorThreshold(t *testing.T) {
+	store := &fakeBaselineStore{}
+	cfg := domain.HeuristicConfig{WindowSeconds: 60}
+	d := NewDetector(cfg, noopWriter{}, nil, nil, nil, time.Now, store)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
+
+	d.gc(time.Now(), time.Minute)
+
+	if store.pruneCalls != 1 {
+		t.Fatalf("expected gc to call PruneStale exactly once, got %d", store.pruneCalls)
+	}
+	if want := abandonedInstancePruneFactor * time.Minute; store.prunedOlderThan != want {
+		t.Errorf("expected prune threshold %v (%dx interval), got %v", want, abandonedInstancePruneFactor, store.prunedOlderThan)
+	}
+}
+
+func TestGC_StoreWithoutPruneSupportIsSkippedCleanly(t *testing.T) {
+	store := &saveOnlyBaselineStore{}
+	cfg := domain.HeuristicConfig{WindowSeconds: 60}
+	d := NewDetector(cfg, noopWriter{}, nil, nil, nil, time.Now, store)
+	d.Publish(auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "read_file", Decision: "allow"})
+
+	d.gc(time.Now(), time.Minute) // must not panic on a store that isn't a stalePruner
+
+	if store.saveCalls != 1 {
+		t.Fatalf("expected SaveAll still called once on a non-pruner store, got %d", store.saveCalls)
+	}
+}
