@@ -38,37 +38,11 @@ The same run in the built-in read-only dashboard — the block, the anomaly that
 
 ## How it works
 
-Every agent call passes through one in-process decision pipeline before it can reach the upstream. Any stage can deny, throttle, or block — and every outcome is written to the audit trail.
+Any caller — an AI agent, a CLI/IDE, or an app — reaches its MCP/gRPC upstreams only through Wardline, which applies identity, policy, budget, and anomaly detection in-process and writes every decision to the audit trail.
 
-```mermaid
-%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 50, "rankSpacing": 70}}}%%
-flowchart LR
-    A(["AI Agent"])
-
-    subgraph W ["Wardline &nbsp;·&nbsp; one Go binary"]
-        direction TB
-        I["Identity<br/>JWT · OIDC · mTLS"]
-        P["Policy<br/>YAML · OPA · Cedar"]
-        B["Budget<br/>identity + tenant"]
-        D["Anomaly + auto-block<br/>self-baselining z-score"]
-        I --> P --> B --> D
-    end
-
-    A -->|"MCP / gRPC call"| W
-    W ==>|"allow"| U(["Upstream MCP server"])
-    W -.->|"deny · throttle · block"| X["rejected"]
-    D ==>|"every decision"| L[("Audit log<br/>JSONL / Postgres")]
-
-    %% Only the Wardline pipeline is branded; every other node inherits
-    %% GitHub's native mermaid theme so it matches in both light and dark.
-    classDef stage fill:#15803D,stroke:#15803D,color:#ffffff;
-    class I,P,B,D stage;
-
-    style W stroke:#15803D,stroke-width:2px;
-
-    linkStyle 4 stroke:#15803D,stroke-width:2.5px;
-    linkStyle 6 stroke:#15803D,stroke-width:2.5px;
-```
+<div align="center">
+  <img alt="Wardline control plane: callers pass through identity, policy, budget, and anomaly checks before reaching MCP servers, tools, resources, gRPC, and APIs" src="docs/images/architecture.svg" width="900">
+</div>
 
 Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concepts/architecture/).
 
