@@ -19,6 +19,12 @@ sidecar to start.
 make demo   # spins up a mock MCP server + Wardline and runs the scenario above
 ```
 
+The same run is visible in the built-in web dashboard — the block, the
+anomaly that triggered it, and the policy behind it, all read-only
+(`features.web_ui: true`; both GIFs are real recordings, no mockups):
+
+![Wardline dashboard: the blocked agent, its ml_score anomaly, and the policy](docs/images/wardline-dashboard-demo.gif)
+
 v0.1 scope: a reverse proxy in front of one MCP server, a policy backend
 (a static YAML allow/deny rule list, or an embedded OPA/Rego evaluator) per
 identity+tool, and a structured JSON audit log.
