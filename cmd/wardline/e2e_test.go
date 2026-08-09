@@ -4039,16 +4039,12 @@ func TestHealthEndToEnd_ReadyzFlipsToUnreadyDuringShutdown(t *testing.T) {
 		t.Fatalf("send SIGTERM: %v", err)
 	}
 
-	// srv.Shutdown closes the listener to new connections essentially the
-	// moment it's called, right after SetDraining(true) -- the window in
-	// which a *new* connection can still land a 503 read is a handful of
-	// scheduler ticks wide, not the whole shutdown-timeout duration (that
-	// duration bounds draining *existing* in-flight connections instead).
-	// A 20ms poll interval is too coarse to reliably land inside that
-	// window under load (observed flaking in a full `go test ./...` run
-	// alongside many other subprocess-spawning tests); 2ms gives ~2500
-	// attempts over the 5s deadline instead of ~250, without changing
-	// what's being asserted.
+	// After SetDraining(true), main.go holds the listener open for
+	// readinessDrainWindow (see its doc comment) before srv.Shutdown starts
+	// refusing new connections -- a bounded window in which a *new*
+	// connection reliably reads a 503, so this test is deterministic rather
+	// than racing a few-scheduler-ticks window (which flaked under -race/CI
+	// load). The 2ms poll below lands dozens of attempts inside that window.
 	deadline := time.Now().Add(5 * time.Second)
 	sawUnready := false
 	for time.Now().Before(deadline) {
