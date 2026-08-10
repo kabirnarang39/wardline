@@ -207,6 +207,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Populate the session id from the configured header immediately, before
+	// the block gate and passthrough forward below — every audit path (blocked,
+	// passthrough, gated) reads parsed.Call.SessionID, so it must be set here,
+	// not deferred to the gated-call branch. r.Header.Get("") returns "" when
+	// the feature is disabled. The later `call := parsed.Call` copy inherits it.
+	parsed.Call.SessionID = r.Header.Get(h.sessionHeader)
+
 	// The auto-block gate runs before policy evaluation (and before the
 	// passthrough/tool-call split below) so a blocked identity's call never
 	// reaches the policy engine — call.Tool isn't parsed yet at this point,
@@ -231,16 +238,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := parsed.Call
+	call := parsed.Call // inherits SessionID set above
 	call.Timestamp = start
 	call.RemoteAddr = r.RemoteAddr
 	call.UserAgent = r.Header.Get("User-Agent")
-	// Populate the session id from the configured header (r.Header.Get("")
-	// returns "" when the feature is disabled). Set on parsed.Call too so the
-	// approval port and every parsed-in-scope finish/forward call — which read
-	// parsed.Call.SessionID — carry the same value.
-	call.SessionID = r.Header.Get(h.sessionHeader)
-	parsed.Call.SessionID = call.SessionID
 
 	// auditTool is what's recorded/traced for this request. call.Tool is
 	// "" only for an untargeted resources/prompts call (e.g.
