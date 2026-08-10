@@ -55,6 +55,9 @@ import (
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 	grpcadapter "github.com/kabirnarang39/wardline/internal/features/grpcproxy/adapter"
 	healthadapter "github.com/kabirnarang39/wardline/internal/features/health/adapter"
+	jobbudgetadapter "github.com/kabirnarang39/wardline/internal/features/jobbudget/adapter"
+	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
+	jobbudgetusecase "github.com/kabirnarang39/wardline/internal/features/jobbudget/usecase"
 	policyadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter"
 	cedaradapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/cedar"
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
@@ -188,6 +191,7 @@ func runServe(logger *slog.Logger, args []string) {
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 	taintTrackingEnabled := featureFlags.Enabled("taint_tracking")
 	approvalWorkflowEnabled := featureFlags.Enabled("approval_workflow")
+	jobBudgetEnabled := featureFlags.Enabled("job_budget")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
@@ -361,6 +365,38 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Info("taint tracking enabled", "untrusted_sources", cfg.Taint.UntrustedSources, "ttl_seconds", taintCfg.TTL())
 	}
 
+	// Gated on postgres_storage the same way budget/taint select their
+	// backend: a shared Postgres meter when replicas need to agree on one
+	// job's count, an in-process map otherwise.
+	var jobBudgetChecker *jobbudgetusecase.Checker
+	if jobBudgetEnabled {
+		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob}
+		var meter jobbudgetdomain.Meter
+		if postgresStorageEnabled {
+			pm, err := jobbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres job-budget meter", "error", err)
+				os.Exit(1)
+			}
+			meter = pm
+			logger.Info("job budget backed by postgres (shared across replicas)")
+		} else {
+			meter = jobbudgetadapter.NewInMemoryMeter()
+		}
+		jobBudgetChecker = jobbudgetusecase.NewChecker(featureFlags, meter, jobBudgetCfg)
+		logger.Info("job budget enabled", "requests_per_job", jobBudgetCfg.Limit())
+	}
+
+	// jobBudgetLookup is the non-incrementing peek (IsOverBudget) that feeds
+	// policy's input.job_over_budget -- never Check, which increments and is
+	// reserved for the handler's hard gate (Task 8) as the only caller.
+	var jobBudgetLookup proxyusecase.JobBudgetLookup
+	if jobBudgetChecker != nil {
+		jobBudgetLookup = func(call proxydomain.ToolCall) bool {
+			return jobBudgetChecker.IsOverBudget(call.Tenant, call.Identity, call.SessionID, call.Timestamp)
+		}
+	}
+
 	// Append only constructed sinks: each is built inside its own flag block,
 	// so a disabled feature contributes nothing and no typed-nil ever reaches
 	// MultiSink (a nil *RingBuffer/*Detector/*Engine in a LiveSink slot is a
@@ -382,7 +418,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDeciderWithHolderAndTaint(policyHolder, taintLookup)
+	decider := proxyusecase.NewDeciderWithHolderTaintAndJobBudget(policyHolder, taintLookup, jobBudgetLookup)
 
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
@@ -695,9 +731,10 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	// The session header is plumbed onto the ToolCall/audit Entry whenever
-	// taint or approval is on — both scope by (tenant, identity, session).
+	// taint, approval, or job_budget is on — all three scope by (tenant,
+	// identity, session).
 	sessionHeader := ""
-	if taintTrackingEnabled || approvalWorkflowEnabled {
+	if taintTrackingEnabled || approvalWorkflowEnabled || jobBudgetEnabled {
 		sessionHeader = taintdomain.TaintConfig{SessionHeader: cfg.Taint.SessionHeader}.Header()
 	}
 
@@ -712,10 +749,17 @@ func runServe(logger *slog.Logger, args []string) {
 	// mtlsHeader is "" unless bootstrap_source is mtls; when set, the proxy
 	// strips it before forwarding so the untrusted upstream never learns
 	// the string that mints Wardline bearer tokens.
-	// jobBudgetChecker (the hard-gate wiring) is nil for now — a later task
-	// wires job_budget's Checker.Check in here; see
-	// internal/features/proxy/adapter.JobBudgetChecker.
-	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, nil)
+	//
+	// jobBudgetPort is a typed nil unless job_budget is on -- passing the
+	// concrete *jobbudgetusecase.Checker nil pointer straight through the
+	// JobBudgetChecker interface would defeat the handler's nil check (same
+	// trap approvalPort/autoBlockChecker above avoid), so keep it an untyped
+	// nil when disabled.
+	var jobBudgetPort proxyadapter.JobBudgetChecker
+	if jobBudgetChecker != nil {
+		jobBudgetPort = jobBudgetChecker
+	}
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort)
 
 	startedAt := time.Now()
 
