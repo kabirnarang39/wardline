@@ -5,6 +5,7 @@ import (
 
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	"github.com/kabirnarang39/wardline/internal/features/taint/domain"
+	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 )
 
 // Engine sets, expires, and declassifies taint labels. It consumes the live
@@ -55,7 +56,7 @@ func (e *Engine) Publish(entry auditdomain.Entry) {
 	if entry.Decision == "deny" || entry.Decision == "blocked" || entry.Decision == "throttled" {
 		return
 	}
-	session := SessionID(entry.SessionID, entry.Tenant, entry.Identity, entry.Timestamp, e.cfg.Window())
+	session := platformsession.SessionID(entry.SessionID, entry.Tenant, entry.Identity, entry.Timestamp, e.cfg.Window())
 	key := taintKey(entry.Tenant, entry.Identity, session)
 
 	if _, ok := e.declassify[entry.Tool]; ok {

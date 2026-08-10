@@ -73,6 +73,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
+	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 	"github.com/kabirnarang39/wardline/internal/platform/tracing"
 	"github.com/kabirnarang39/wardline/internal/platform/version"
@@ -354,7 +355,7 @@ func runServe(logger *slog.Logger, args []string) {
 			// An explicit X-Wardline-Session header wins (matching Publish's
 			// set-side preference); absent one, the TTL-window bucket derived
 			// from wall-clock time is the fallback session boundary.
-			session := taintusecase.SessionID(call.SessionID, call.Tenant, call.Identity, call.Timestamp, window)
+			session := platformsession.SessionID(call.SessionID, call.Tenant, call.Identity, call.Timestamp, window)
 			return taintEngine.Current(call.Tenant, call.Identity, session, call.Timestamp).Tainted
 		}
 		logger.Info("taint tracking enabled", "untrusted_sources", cfg.Taint.UntrustedSources, "ttl_seconds", taintCfg.TTL())

@@ -6,8 +6,11 @@ import (
 
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	"github.com/kabirnarang39/wardline/internal/features/taint/domain"
+	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/stretchr/testify/assert"
 )
+
+var t0 = time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 
 // fakeStore is a non-concurrent map store — enough for the single-goroutine
 // engine unit tests. The real concurrent store is exercised in the adapter.
@@ -33,7 +36,7 @@ func entry(tool, decision string, ts time.Time) auditdomain.Entry {
 }
 
 func sessionAt(now time.Time) string {
-	return SessionID("", "acme", "alice", now, 300)
+	return platformsession.SessionID("", "acme", "alice", now, 300)
 }
 
 func TestEngine_HeaderSessionSetReadAgree(t *testing.T) {
