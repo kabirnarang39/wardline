@@ -1256,7 +1256,7 @@ func TestHandler_NeedsApprovalEnqueuesReturns202(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"}, "")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusAccepted {
@@ -1277,7 +1277,7 @@ func TestHandler_NeedsApprovalWithGrantForwards(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusOK {
@@ -1301,5 +1301,33 @@ func TestHandler_NeedsApprovalNilPortFailsClosed(t *testing.T) {
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 (fail closed) when approval unwired, got %d", w.Code)
+	}
+}
+
+// TestHandler_SessionHeaderRecordedOnEntry proves the configured session
+// header is read off the request and threaded into the recorded audit Entry
+// — the taint/approval scope key the rest of the pipeline reads.
+func TestHandler_SessionHeaderRecordedOnEntry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "X-Wardline-Session")
+
+	req := newRequest("agent-abc123", "delete_file")
+	req.Header.Set("X-Wardline-Session", "run-7")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].SessionID != "run-7" {
+		t.Fatalf("expected one entry with SessionID=run-7, got %+v", writer.entries)
 	}
 }

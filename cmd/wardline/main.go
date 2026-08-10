@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -31,6 +32,9 @@ import (
 	anomalyadapter "github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
+	approvaladapter "github.com/kabirnarang39/wardline/internal/features/approval/adapter"
+	approvaldomain "github.com/kabirnarang39/wardline/internal/features/approval/domain"
+	approvalusecase "github.com/kabirnarang39/wardline/internal/features/approval/usecase"
 	auditadapter "github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
@@ -182,6 +186,7 @@ func runServe(logger *slog.Logger, args []string) {
 	anomalyDetectionEnabled := featureFlags.Enabled("anomaly_detection")
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 	taintTrackingEnabled := featureFlags.Enabled("taint_tracking")
+	approvalWorkflowEnabled := featureFlags.Enabled("approval_workflow")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
@@ -679,10 +684,34 @@ func runServe(logger *slog.Logger, args []string) {
 	if blocker != nil {
 		autoBlockChecker = blocker
 	}
+	// The approval manager is built only when approval_workflow is on; a nil
+	// port makes the proxy fail closed on any needs_approval outcome.
+	var approvalManager *approvalusecase.Manager
+	if approvalWorkflowEnabled {
+		grantTTL := time.Duration(approvaldomain.Config{GrantTTLSeconds: cfg.Approval.GrantTTLSeconds}.GrantTTL()) * time.Second
+		approvalManager = approvalusecase.NewManager(approvaladapter.NewInMemoryStore(), time.Now, grantTTL, newApprovalID)
+		logger.Info("approval workflow enabled", "grant_ttl", grantTTL)
+	}
+
+	// The session header is plumbed onto the ToolCall/audit Entry whenever
+	// taint or approval is on — both scope by (tenant, identity, session).
+	sessionHeader := ""
+	if taintTrackingEnabled || approvalWorkflowEnabled {
+		sessionHeader = taintdomain.TaintConfig{SessionHeader: cfg.Taint.SessionHeader}.Header()
+	}
+
+	// approvalPort is a typed nil unless approval_workflow is on; passing a
+	// typed *Manager nil through the ApprovalPort interface would defeat the
+	// handler's nil check, so keep it an untyped nil when disabled.
+	var approvalPort proxyadapter.ApprovalPort
+	if approvalManager != nil {
+		approvalPort = approvalManager
+	}
+
 	// mtlsHeader is "" unless bootstrap_source is mtls; when set, the proxy
 	// strips it before forwarding so the untrusted upstream never learns
 	// the string that mints Wardline bearer tokens.
-	handler := proxyadapter.NewHandler(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader)
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader)
 
 	startedAt := time.Now()
 
@@ -955,6 +984,13 @@ func runServe(logger *slog.Logger, args []string) {
 	// a spurious audit-log "error" entry forever whenever scim is off; same
 	// M9 shadowing trade-off applies.
 	extraRoutes["/scim/v2/"] = routeOrNotFound(scimEnabled, scimHandler)
+	// Operator approval surface (GET /approvals/pending, POST
+	// /approvals/{id}/approve|deny), loopback-only (nil authorizer). Only
+	// registered when the manager was built, so an unwired approval feature
+	// doesn't shadow an upstream that happens to expose /approvals/*.
+	if approvalManager != nil {
+		extraRoutes["/approvals/"] = approvaladapter.NewHTTPHandler(approvalManager, nil, logger)
+	}
 	// Unconditional, unlike every other extraRoutes entry -- every
 	// deployment needs health/readiness checking, it isn't a feature an
 	// operator opts into with a flag.
@@ -1622,6 +1658,18 @@ func buildTopHandler(proxy http.Handler, extraRoutes map[string]http.Handler) ht
 	}
 	mux.Handle("/", proxy)
 	return mux
+}
+
+// newApprovalID returns an unguessable approval-request id: 16 crypto/rand
+// bytes hex-encoded. The id is the only handle an operator has to approve a
+// specific pending request, so it must not be predictable. A crypto/rand read
+// failing means broken system entropy — panic rather than mint a weak id.
+func newApprovalID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		panic(fmt.Sprintf("crypto/rand read failed generating approval id: %v", err))
+	}
+	return hex.EncodeToString(buf)
 }
 
 func runValidatePolicy(logger *slog.Logger, args []string) {
