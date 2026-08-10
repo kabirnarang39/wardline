@@ -1942,3 +1942,41 @@ audit:
 		t.Errorf("expected zero-value ApprovalConfig when the block is absent, got %+v", cfg.Approval)
 	}
 }
+
+func TestLoad_JobBudgetBlockParses(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+features:
+  job_budget: true
+job_budget:
+  requests_per_job: 250
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JobBudget.RequestsPerJob != 250 {
+		t.Errorf("unexpected requests_per_job: %+v", cfg.JobBudget)
+	}
+}
+
+func TestLoad_JobBudgetBlockAbsentIsZeroValue(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JobBudget.RequestsPerJob != 0 {
+		t.Errorf("expected zero-value JobBudgetConfig, got %+v", cfg.JobBudget)
+	}
+}
