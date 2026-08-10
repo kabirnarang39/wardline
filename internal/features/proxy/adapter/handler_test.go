@@ -1331,3 +1331,31 @@ func TestHandler_SessionHeaderRecordedOnEntry(t *testing.T) {
 		t.Fatalf("expected one entry with SessionID=run-7, got %+v", writer.entries)
 	}
 }
+
+// TestHandler_SessionHeaderRecordedOnBlockedEntry proves the session id is
+// populated before the auto-block gate, so a "blocked" audit Entry carries it
+// too — the block path records parsed.Call.SessionID before the gated-call
+// branch runs.
+func TestHandler_SessionHeaderRecordedOnBlockedEntry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(panickingEngine{t: t})
+	autoBlock := fakeAutoBlockChecker{verdict: anomalydomain.BlockVerdict{Allowed: false, Reason: "blocked"}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, autoBlock, "", nil, "X-Wardline-Session")
+
+	req := newRequest("agent-abc123", "delete_file")
+	req.Header.Set("X-Wardline-Session", "run-9")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "blocked" || writer.entries[0].SessionID != "run-9" {
+		t.Fatalf("expected one blocked entry with SessionID=run-9, got %+v", writer.entries)
+	}
+}
