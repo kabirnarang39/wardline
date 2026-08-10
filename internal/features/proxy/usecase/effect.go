@@ -98,6 +98,10 @@ func opName(req domain.ParsedRequest) string {
 	return req.Method
 }
 
+// ShallowParams exposes shallowParams for callers outside this package
+// (the proxy handler, building an approval request's params).
+func ShallowParams(raw json.RawMessage) map[string]string { return shallowParams(raw) }
+
 // shallowParams parses one level of the JSON-RPC params object into a
 // string map for the audit record. Nested/complex values are stringified as
 // raw JSON; a non-object body yields an empty map. It never returns nil.

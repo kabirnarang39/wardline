@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	approvalusecase "github.com/kabirnarang39/wardline/internal/features/approval/usecase"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
@@ -1234,5 +1235,71 @@ func TestHandler_UpstreamRPCErrorRecordsContradictedEffect(t *testing.T) {
 	}
 	if !e.Effect.RPCError {
 		t.Error("expected the captured Effect to flag the JSON-RPC error")
+	}
+}
+
+type fakeApproval struct {
+	approved  bool
+	pendingID string
+}
+
+func (f fakeApproval) OnNeedsApproval(_, _, _, _, _ string, _ map[string]string) (approvalusecase.Result, error) {
+	return approvalusecase.Result{Approved: f.approved, PendingID: f.pendingID}, nil
+}
+
+func TestHandler_NeedsApprovalEnqueuesReturns202(t *testing.T) {
+	// upstream should NOT be hit
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { upstreamHit = true }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+	if upstreamHit {
+		t.Fatal("upstream must not be hit for a pending approval")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "needs_approval" {
+		t.Fatalf("expected one needs_approval entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_NeedsApprovalWithGrantForwards(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a granted retry, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow entry, got %+v", writer.entries)
+	}
+}
+
+func TestHandler_NeedsApprovalNilPortFailsClosed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
+	// existing constructor: no approval port wired
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (fail closed) when approval unwired, got %d", w.Code)
 	}
 }

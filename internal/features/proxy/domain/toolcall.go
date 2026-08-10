@@ -34,12 +34,31 @@ type ToolCall struct {
 	Timestamp  time.Time
 	RemoteAddr string
 	UserAgent  string
+
+	// SessionID scopes an approval grant to a single agent session so a
+	// grant issued for one session can't admit another's call. Populated
+	// from the request by Task 9; "" until then (an unscoped grant).
+	SessionID string
 }
 
-// Verdict is the result of evaluating a ToolCall against policy.
+// Outcome is the three-way result of a policy evaluation: the call may
+// proceed, is refused, or needs an operator's approval before it can.
+type Outcome string
+
+const (
+	OutcomeAllow         Outcome = "allow"
+	OutcomeDeny          Outcome = "deny"
+	OutcomeNeedsApproval Outcome = "needs_approval"
+)
+
+// Verdict is the result of evaluating a ToolCall against policy. Allow is
+// kept as a derived convenience (Outcome == OutcomeAllow) for existing
+// callers that only distinguish proceed from not.
 type Verdict struct {
-	Allow  bool
-	Reason string
+	Allow     bool
+	Outcome   Outcome
+	Reason    string
+	PendingID string
 }
 
 // ParsedRequest is the result of parsing an incoming MCP JSON-RPC

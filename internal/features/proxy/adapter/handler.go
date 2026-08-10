@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	approvalusecase "github.com/kabirnarang39/wardline/internal/features/approval/usecase"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
@@ -41,6 +42,15 @@ type BudgetChecker interface {
 // plausibly provision an identically-named identity via SCIM).
 type AutoBlockChecker interface {
 	Check(identity, tenantName string, now time.Time) anomalydomain.BlockVerdict
+}
+
+// ApprovalPort drives the needs_approval outcome: it admits a call that
+// already holds an operator grant, otherwise enqueues a pending request.
+// Nil when the approval_workflow feature isn't wired — the handler fails
+// closed (denies) on needs_approval in that case. Satisfied by
+// approvalusecase.Manager.
+type ApprovalPort interface {
+	OnNeedsApproval(tenant, identity, tool, method, session string, params map[string]string) (approvalusecase.Result, error)
 }
 
 // JSON-RPC error codes. This isn't a full JSON-RPC error code
@@ -108,6 +118,10 @@ type Handler struct {
 	// before forwarding for exactly the reason Authorization is (see
 	// forward()).
 	trustedIdentityHeader string
+
+	// approval is nil unless the approval_workflow feature is wired; a nil
+	// port makes needs_approval fail closed (deny) — see ServeHTTP.
+	approval ApprovalPort
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -116,6 +130,13 @@ type Handler struct {
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil)
+}
+
+// NewHandlerWithApproval is NewHandler plus an ApprovalPort, wired only
+// when the approval_workflow feature is on. A nil port (what NewHandler
+// passes) makes a needs_approval policy outcome fail closed.
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -136,6 +157,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 		now:              time.Now,
 
 		trustedIdentityHeader: trustedIdentityHeader,
+		approval:              approval,
 	}
 }
 
@@ -218,7 +240,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	verdict := h.decider.Decide(call)
-	if !verdict.Allow {
+	switch verdict.Outcome {
+	case prdomain.OutcomeNeedsApproval:
+		if h.approval == nil {
+			// Fail closed: policy asked for approval but the feature isn't
+			// wired, so there's no way to obtain one — deny.
+			h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start, nil, "")
+			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
+			return
+		}
+		redacted := proxyusecase.RedactSecrets(proxyusecase.ShallowParams(parsed.Call.Params))
+		res, err := h.approval.OnNeedsApproval(tenant, identity, auditTool, parsed.Method, parsed.Call.SessionID, redacted)
+		if err != nil {
+			h.finish(span, identity, tenant, auditTool, "deny", err.Error(), start, nil, "")
+			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
+			return
+		}
+		if !res.Approved {
+			h.finish(span, identity, tenant, auditTool, "needs_approval", verdict.Reason, start, nil, "")
+			writeJSONRPCError(w, http.StatusAccepted, rpcCodeServerErr, parsed.ID, "awaiting operator approval; retry after approval (pending id: "+res.PendingID+")")
+			return
+		}
+		// res.Approved: a live grant admits this call — fall through to the
+		// allow/forward path below.
+	case prdomain.OutcomeDeny:
 		// verdict.Reason may carry detailed policy-engine diagnostics (with
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
@@ -352,9 +397,9 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
 	// ponytail: explicit success allowlist, not a switch with a default —
-	// decision is a closed set of 6 literals this file alone produces
-	// ("allow", "deny", "throttled", "passthrough", "error", "blocked"), not
-	// caller-controlled. A future 7th decision value needs a human to add
+	// decision is a closed set of 7 literals this file alone produces
+	// ("allow", "deny", "throttled", "passthrough", "error", "blocked",
+	// "needs_approval"), not caller-controlled. A future 8th decision value needs a human to add
 	// it here too; forgetting fails safe (Error), not silently open.
 	// Upgrade to a typed decision enum with an exhaustive switch if that
 	// becomes a real maintenance pain point.
