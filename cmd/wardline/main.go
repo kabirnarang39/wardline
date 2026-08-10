@@ -44,6 +44,9 @@ import (
 	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
 	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	complianceusecase "github.com/kabirnarang39/wardline/internal/features/compliance/usecase"
+	costbudgetadapter "github.com/kabirnarang39/wardline/internal/features/costbudget/adapter"
+	costbudgetdomain "github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
+	costbudgetusecase "github.com/kabirnarang39/wardline/internal/features/costbudget/usecase"
 	credentialadapter "github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	credentialdomain "github.com/kabirnarang39/wardline/internal/features/credential/domain"
 	credentialusecase "github.com/kabirnarang39/wardline/internal/features/credential/usecase"
@@ -192,6 +195,7 @@ func runServe(logger *slog.Logger, args []string) {
 	taintTrackingEnabled := featureFlags.Enabled("taint_tracking")
 	approvalWorkflowEnabled := featureFlags.Enabled("approval_workflow")
 	jobBudgetEnabled := featureFlags.Enabled("job_budget")
+	jobCostBudgetEnabled := featureFlags.Enabled("job_cost_budget")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
@@ -402,6 +406,38 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
+	// Gated on postgres_storage the same way jobBudget's own meter selects
+	// its backend above.
+	var costBudgetChecker *costbudgetusecase.Checker
+	if jobCostBudgetEnabled {
+		var costBudgetMeter costbudgetdomain.Meter
+		if postgresStorageEnabled {
+			cm, err := costbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres cost-budget meter", "error", err)
+				os.Exit(1)
+			}
+			costBudgetMeter = cm
+			logger.Info("cost budget backed by postgres (shared across replicas)")
+		} else {
+			costBudgetMeter = costbudgetadapter.NewInMemoryMeter()
+		}
+		costBudgetCfg := costbudgetdomain.Config{Ceiling: cfg.JobCostBudget.Ceiling, ToolCosts: cfg.JobCostBudget.ToolCosts, DefaultCost: cfg.JobCostBudget.DefaultCost}
+		costBudgetChecker = costbudgetusecase.NewChecker(featureFlags, costBudgetMeter, costBudgetCfg)
+		logger.Info("cost budget enabled", "ceiling", costBudgetCfg.Limit())
+	}
+
+	// costBudgetLookup is the non-incrementing peek (IsOverBudget) that feeds
+	// policy's input.cost_over_budget -- never Check, which increments and is
+	// reserved for the handler's hard gate as the only caller. Mirrors
+	// jobBudgetLookup above exactly.
+	var costBudgetLookup proxyusecase.CostBudgetLookup
+	if costBudgetChecker != nil {
+		costBudgetLookup = func(call proxydomain.ToolCall) bool {
+			return costBudgetChecker.IsOverBudget(call.Tenant, call.Identity, call.SessionID, call.Timestamp)
+		}
+	}
+
 	// Append only constructed sinks: each is built inside its own flag block,
 	// so a disabled feature contributes nothing and no typed-nil ever reaches
 	// MultiSink (a nil *RingBuffer/*Detector/*Engine in a LiveSink slot is a
@@ -423,7 +459,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDeciderWithHolderTaintAndJobBudget(policyHolder, taintLookup, jobBudgetLookup)
+	decider := proxyusecase.NewDeciderWithHolderTaintJobBudgetAndCostBudget(policyHolder, taintLookup, jobBudgetLookup, costBudgetLookup)
 
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
@@ -736,10 +772,10 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	// The session header is plumbed onto the ToolCall/audit Entry whenever
-	// taint, approval, or job_budget is on — all three scope by (tenant,
-	// identity, session).
+	// taint, approval, job_budget, or job_cost_budget is on — all four scope
+	// by (tenant, identity, session).
 	sessionHeader := ""
-	if taintTrackingEnabled || approvalWorkflowEnabled || jobBudgetEnabled {
+	if taintTrackingEnabled || approvalWorkflowEnabled || jobBudgetEnabled || jobCostBudgetEnabled {
 		sessionHeader = taintdomain.TaintConfig{SessionHeader: cfg.Taint.SessionHeader}.Header()
 	}
 
@@ -764,12 +800,12 @@ func runServe(logger *slog.Logger, args []string) {
 	if jobBudgetChecker != nil {
 		jobBudgetPort = jobBudgetChecker
 	}
-	// costBudgetPort: job_cost_budget composition-root wiring (config,
-	// meter, flag) lands in a later task -- nil here is the same
-	// not-yet-wired state every other optional port started in, and the
-	// handler's nil check (see CostBudgetChecker's doc comment) makes this
-	// a no-op, not a partial feature.
+	// costBudgetPort is a typed nil unless job_cost_budget is on -- same
+	// typed-nil-through-interface trap jobBudgetPort above avoids.
 	var costBudgetPort proxyadapter.CostBudgetChecker
+	if costBudgetChecker != nil {
+		costBudgetPort = costBudgetChecker
+	}
 	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort)
 
 	startedAt := time.Now()
