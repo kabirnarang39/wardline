@@ -454,3 +454,30 @@ func TestOPAEngine_JobOverBudgetReachesRegoAndRoutesToApproval(t *testing.T) {
 		t.Errorf("expected needs_approval when over job budget, got %q", overBudget.Effect)
 	}
 }
+
+const costBudgetPolicySource = `package wardline.authz
+
+default allow = false
+
+approval { input.cost_over_budget }
+
+allow {
+	input.identity == "agent-abc123"
+	not input.cost_over_budget
+}
+`
+
+func TestOPAEngine_CostOverBudgetReachesRegoAndRoutesToApproval(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(costBudgetPolicySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	underBudget := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "llm_call", CostOverBudget: false})
+	if underBudget.Effect != domain.EffectAllow {
+		t.Errorf("expected allow when under cost budget, got %q", underBudget.Effect)
+	}
+	overBudget := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "llm_call", CostOverBudget: true})
+	if overBudget.Effect != domain.EffectNeedsApproval {
+		t.Errorf("expected needs_approval when over cost budget, got %q", overBudget.Effect)
+	}
+}
