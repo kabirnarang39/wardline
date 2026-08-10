@@ -27,6 +27,18 @@ type AuditConfig struct {
 	RetentionDays int `yaml:"retention_days"`
 }
 
+// TaintConfig configures integrity taint tracking. Only meaningful when the
+// taint_tracking feature flag is on. UntrustedSources are tool names whose
+// invocation taints the calling (tenant, identity, session); DeclassifySources
+// clear taint. The numeric fields default (see taint/domain) when unset.
+type TaintConfig struct {
+	UntrustedSources     []string `yaml:"untrusted_sources"`
+	DeclassifySources    []string `yaml:"declassify_sources"`
+	TTLSeconds           int      `yaml:"ttl_seconds"`
+	SessionWindowSeconds int      `yaml:"session_window_seconds"`
+	SessionHeader        string   `yaml:"session_header"`
+}
+
 // BudgetConfig configures the per-identity rate limiter. Only validated
 // (and only meaningful) when the budget_enforcement feature flag is on.
 // Tenants holds optional per-tenant overrides of the global default above,
@@ -323,6 +335,7 @@ type Config struct {
 	Federation      FederationConfig `yaml:"federation"`
 	Compliance      ComplianceConfig `yaml:"compliance"`
 	Retention       RetentionConfig  `yaml:"retention"`
+	Taint           TaintConfig      `yaml:"taint"`
 	Features        map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving

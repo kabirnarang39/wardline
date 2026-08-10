@@ -56,12 +56,16 @@ import (
 	opaadapter "github.com/kabirnarang39/wardline/internal/features/policy/adapter/opa"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
+	proxydomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 	rbacadapter "github.com/kabirnarang39/wardline/internal/features/rbac/adapter"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	rbacusecase "github.com/kabirnarang39/wardline/internal/features/rbac/usecase"
 	scimadapter "github.com/kabirnarang39/wardline/internal/features/scim/adapter"
 	scimusecase "github.com/kabirnarang39/wardline/internal/features/scim/usecase"
+	taintadapter "github.com/kabirnarang39/wardline/internal/features/taint/adapter"
+	taintdomain "github.com/kabirnarang39/wardline/internal/features/taint/domain"
+	taintusecase "github.com/kabirnarang39/wardline/internal/features/taint/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
@@ -177,6 +181,7 @@ func runServe(logger *slog.Logger, args []string) {
 	webUIEnabled := featureFlags.Enabled("web_ui")
 	anomalyDetectionEnabled := featureFlags.Enabled("anomaly_detection")
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
+	taintTrackingEnabled := featureFlags.Enabled("taint_tracking")
 
 	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
 
@@ -324,26 +329,54 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Info("federation enabled", "instance_id", instanceID, "peers", len(peers))
 	}
 
-	// Exhaustive over both flags rather than MultiSink{ringBuffer,
-	// anomalyDetector} with nil members: a nil *RingBuffer or *Detector
-	// placed in a LiveSink slot is a typed nil, which MultiSink's nil check
-	// cannot see, so it would be dispatched to and panic on the first
-	// request. Every sink reaching MultiSink here is already constructed.
-	var liveSink auditdomain.LiveSink = auditadapter.NoopSink{}
-	switch {
-	case webUIEnabled && anomalyDetectionEnabled:
-		liveSink = auditadapter.MultiSink{ringBuffer, anomalyDetector}
-	case webUIEnabled:
-		liveSink = ringBuffer
-	case anomalyDetectionEnabled:
-		liveSink = anomalyDetector
+	// Build the taint engine before the live-sink assembly: it is both a
+	// LiveSink (sets/clears taint from the audit stream) and the source of
+	// the decision-time taint lookup. Constructed only when taint_tracking is
+	// on, so the whole slice stays out of the wiring otherwise.
+	var taintEngine *taintusecase.Engine
+	var taintLookup proxyusecase.TaintLookup
+	if taintTrackingEnabled {
+		taintCfg := taintdomain.TaintConfig{
+			UntrustedSources:     cfg.Taint.UntrustedSources,
+			DeclassifySources:    cfg.Taint.DeclassifySources,
+			TTLSeconds:           cfg.Taint.TTLSeconds,
+			SessionWindowSeconds: cfg.Taint.SessionWindowSeconds,
+			SessionHeader:        cfg.Taint.SessionHeader,
+		}
+		taintEngine = taintusecase.NewEngine(taintCfg, taintadapter.NewInMemoryStore(), time.Now)
+		window := taintCfg.Window()
+		taintLookup = func(call proxydomain.ToolCall) bool {
+			// Phase 1 uses the fallback TTL-window session (the audit Entry
+			// carries no session header), so the read here and the set in
+			// Publish bucket by the same window from wall-clock time.
+			session := taintusecase.SessionID("", call.Tenant, call.Identity, call.Timestamp, window)
+			return taintEngine.Current(call.Tenant, call.Identity, session, call.Timestamp).Tainted
+		}
+		logger.Info("taint tracking enabled", "untrusted_sources", cfg.Taint.UntrustedSources, "ttl_seconds", taintCfg.TTL())
 	}
+
+	// Append only constructed sinks: each is built inside its own flag block,
+	// so a disabled feature contributes nothing and no typed-nil ever reaches
+	// MultiSink (a nil *RingBuffer/*Detector/*Engine in a LiveSink slot is a
+	// typed nil MultiSink's nil check cannot see, and would panic on the first
+	// request). An empty MultiSink is a valid no-op sink.
+	sinks := auditadapter.MultiSink{}
+	if webUIEnabled {
+		sinks = append(sinks, ringBuffer)
+	}
+	if anomalyDetectionEnabled {
+		sinks = append(sinks, anomalyDetector)
+	}
+	if taintEngine != nil {
+		sinks = append(sinks, taintEngine)
+	}
+	var liveSink auditdomain.LiveSink = sinks
 
 	recorder := auditusecase.NewRecorder(writer, liveSink, func(err error) {
 		logger.Error("audit write failed", "error", err)
 	})
 
-	decider := proxyusecase.NewDeciderWithHolder(policyHolder)
+	decider := proxyusecase.NewDeciderWithHolderAndTaint(policyHolder, taintLookup)
 
 	budgetEnforcementEnabled := featureFlags.Enabled("budget_enforcement")
 
