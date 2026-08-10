@@ -278,6 +278,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// failed open).
 	successReason := ""
 
+	// admittedViaGrant is true only when this exact call was just admitted
+	// by consuming a live operator approval grant (OutcomeNeedsApproval,
+	// res.Approved below). It carves out the one caller downstream of the
+	// switch that must honor that grant against the job-budget hard gate --
+	// see the gate below for why.
+	admittedViaGrant := false
+
 	verdict := h.decider.Decide(call)
 	switch verdict.Outcome {
 	case prdomain.OutcomeNeedsApproval:
@@ -305,6 +312,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// reads as "pre-approved" rather than an indistinguishable ordinary
 		// allow.
 		successReason = "approved via grant (pending id consumed)"
+		admittedViaGrant = true
 	case prdomain.OutcomeDeny:
 		// verdict.Reason may carry detailed policy-engine diagnostics (with
 		// the OPA backend, potentially internal error text, file paths, or
@@ -358,13 +366,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// trail. This is the only call site for JobBudgetChecker.Check (the
 	// incrementing method) in the codebase -- see the interface doc comment.
 	if h.jobBudgetChecker != nil {
+		// Check runs unconditionally regardless of admittedViaGrant -- the
+		// meter's count must stay accurate for future calls on this job even
+		// when this particular call is let through on a grant; skipping the
+		// increment here would let a single approval quietly reopen the
+		// ceiling for every subsequent call, not just this one.
 		jbVerdict := h.jobBudgetChecker.Check(tenant, identity, parsed.Call.SessionID, start)
-		if !jbVerdict.Allowed {
+		if !jbVerdict.Allowed && !admittedViaGrant {
 			h.finish(span, identity, tenant, auditTool, "job_budget_exceeded", jbVerdict.Reason, parsed.Call.SessionID, start, nil, "")
 			writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "job budget ceiling exceeded")
 			return
 		}
-		if jbVerdict.FailedOpen {
+		if !jbVerdict.Allowed && admittedViaGrant {
+			// The call was just human-approved via a consumed grant -- honor
+			// it for this one call even though the ceiling is (still, or
+			// again) exceeded. Narrow, additive carve-out: only reachable
+			// when OutcomeNeedsApproval consumed a live grant above; every
+			// other caller still hits the hard deny.
+			note := "job budget ceiling exceeded but call was pre-approved via grant"
+			if successReason != "" {
+				successReason += "; " + note
+			} else {
+				successReason = note
+			}
+		}
+		if jbVerdict.Allowed && jbVerdict.FailedOpen {
 			if successReason != "" {
 				successReason += "; " + jbVerdict.Reason
 			} else {
