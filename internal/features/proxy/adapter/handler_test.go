@@ -1286,6 +1286,11 @@ func TestHandler_NeedsApprovalWithGrantForwards(t *testing.T) {
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
 		t.Fatalf("expected one allow entry, got %+v", writer.entries)
 	}
+	// A grant-consumed allow must carry a distinguishing reason so its audit
+	// entry doesn't read identically to an ordinary, never-gated allow.
+	if reason := writer.entries[0].Reason; reason == "" {
+		t.Fatal("expected a non-empty Reason marking this allow as approved via grant")
+	}
 }
 
 func TestHandler_NeedsApprovalNilPortFailsClosed(t *testing.T) {

@@ -1,6 +1,9 @@
 package main_test
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"net/http"
 	"testing"
 )
@@ -75,5 +78,60 @@ taint:
 	afterRead := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
 	if afterRead.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for a write after an untrusted read when taint is off, got %d (stderr: %s)", afterRead.StatusCode, stderr.String())
+	}
+}
+
+// postToolCallWithSession is like postToolCall but adds an explicit
+// X-Wardline-Session header, exercising the header-preference branch of
+// SessionID on both the taint SET path (audit Entry.SessionID) and the
+// decision-time READ path (proxydomain.ToolCall.SessionID) -- see
+// TestServeEndToEnd_TaintHonorsSessionHeader.
+func postToolCallWithSession(t *testing.T, listenAddr, identity, tool, session string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	req.Header.Set("X-Wardline-Session", session)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return resp
+}
+
+// TestServeEndToEnd_TaintHonorsSessionHeader is the regression test for the
+// decision-time taint lookup ignoring the X-Wardline-Session header (it
+// hardcoded "" and always fell back to the TTL-window bucket, diverging
+// from Publish's set-side header preference). Proves, through the real
+// wiring in cmd/wardline: an untrusted read tainted under an explicit
+// session header gates a write carrying that SAME header, while a write
+// carrying a DIFFERENT session header is untainted -- ruling out "session
+// ignored entirely, everything taints" as a false-positive explanation.
+func TestServeEndToEnd_TaintHonorsSessionHeader(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.rego", taintPolicy, `policy_backend: opa
+features:
+  taint_tracking: true
+taint:
+  untrusted_sources:
+    - web_fetch`)
+
+	untrustedRead := postToolCallWithSession(t, listenAddr, "agent-abc123", "web_fetch", "run-1")
+	if untrustedRead.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the untrusted read, got %d (stderr: %s)", untrustedRead.StatusCode, stderr.String())
+	}
+
+	sameSessionWrite := postToolCallWithSession(t, listenAddr, "agent-abc123", "delete_file", "run-1")
+	if sameSessionWrite.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a write on the same session header as the untrusted read, got %d (stderr: %s)", sameSessionWrite.StatusCode, stderr.String())
+	}
+
+	differentSessionWrite := postToolCallWithSession(t, listenAddr, "agent-abc123", "delete_file", "run-2")
+	if differentSessionWrite.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a write on a different session header (isolation), got %d (stderr: %s)", differentSessionWrite.StatusCode, stderr.String())
 	}
 }
