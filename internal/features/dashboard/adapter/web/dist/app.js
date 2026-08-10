@@ -668,6 +668,8 @@ function renderApprovals() {
     subtitle.textContent = `${entries.length} pending approval${entries.length === 1 ? '' : 's'}`;
   }
 
+  updateNavCount('nav-count-approvals', entries.length);
+
   if (entries.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;
@@ -735,6 +737,8 @@ function renderJobBudget() {
   if (!tbody) return;
 
   const entries = state.jobBudget;
+  updateNavCount('nav-count-jobbudget', entries.length);
+
   if (entries.length === 0) {
     tbody.innerHTML = '';
     empty.hidden = false;

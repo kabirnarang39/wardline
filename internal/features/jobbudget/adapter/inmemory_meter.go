@@ -47,7 +47,18 @@ func (m *InMemoryMeter) ListNearCeiling(limit int) []domain.Entry {
 		entries = append(entries, domain.Entry{Key: k, Count: c})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Count > entries[j].Count })
-	if limit >= 0 && limit < len(entries) {
+	// limit <= 0 returns no entries -- matches PostgresMeter's ListNearCeiling,
+	// where a non-positive $1 to "LIMIT $1" returns zero rows (Postgres
+	// rejects a negative LIMIT outright; zero legitimately means "none").
+	// The prior `limit >= 0` check let a negative limit fall through as
+	// "unbounded," silently diverging from the Postgres adapter's behavior
+	// for the same input -- unreachable via this repo's only caller today
+	// (which always passes a positive constant), but the two Lister
+	// implementations must agree on their own documented contract.
+	if limit <= 0 {
+		return []domain.Entry{} // empty, not nil -- avoids a JSON "null" from the dashboard API
+	}
+	if limit < len(entries) {
 		entries = entries[:limit]
 	}
 	return entries
