@@ -102,6 +102,13 @@ type Context struct {
 	// identically to before when the feature is off. Engine-neutral: exposed
 	// to Rego as input.tainted today, readable by other engines later.
 	Tainted bool
+
+	// JobOverBudget reports whether the calling identity's current job
+	// (tenant, identity, session) has exceeded its per-job request
+	// ceiling. Populated only when job_budget is on; always false
+	// otherwise, so a policy referencing input.job_over_budget behaves
+	// identically to before when the feature is off.
+	JobOverBudget bool
 }
 
 // Engine evaluates whether a Context's identity may make its tool call.
