@@ -369,21 +369,26 @@ func runServe(logger *slog.Logger, args []string) {
 	// backend: a shared Postgres meter when replicas need to agree on one
 	// job's count, an in-process map otherwise.
 	var jobBudgetChecker *jobbudgetusecase.Checker
+	// jobBudgetMeter is hoisted out of the if-block below (rather than
+	// declared local to it, like jobBudgetCfg) so the dashboard wiring
+	// further down can type-assert it onto jobbudgetdomain.Lister -- the
+	// Checker itself keeps its meter private, so this is the only handle
+	// to the concrete adapter the dashboard can reach.
+	var jobBudgetMeter jobbudgetdomain.Meter
 	if jobBudgetEnabled {
 		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob}
-		var meter jobbudgetdomain.Meter
 		if postgresStorageEnabled {
 			pm, err := jobbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres job-budget meter", "error", err)
 				os.Exit(1)
 			}
-			meter = pm
+			jobBudgetMeter = pm
 			logger.Info("job budget backed by postgres (shared across replicas)")
 		} else {
-			meter = jobbudgetadapter.NewInMemoryMeter()
+			jobBudgetMeter = jobbudgetadapter.NewInMemoryMeter()
 		}
-		jobBudgetChecker = jobbudgetusecase.NewChecker(featureFlags, meter, jobBudgetCfg)
+		jobBudgetChecker = jobbudgetusecase.NewChecker(featureFlags, jobBudgetMeter, jobBudgetCfg)
 		logger.Info("job budget enabled", "requests_per_job", jobBudgetCfg.Limit())
 	}
 
@@ -993,7 +998,22 @@ func runServe(logger *slog.Logger, args []string) {
 			approvalSource = approvalManager
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource)
+		// jobBudgetSource backs the dashboard job-budget view -- only
+		// wired when job_budget is on (jobBudgetMeter non-nil) AND the
+		// concrete meter happens to implement the optional
+		// jobbudgetdomain.Lister capability (both InMemoryMeter and
+		// PostgresMeter do; a future token/cost Meter need not). Kept an
+		// interface var so a failed type assertion or a nil meter never
+		// defeats the handler's own nil check, mirroring approvalSource
+		// above.
+		var jobBudgetSource dashboardadapter.JobBudgetSource
+		if jobBudgetMeter != nil {
+			if lister, ok := jobBudgetMeter.(jobbudgetdomain.Lister); ok {
+				jobBudgetSource = lister
+			}
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}

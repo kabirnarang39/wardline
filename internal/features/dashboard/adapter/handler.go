@@ -16,6 +16,7 @@ import (
 	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
+	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	rbacdomain "github.com/kabirnarang39/wardline/internal/features/rbac/domain"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
@@ -58,6 +59,22 @@ type ApprovalSource interface {
 	ListPending(tenant string) []approvaldomain.Request
 	Approve(id, by string) error
 	Deny(id, by string) error
+}
+
+// JobBudgetSource is the subset of jobbudget's optional Lister capability
+// Handler depends on -- a read-only view of job keys nearing/at their
+// per-job budget ceiling. jobbudget/domain.Meter (InMemoryMeter/
+// PostgresMeter) deliberately does NOT expose enumeration itself --
+// widening Meter would force every Meter implementation to support it,
+// which the core Checker never needs -- so main.go wires the concrete
+// meter through this interface directly (a type assertion onto
+// jobbudgetdomain.Lister) rather than through the narrow domain.Meter
+// interface. Entries carry the opaque job key and its running count only:
+// the key's tenant/identity/session are NOT decomposed for display (the
+// length-prefixed key format is one-way by design), a known, documented
+// limitation (see jobbudgetdomain.Lister's own doc comment).
+type JobBudgetSource interface {
+	ListNearCeiling(limit int) []jobbudgetdomain.Entry
 }
 
 // FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
@@ -257,6 +274,7 @@ type Handler struct {
 	callerInfo        CallerInfoResolver
 	compliance        ComplianceSource
 	approvals         ApprovalSource
+	jobBudget         JobBudgetSource
 	mux               *http.ServeMux
 }
 
@@ -303,9 +321,11 @@ type Handler struct {
 // /dashboard/api/approvals/{id}/{approve,deny} -- nil (approval_workflow
 // off, or web_ui off) answers 404 the same way; the two mutating routes
 // are additionally gated by the same config:edit reloadAuth the policy/
-// budget editors use.
-func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource, approvals ApprovalSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance, approvals: approvals}
+// budget editors use. jobBudget backs GET /dashboard/api/job-budget -- nil
+// (job_budget off, or web_ui off) answers 404 the same way; unlike
+// approvals this view is read-only with no decision/mutation counterpart.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource, approvals ApprovalSource, jobBudget JobBudgetSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance, approvals: approvals, jobBudget: jobBudget}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -314,6 +334,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, ass
 	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
 	mux.HandleFunc("/dashboard/api/approvals", h.handleApprovals)
 	mux.HandleFunc("/dashboard/api/approvals/", h.handleApprovalDecision)
+	mux.HandleFunc("/dashboard/api/job-budget", h.handleJobBudget)
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
@@ -489,6 +510,27 @@ func (h *Handler) handleApprovalDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleJobBudget serves GET /dashboard/api/job-budget -- a read-only
+// snapshot of job keys nearing/at their per-job budget ceiling, sourced
+// from jobbudget's optional Lister capability (see JobBudgetSource's doc
+// comment). nil source (job_budget off, or web_ui off) answers 404,
+// matching handleApprovals; unlike approvals this view has no
+// decision/mutation counterpart -- a Lister only reads.
+func (h *Handler) handleJobBudget(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.jobBudget == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	entries := h.jobBudget.ListNearCeiling(defaultAuditLimit)
+	if entries == nil {
+		entries = []jobbudgetdomain.Entry{}
+	}
+	writeJSON(w, entries)
 }
 
 func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Request) {

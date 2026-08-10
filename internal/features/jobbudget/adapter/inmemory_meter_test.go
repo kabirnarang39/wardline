@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/jobbudget/adapter"
+	"github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -55,4 +56,23 @@ func TestInMemoryMeter_CurrentDoesNotIncrement(t *testing.T) {
 	// Reading again must not change it.
 	c, _ = m.Current("k", time.Now())
 	assert.Equal(t, 2, c)
+}
+
+func TestInMemoryMeter_ListNearCeiling_SortsByCountDescendingAndLimits(t *testing.T) {
+	m := adapter.NewInMemoryMeter()
+	_, _ = m.Increment("low", time.Now())
+	for i := 0; i < 3; i++ {
+		_, _ = m.Increment("high", time.Now())
+	}
+	for i := 0; i < 2; i++ {
+		_, _ = m.Increment("mid", time.Now())
+	}
+
+	got := m.ListNearCeiling(2)
+	assert.Equal(t, []domain.Entry{{Key: "high", Count: 3}, {Key: "mid", Count: 2}}, got)
+}
+
+func TestInMemoryMeter_ListNearCeiling_EmptyWhenNoCounts(t *testing.T) {
+	m := adapter.NewInMemoryMeter()
+	assert.Empty(t, m.ListNearCeiling(10))
 }

@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance, fetchApprovals, decideApproval } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance, fetchApprovals, decideApproval, fetchJobBudget } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -69,6 +69,7 @@ const state = {
   reloadLog: [],
   lastReloadLogID: 0,
   approvals: [],
+  jobBudget: [],
 };
 
 function escapeHTML(s) {
@@ -719,6 +720,48 @@ async function decideApprovalAction(id, action) {
     return;
   }
   pollApprovals();
+}
+
+// renderJobBudget is the read-only counterpart to renderApprovals -- same
+// whole-snapshot re-render each poll tick, but no action buttons: a
+// Lister only reads, it has no approve/deny equivalent. The endpoint
+// JSON-encodes the raw jobbudget/domain.Entry, so fields are capitalized
+// (e.Key, e.Count) -- same convention as Approvals' raw
+// approval/domain.Request. e.Key is opaque by design (see
+// fetchJobBudget's doc comment) -- rendered as-is, never decomposed.
+function renderJobBudget() {
+  const tbody = document.getElementById('jobbudget-rows');
+  const empty = document.getElementById('jobbudget-empty');
+  if (!tbody) return;
+
+  const entries = state.jobBudget;
+  if (entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = entries.map((e) => `
+    <tr>
+      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td>${escapeHTML(String(e.Count))}</td>
+    </tr>
+  `).join('');
+}
+
+async function pollJobBudget() {
+  if (!disabledPollers.has('jobbudget')) {
+    try {
+      state.jobBudget = await fetchJobBudget();
+    } catch (err) {
+      // Same "not wired" posture as pollApprovals/pollBlocked/pollAnomalies:
+      // pollerFailed() stops future retries once a 404 confirms job_budget
+      // is off.
+      pollerFailed('jobbudget', err);
+    }
+  }
+  renderJobBudget();
 }
 
 // configLoadedAtMs is when the running config was put in place: the epoch of
@@ -1443,6 +1486,7 @@ function switchView(name) {
   if (name === 'status') loadStatus();
   if (name === 'rbac') renderRBAC();
   if (name === 'budget') renderBudget();
+  if (name === 'job-budget') renderJobBudget();
 }
 
 // wireComplianceView wires the Compliance view's manual "Query" button --
@@ -1631,6 +1675,7 @@ function init() {
   pollFederation();
   pollBlocked();
   pollApprovals();
+  pollJobBudget();
   pollReloadLog();
   renderOverview();
   setInterval(pollAudit, POLL_INTERVAL_MS);
@@ -1639,6 +1684,7 @@ function init() {
   setInterval(pollReloadLog, POLL_INTERVAL_MS);
   setInterval(pollBlocked, POLL_INTERVAL_MS);
   setInterval(pollApprovals, POLL_INTERVAL_MS);
+  setInterval(pollJobBudget, POLL_INTERVAL_MS);
 }
 
 init();

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 )
 
 // jobBudgetMeterTimeout bounds every Postgres operation this adapter
@@ -42,6 +44,11 @@ RETURNING count`
 // never-seen key means sql.ErrNoRows, which Current below turns into
 // (0, nil), matching InMemoryMeter's zero-value-for-absent-key behavior.
 const currentSQL = `SELECT count FROM job_budget_counters WHERE key = $1`
+
+// listNearCeilingSQL backs ListNearCeiling -- the dashboard-only,
+// optional Lister capability (see domain.Lister's doc comment). Ordered
+// by count descending so the callers nearest their ceiling sort first.
+const listNearCeilingSQL = `SELECT key, count FROM job_budget_counters ORDER BY count DESC LIMIT $1`
 
 // PostgresMeter satisfies domain.Meter, sharing counts across every
 // Wardline replica pointed at the same DSN -- required for job_budget to
@@ -92,4 +99,37 @@ func (m *PostgresMeter) Current(key string, now time.Time) (int, error) {
 		return 0, fmt.Errorf("read job budget counter: %w", err)
 	}
 	return count, nil
+}
+
+// ListNearCeiling satisfies domain.Lister -- an optional, dashboard-only
+// capability, not part of Meter itself (see domain.Lister's doc comment).
+// Returns up to limit entries, ordered by count descending. Unlike
+// Increment/Current, a query error here degrades to an empty result
+// (logged, not returned) rather than failing open/closed -- this backs a
+// read-only dashboard view, not an enforcement decision, so there is no
+// "fail open" security posture to preserve.
+func (m *PostgresMeter) ListNearCeiling(limit int) []domain.Entry {
+	ctx, cancel := context.WithTimeout(context.Background(), jobBudgetMeterTimeout)
+	defer cancel()
+	rows, err := m.db.QueryContext(ctx, listNearCeilingSQL, limit)
+	if err != nil {
+		m.logger.Error("list job budget counters near ceiling", "error", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	entries := make([]domain.Entry, 0, limit)
+	for rows.Next() {
+		var e domain.Entry
+		if err := rows.Scan(&e.Key, &e.Count); err != nil {
+			m.logger.Error("scan job budget counter row", "error", err)
+			return nil
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		m.logger.Error("iterate job budget counter rows", "error", err)
+		return nil
+	}
+	return entries
 }

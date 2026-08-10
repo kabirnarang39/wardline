@@ -118,6 +118,27 @@ export async function decideApproval(id, action) {
   return { ok: false, status: res.status, message };
 }
 
+// fetchJobBudget reads the read-only job-budget view -- job keys
+// nearing/at their per-job ceiling, sorted by count descending. Mirrors
+// fetchApprovals: a non-ok response throws with err.status set, so
+// pollJobBudget can call pollerFailed() and stop retrying once a 404
+// confirms job_budget is off on this server. The endpoint JSON-encodes
+// the raw jobbudget/domain.Entry (no json tags), so fields are
+// capitalized (e.Key, e.Count) -- same convention as the Approvals view's
+// raw approval/domain.Request, not the snake_case dashboard *Entry wire
+// shapes. Key is opaque (length-prefixed tenant/identity/session, not
+// decomposed for display -- see handler.go's JobBudgetSource doc
+// comment), a known, documented limitation.
+export async function fetchJobBudget() {
+  const res = await fetch('api/job-budget');
+  if (!res.ok) {
+    const err = new Error(`job-budget fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
 export async function fetchStatus() {
   const res = await fetch('api/status');
   if (!res.ok) {
