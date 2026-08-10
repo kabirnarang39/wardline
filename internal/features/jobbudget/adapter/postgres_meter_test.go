@@ -11,6 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/jobbudget/adapter"
+	"github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -106,4 +107,31 @@ func TestPostgresMeter_ConcurrentIncrementsAreAtomic(t *testing.T) {
 	final, err := m.Increment("job-concurrent", time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, n+1, final)
+}
+
+func TestPostgresMeter_ListNearCeiling_SortsByCountDescendingAndLimits(t *testing.T) {
+	dsn := testDSN(t)
+	dropJobBudgetTable(t, dsn)
+	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	require.NoError(t, err)
+
+	_, _ = m.Increment("low", time.Now())
+	for i := 0; i < 3; i++ {
+		_, _ = m.Increment("high", time.Now())
+	}
+	for i := 0; i < 2; i++ {
+		_, _ = m.Increment("mid", time.Now())
+	}
+
+	got := m.ListNearCeiling(2)
+	assert.Equal(t, []domain.Entry{{Key: "high", Count: 3}, {Key: "mid", Count: 2}}, got)
+}
+
+func TestPostgresMeter_ListNearCeiling_EmptyWhenNoCounts(t *testing.T) {
+	dsn := testDSN(t)
+	dropJobBudgetTable(t, dsn)
+	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	require.NoError(t, err)
+
+	assert.Empty(t, m.ListNearCeiling(10))
 }

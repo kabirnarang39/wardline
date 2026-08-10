@@ -60,6 +60,10 @@
           <span class="nav-icon" data-icon="budget"></span>
           <span>Budget</span>
         </button>
+        <button class="nav-item" data-view="job-budget">
+          <span class="nav-icon" data-icon="budget"></span>
+          <span>Job Budget</span>
+        </button>
         <button class="nav-item" data-view="credentials">
           <span class="nav-icon" data-icon="credentials"></span>
           <span>Credentials</span>
@@ -466,6 +470,27 @@
           <span class="policy-editor-hint">Thresholds update in place — nobody's already-counted usage resets.</span>
         </div>
         <p id="budget-write-result" role="status" aria-live="polite" hidden></p>
+      </section>
+
+      <section id="view-job-budget" class="view" aria-labelledby="view-job-budget-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-job-budget-heading">Job Budget</h1>
+            <p class="view-sub">Job keys nearest their per-job call ceiling. Keys are opaque (tenant/identity/session are not decomposed for display) — read-only, no approve/deny equivalent.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Job key</th>
+                <th scope="col">Count</th>
+              </tr>
+            </thead>
+            <tbody id="jobbudget-rows"></tbody>
+          </table>
+          <p id="jobbudget-empty" class="empty-state" hidden>No job-budget activity recorded yet.</p>
+        </div>
       </section>
 
       <section id="view-status" class="view" aria-labelledby="view-status-heading" hidden>

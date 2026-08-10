@@ -3,8 +3,11 @@
 package adapter
 
 import (
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 )
 
 // InMemoryMeter is a mutex-guarded map[string]int satisfying domain.Meter.
@@ -31,4 +34,21 @@ func (m *InMemoryMeter) Current(key string, now time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.counts[key], nil // zero value for an absent key, no separate "ok" needed
+}
+
+// ListNearCeiling satisfies domain.Lister -- an optional, dashboard-only
+// capability, not part of Meter itself (see domain.Lister's doc comment).
+// Returns up to limit entries, ordered by count descending.
+func (m *InMemoryMeter) ListNearCeiling(limit int) []domain.Entry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries := make([]domain.Entry, 0, len(m.counts))
+	for k, c := range m.counts {
+		entries = append(entries, domain.Entry{Key: k, Count: c})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Count > entries[j].Count })
+	if limit >= 0 && limit < len(entries) {
+		entries = entries[:limit]
+	}
+	return entries
 }
