@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
-// Effect is the outcome of a policy rule: allow or deny.
+// Effect is the outcome of a policy rule: allow, needs_approval, or deny.
 type Effect string
 
 const (
-	EffectAllow Effect = "allow"
-	EffectDeny  Effect = "deny"
+	EffectAllow         Effect = "allow"
+	EffectDeny          Effect = "deny"
+	EffectNeedsApproval Effect = "needs_approval"
 )
 
 // Rule grants or denies a specific identity access to a specific tool (or,
