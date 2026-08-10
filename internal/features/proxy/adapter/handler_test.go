@@ -1448,3 +1448,45 @@ func TestHandler_JobBudgetNilCheckerNoEffect(t *testing.T) {
 		t.Fatalf("expected 200 with job budget unwired (feature off), got %d", w.Code)
 	}
 }
+
+// TestHandler_ApprovedGrantOverridesJobBudgetHardGate proves a call admitted
+// via a just-consumed approval grant (OutcomeNeedsApproval, res.Approved) is
+// forwarded even when the job-budget checker's verdict says the ceiling is
+// exceeded -- the opposite of TestHandler_JobBudgetExceededReturns429WithDistinctDecision,
+// gated on admittedViaGrant. Without the fix this returns 429 and the grant
+// the operator just spent is wasted for nothing (see finding C1).
+func TestHandler_ApprovedGrantOverridesJobBudgetHardGate(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		_, _ = w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
+	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: false, Reason: "job budget ceiling 500 reached", Count: 501}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", jb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (grant overrides job-budget hard gate), got %d", w.Code)
+	}
+	if !upstreamHit {
+		t.Fatal("expected the call to be forwarded upstream once admitted via a consumed grant")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow entry, got %+v", writer.entries)
+	}
+	reason := writer.entries[0].Reason
+	if !strings.Contains(reason, "approved via grant") {
+		t.Fatalf("expected Reason to mark grant approval, got %q", reason)
+	}
+	if !strings.Contains(reason, "job budget ceiling exceeded but call was pre-approved via grant") {
+		t.Fatalf("expected Reason to note the job-budget override, got %q", reason)
+	}
+}
