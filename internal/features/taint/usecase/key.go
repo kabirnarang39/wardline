@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
@@ -20,20 +19,4 @@ import (
 func taintKey(tenantName, identity, session string) string {
 	base := tenant.Key(tenantName, identity)
 	return strconv.Itoa(len(base)) + ":" + base + session
-}
-
-// SessionID derives the session component of a taint key. An explicit
-// X-Wardline-Session header wins when present — precise when the agent
-// framework stamps one id per run. Absent a header it falls back to a
-// per-identity sliding TTL window bucket, stable within the window and
-// rolling at the boundary, so Wardline stays drop-in with zero client
-// cooperation: the taint TTL is the implicit session boundary in that mode.
-func SessionID(headerVal, tenant, identity string, now time.Time, windowSeconds int) string {
-	if headerVal != "" {
-		return headerVal
-	}
-	if windowSeconds <= 0 {
-		windowSeconds = 1
-	}
-	return identity + "|" + strconv.FormatInt(now.Unix()/int64(windowSeconds), 10)
 }
