@@ -52,6 +52,14 @@ type JobBudgetConfig struct {
 	RequestsPerJob int `yaml:"requests_per_job"`
 }
 
+// JobCostBudgetConfig configures per-job cost budgets. Only meaningful when the
+// job_cost_budget feature flag is on.
+type JobCostBudgetConfig struct {
+	Ceiling     int            `yaml:"ceiling"`
+	ToolCosts   map[string]int `yaml:"tool_costs"`
+	DefaultCost int            `yaml:"default_cost"`
+}
+
 // BudgetConfig configures the per-identity rate limiter. Only validated
 // (and only meaningful) when the budget_enforcement feature flag is on.
 // Tenants holds optional per-tenant overrides of the global default above,
@@ -351,6 +359,7 @@ type Config struct {
 	Taint           TaintConfig      `yaml:"taint"`
 	Approval        ApprovalConfig   `yaml:"approval"`
 	JobBudget       JobBudgetConfig  `yaml:"job_budget"`
+	JobCostBudget   JobCostBudgetConfig `yaml:"job_cost_budget"`
 	Features        map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
