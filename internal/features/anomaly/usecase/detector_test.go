@@ -2100,3 +2100,45 @@ func TestDetector_MLScore_DiversitySmallIntegerChange_NeverBlocks(t *testing.T) 
 		}
 	})
 }
+
+// TestDetector_EffectFieldsDoNotChangeDetection pins backward compatibility for
+// the optional audit Effect fields: the anomaly detector keys off identity,
+// tool, and decision, never the claimed effect, so feeding it entries that
+// carry a populated Effect must produce anomalies identical to the same stream
+// without one. Two detectors run the same rate-spike scenario; only the Effect
+// fields differ between their inputs.
+func TestDetector_EffectFieldsDoNotChangeDetection(t *testing.T) {
+	run := func(withEffect bool) []domain.Anomaly {
+		clock := &fakeClock{t: time.Unix(0, 0)}
+		writer := &recordingWriter{}
+		d := usecase.NewDetector(baseCfg(), writer, nil, nil, nil, clock.now, nil)
+		publish := func() {
+			e := auditdomain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"}
+			if withEffect {
+				e.EffectStatus = auditdomain.EffectStatusContradicted
+				e.Effect = &auditdomain.Effect{Target: "read_file", ClaimedOp: "tools/call", RPCError: true}
+			}
+			d.Publish(e)
+		}
+		for i := 0; i < 10; i++ {
+			publish()
+		}
+		clock.t = clock.t.Add(61 * time.Second)
+		for i := 0; i < 31; i++ {
+			publish()
+		}
+		return writer.anomalies
+	}
+
+	without := run(false)
+	with := run(true)
+
+	if len(without) != len(with) {
+		t.Fatalf("Effect presence changed anomaly count: %d vs %d", len(without), len(with))
+	}
+	for i := range without {
+		if without[i].Kind != with[i].Kind {
+			t.Errorf("anomaly %d kind differs with Effect present: %q vs %q", i, without[i].Kind, with[i].Kind)
+		}
+	}
+}

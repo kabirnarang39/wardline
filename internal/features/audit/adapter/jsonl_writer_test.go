@@ -9,6 +9,40 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
 )
 
+func TestJSONLWriter_EffectPresent_Serializes(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := w.Write(domain.Entry{
+		Timestamp:    ts,
+		Identity:     "agent-1",
+		Tool:         "delete_file",
+		Decision:     "allow",
+		LatencyMS:    3,
+		Effect:       &domain.Effect{Target: "delete_file", ClaimedOp: "tools/call", ResponseStatus: 200, NoOpSignal: true},
+		EffectStatus: domain.EffectStatusContradicted,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{`"effect_status":"claimed_but_contradicted"`, `"target":"delete_file"`, `"no_op_signal":true`, `"response_status":200`} {
+		if !bytes.Contains([]byte(got), []byte(want)) {
+			t.Errorf("serialized line missing %q\ngot: %s", want, got)
+		}
+	}
+}
+
+func TestJSONLWriter_EffectAbsent_ByteIdenticalToLegacy(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	_ = w.Write(domain.Entry{Timestamp: ts, Identity: "a", Tool: "t", Decision: "allow", LatencyMS: 1})
+	// No "effect" or "effect_status" key when absent (omitempty back-compat gate).
+	if bytes.Contains(buf.Bytes(), []byte("effect")) {
+		t.Errorf("absent Effect must not emit any effect key, got: %s", buf.String())
+	}
+}
+
 func TestJSONLWriter_WritesOneLinePerEntry(t *testing.T) {
 	var buf bytes.Buffer
 	w := adapter.NewJSONLWriter(&buf)

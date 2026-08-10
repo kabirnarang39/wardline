@@ -69,3 +69,35 @@ func TestBuildManifest_EmptyInputsProduceZeroCountsNoPanic(t *testing.T) {
 		t.Error("expected non-nil (empty) maps, not nil maps, so callers can range over them safely")
 	}
 }
+
+// TestBuildManifest_EffectFieldsDoNotChangeExport pins backward compatibility
+// for the optional audit Effect fields: an entry carrying a populated Effect
+// must produce byte-identical manifest output to the same entry without one.
+// The evidence export counts decisions, never claimed effects, so adding
+// Effect to the audit schema must not perturb any downstream compliance
+// artifact.
+func TestBuildManifest_EffectFieldsDoNotChangeExport(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+
+	withoutEffect := []auditdomain.Entry{
+		{Decision: "allow", Tool: "delete_file"},
+		{Decision: "deny", Tool: "read_file"},
+	}
+	withEffect := []auditdomain.Entry{
+		{Decision: "allow", Tool: "delete_file", EffectStatus: auditdomain.EffectStatusContradicted,
+			Effect: &auditdomain.Effect{Target: "delete_file", ClaimedOp: "tools/call", RPCError: true}},
+		{Decision: "deny", Tool: "read_file", EffectStatus: auditdomain.EffectStatusNotAWrite},
+	}
+
+	base := usecase.BuildManifest("0.6.0", from, to, from, map[string]bool{}, withoutEffect, 0, nil, 0)
+	withEff := usecase.BuildManifest("0.6.0", from, to, from, map[string]bool{}, withEffect, 0, nil, 0)
+
+	if base.AuditEntryCount != withEff.AuditEntryCount {
+		t.Errorf("Effect presence changed AuditEntryCount: %d vs %d", base.AuditEntryCount, withEff.AuditEntryCount)
+	}
+	if base.AuditDecisionCounts["allow"] != withEff.AuditDecisionCounts["allow"] ||
+		base.AuditDecisionCounts["deny"] != withEff.AuditDecisionCounts["deny"] {
+		t.Errorf("Effect presence changed decision counts: %+v vs %+v", base.AuditDecisionCounts, withEff.AuditDecisionCounts)
+	}
+}

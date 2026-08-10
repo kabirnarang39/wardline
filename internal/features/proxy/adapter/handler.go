@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -19,8 +20,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
+	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	prdomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
 
@@ -161,7 +164,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", start)
+		h.finish(span, identity, tenant, "", "error", "", start, nil, "")
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -169,7 +172,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := proxyusecase.ParseRequest(identity, tenant, body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", start)
+		h.finish(span, identity, tenant, "", "error", "", start, nil, "")
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
 	}
@@ -181,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.autoBlockChecker != nil {
 		blockVerdict := h.autoBlockChecker.Check(identity, tenant, start)
 		if !blockVerdict.Allowed {
-			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, start)
+			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, start, nil, "")
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "blocked due to anomalous behavior")
 			return
@@ -194,7 +197,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// upstream without policy or budget evaluation — every real MCP
 		// client performs this handshake before its first tool call. See
 		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
-		h.forward(w, r, span, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "")
+		h.forward(w, r, span, parsed, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "")
 		return
 	}
 
@@ -220,7 +223,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start)
+		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start, nil, "")
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 		return
 	}
@@ -231,7 +234,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// widening that key space to arbitrary resource URIs is a
 		// separate design question, deliberately out of scope. See
 		// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
-		h.forward(w, r, span, identity, tenant, auditTool, parsed.ID, start, "allow", "")
+		h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", "")
 		return
 	}
 
@@ -239,7 +242,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, start)
+		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, start, nil, "")
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
@@ -256,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		successReason = budgetVerdict.Reason
 	}
 
-	h.forward(w, r, span, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
+	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
@@ -267,18 +270,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // reason recorded alongside it — empty for an ordinary allow (and always
 // empty for passthrough, which never reaches a budget check), non-empty
 // only when the budget check failed open and that needs a durable trace.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision, successReason string) {
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, parsed prdomain.ParsedRequest, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision, successReason string) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		recorded = true
-		h.finish(span, identity, tenant, tool, "error", "", start)
+		// The upstream never responded, so a claimed write definitely did not
+		// take effect — record it as contradicted.
+		eff, st := proxyusecase.ExtractEffect(parsed, proxyusecase.EffectSignal{ResponseStatus: http.StatusBadGateway}, proxyusecase.RedactSecrets)
+		h.finish(span, identity, tenant, tool, "error", "", start, eff, st)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !recorded {
 			recorded = true
-			h.finish(span, identity, tenant, tool, successDecision, successReason, start)
+			sig := readResponseSignal(resp)
+			eff, st := proxyusecase.ExtractEffect(parsed, sig, proxyusecase.RedactSecrets)
+			h.finish(span, identity, tenant, tool, successDecision, successReason, start, eff, st)
 		}
 		return nil
 	}
@@ -326,7 +334,7 @@ func retryAfterSeconds(d time.Duration) int {
 // entry for a completed request — every return point in
 // ServeHTTP/forward needs both, so they're combined here rather than
 // repeated at each call site.
-func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason string, start time.Time) {
+func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
 	span.SetAttributes(
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
@@ -357,9 +365,67 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	if sc := span.SpanContext(); sc.IsValid() {
 		traceID = sc.TraceID().String()
 	}
-	h.record(identity, tenant, tool, decision, reason, traceID, start)
+	h.record(identity, tenant, tool, decision, reason, traceID, start, effect, status)
 }
 
-func (h *Handler) record(identity, tenant, tool, decision, reason, traceID string, start time.Time) {
-	h.recorder.Record(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start)
+func (h *Handler) record(identity, tenant, tool, decision, reason, traceID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
+	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, effect, status)
+}
+
+// readResponseSignal reads a bounded prefix of the upstream response body to
+// detect a JSON-RPC error or an MCP no-op, then restores the body so the proxy
+// streams it to the client unchanged. Only the prefix is inspected — a no-op
+// signal past the cap is missed (conservative: defaults to unconfirmed, never a
+// false contradiction).
+func readResponseSignal(resp *http.Response) proxyusecase.EffectSignal {
+	sig := proxyusecase.EffectSignal{ResponseStatus: resp.StatusCode}
+	if resp.Body == nil {
+		return sig
+	}
+	const cap = 8 << 10 // 8 KiB
+	prefix, err := io.ReadAll(io.LimitReader(resp.Body, cap))
+	if err != nil {
+		return sig
+	}
+	rest := resp.Body
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(prefix), rest), rest}
+
+	var env struct {
+		Error  json.RawMessage `json:"error"`
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(prefix, &env) != nil {
+		return sig
+	}
+	if len(env.Error) > 0 && string(env.Error) != "null" {
+		sig.RPCError = true
+	}
+	sig.NoOpSignal = resultIsNoOp(env.Result)
+	return sig
+}
+
+// resultIsNoOp reports whether a JSON-RPC result signals that nothing
+// happened: absent/null/empty result, MCP's result.isError == true, or a
+// shallow success:false.
+func resultIsNoOp(result json.RawMessage) bool {
+	s := strings.TrimSpace(string(result))
+	if s == "" || s == "null" || s == "{}" || s == "[]" {
+		return true
+	}
+	var obj struct {
+		IsError *bool `json:"isError"`
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(result, &obj) == nil {
+		if obj.IsError != nil && *obj.IsError {
+			return true
+		}
+		if obj.Success != nil && !*obj.Success {
+			return true
+		}
+	}
+	return false
 }

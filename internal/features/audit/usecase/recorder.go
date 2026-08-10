@@ -23,15 +23,25 @@ func NewRecorder(w domain.Writer, sink domain.LiveSink, onError func(error)) *Re
 }
 
 func (r *Recorder) Record(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time) {
+	r.RecordWithEffect(identity, tenantName, tool, decision, reason, traceID, latency, now, nil, "")
+}
+
+// RecordWithEffect is Record plus the optional post-condition Effect and its
+// derived status (see proxy/usecase.ExtractEffect). effect is nil / status is
+// "" for reads and every path that doesn't capture an effect — identical to
+// Record in that case.
+func (r *Recorder) RecordWithEffect(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time, effect *domain.Effect, status domain.EffectStatus) {
 	entry := domain.Entry{
-		Timestamp: now,
-		Identity:  identity,
-		Tenant:    tenantName,
-		Tool:      tool,
-		Decision:  decision,
-		LatencyMS: latency.Milliseconds(),
-		Reason:    reason,
-		TraceID:   traceID,
+		Timestamp:    now,
+		Identity:     identity,
+		Tenant:       tenantName,
+		Tool:         tool,
+		Decision:     decision,
+		LatencyMS:    latency.Milliseconds(),
+		Reason:       reason,
+		TraceID:      traceID,
+		Effect:       effect,
+		EffectStatus: status,
 	}
 	if err := r.writer.Write(entry); err != nil && r.onError != nil {
 		r.onError(err)

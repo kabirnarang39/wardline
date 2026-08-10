@@ -1186,3 +1186,53 @@ func TestHandler_OrdinaryAllowRecordsEmptyAuditReason(t *testing.T) {
 		t.Errorf("expected an ordinary allow to record an empty audit reason, got %q", writer.entries[0].Reason)
 	}
 }
+
+// TestHandler_UpstreamRPCErrorRecordsContradictedEffect proves the proxy
+// captures the proxy-visible response signal: a write-shaped tools/call whose
+// upstream returns a JSON-RPC error body is recorded as a contradicted effect
+// (the claimed write demonstrably did not take effect), with a non-nil Effect
+// carrying the claimed op. Observe-only — the client still gets the upstream
+// body unchanged and the decision stays "allow".
+func TestHandler_UpstreamRPCErrorRecordsContradictedEffect(t *testing.T) {
+	const upstreamBody = `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"permission denied"}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandler(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (proxy passes the upstream status through), got %d", w.Code)
+	}
+	if got := w.Body.String(); got != upstreamBody {
+		t.Errorf("expected the client to receive the upstream body unchanged, got %q", got)
+	}
+	if len(writer.entries) != 1 {
+		t.Fatalf("expected one audit entry, got %d", len(writer.entries))
+	}
+	e := writer.entries[0]
+	if e.Decision != "allow" {
+		t.Errorf("effect capture must not change the decision; got %q", e.Decision)
+	}
+	if e.EffectStatus != auditdomain.EffectStatusContradicted {
+		t.Errorf("expected a contradicted effect from a JSON-RPC error body, got %q", e.EffectStatus)
+	}
+	if e.Effect == nil {
+		t.Fatal("expected a non-nil Effect for a write-shaped call")
+	}
+	if e.Effect.ClaimedOp != "tools/call" {
+		t.Errorf("expected ClaimedOp tools/call, got %q", e.Effect.ClaimedOp)
+	}
+	if !e.Effect.RPCError {
+		t.Error("expected the captured Effect to flag the JSON-RPC error")
+	}
+}
