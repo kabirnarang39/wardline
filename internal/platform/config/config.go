@@ -46,6 +46,12 @@ type ApprovalConfig struct {
 	GrantTTLSeconds int `yaml:"grant_ttl_seconds"`
 }
 
+// JobBudgetConfig configures per-job request limits. Only meaningful when the
+// job_budget feature flag is on.
+type JobBudgetConfig struct {
+	RequestsPerJob int `yaml:"requests_per_job"`
+}
+
 // BudgetConfig configures the per-identity rate limiter. Only validated
 // (and only meaningful) when the budget_enforcement feature flag is on.
 // Tenants holds optional per-tenant overrides of the global default above,
@@ -344,6 +350,7 @@ type Config struct {
 	Retention       RetentionConfig  `yaml:"retention"`
 	Taint           TaintConfig      `yaml:"taint"`
 	Approval        ApprovalConfig   `yaml:"approval"`
+	JobBudget       JobBudgetConfig  `yaml:"job_budget"`
 	Features        map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
