@@ -100,6 +100,7 @@ type contextInput struct {
 	Tenant        string `json:"tenant"`
 	Tainted       bool   `json:"tainted"`
 	JobOverBudget bool   `json:"job_over_budget"`
+	CostOverBudget bool  `json:"cost_over_budget"`
 }
 
 // Evaluate runs the prepared query against pc and extracts an allow/deny
@@ -184,5 +185,6 @@ func buildInput(pc domain.Context) (contextInput, error) {
 		Tenant:        pc.Tenant,
 		Tainted:       pc.Tainted,
 		JobOverBudget: pc.JobOverBudget,
+		CostOverBudget: pc.CostOverBudget,
 	}, nil
 }
