@@ -32,6 +32,21 @@ func TestDecider_Deny(t *testing.T) {
 	if v.Allow {
 		t.Errorf("expected Allow=false, got %+v", v)
 	}
+	if v.Outcome != domain.OutcomeDeny {
+		t.Errorf("expected deny outcome, got %q", v.Outcome)
+	}
+}
+
+func TestDecide_NeedsApprovalOutcome(t *testing.T) {
+	var eng policydomain.Engine = fakeEngine{effect: policydomain.EffectNeedsApproval}
+	d := usecase.NewDeciderWithHolder(reload.NewReloadableEngine(&eng))
+	v := d.Decide(domain.ToolCall{Identity: "alice", Tool: "delete", Method: "tools/call"})
+	if v.Outcome != domain.OutcomeNeedsApproval {
+		t.Fatalf("expected needs_approval outcome, got %q", v.Outcome)
+	}
+	if v.Allow {
+		t.Fatal("needs_approval must not be Allow")
+	}
 }
 
 // recordingEngine captures the Context it was last called with, so a test

@@ -57,8 +57,16 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	}
 	engine := *d.policy.Current()
 	decision := engine.Evaluate(pc)
+	outcome := domain.OutcomeDeny
+	switch decision.Effect {
+	case policydomain.EffectAllow:
+		outcome = domain.OutcomeAllow
+	case policydomain.EffectNeedsApproval:
+		outcome = domain.OutcomeNeedsApproval
+	}
 	return domain.Verdict{
-		Allow:  decision.Effect == policydomain.EffectAllow,
-		Reason: decision.Reason,
+		Allow:   outcome == domain.OutcomeAllow,
+		Outcome: outcome,
+		Reason:  decision.Reason,
 	}
 }
