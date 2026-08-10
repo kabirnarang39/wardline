@@ -17,14 +17,21 @@ type TaintLookup func(domain.ToolCall) bool
 // when off.
 type JobBudgetLookup func(domain.ToolCall) bool
 
+// CostBudgetLookup reports whether a call's (tenant, identity, session) job
+// has exceeded its per-job cost/token ceiling. Supplied only when job_cost_budget
+// is on; a nil lookup means within budget, so the feature adds zero behavior
+// when off.
+type CostBudgetLookup func(domain.ToolCall) bool
+
 // Decider evaluates a ToolCall against the policy engine and returns
 // whether the call may proceed. The engine is held behind a
 // ReloadableEngine so a hot reload takes effect on the very next Decide
 // call, on this same Decider instance, with no restart.
 type Decider struct {
-	policy    *reload.ReloadableEngine[policydomain.Engine]
-	taint     TaintLookup
-	jobBudget JobBudgetLookup
+	policy     *reload.ReloadableEngine[policydomain.Engine]
+	taint      TaintLookup
+	jobBudget  JobBudgetLookup
+	costBudget CostBudgetLookup
 }
 
 // NewDecider wraps policy in a fresh, private ReloadableEngine holder --
@@ -58,6 +65,14 @@ func NewDeciderWithHolderTaintAndJobBudget(holder *reload.ReloadableEngine[polic
 	return &Decider{policy: holder, taint: taint, jobBudget: jobBudget}
 }
 
+// NewDeciderWithHolderTaintJobBudgetAndCostBudget is NewDeciderWithHolder plus
+// taint, job-budget, and cost-budget lookups, each consulted at decision time.
+// A nil lookup means the feature is off for that dimension (untainted, within
+// budget, or within cost ceiling, respectively).
+func NewDeciderWithHolderTaintJobBudgetAndCostBudget(holder *reload.ReloadableEngine[policydomain.Engine], taint TaintLookup, jobBudget JobBudgetLookup, costBudget CostBudgetLookup) *Decider {
+	return &Decider{policy: holder, taint: taint, jobBudget: jobBudget, costBudget: costBudget}
+}
+
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	pc := policydomain.Context{
 		Identity:      call.Identity,
@@ -70,6 +85,7 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 		UserAgent:     call.UserAgent,
 		Tainted:       d.taint != nil && d.taint(call),
 		JobOverBudget: d.jobBudget != nil && d.jobBudget(call),
+		CostOverBudget: d.costBudget != nil && d.costBudget(call),
 	}
 	engine := *d.policy.Current()
 	decision := engine.Evaluate(pc)
