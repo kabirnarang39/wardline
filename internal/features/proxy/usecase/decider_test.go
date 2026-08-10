@@ -86,3 +86,28 @@ func TestDecider_ReloadTakesEffectOnNextCall(t *testing.T) {
 		t.Fatalf("after reload: got Allow=false, want Allow=true -- Decider is not reading through the ReloadableEngine on every call")
 	}
 }
+
+// TestDecide_TaintLookupSetsContextTainted proves the taint lookup, when
+// supplied, populates Context.Tainted the policy engine reads — and that a nil
+// lookup (taint_tracking off) leaves it false.
+func TestDecide_TaintLookupSetsContextTainted(t *testing.T) {
+	call := domain.ToolCall{Identity: "alice", Tool: "delete", Tenant: "acme"}
+
+	// nil lookup -> untainted.
+	engineOff := &recordingEngine{}
+	var eOff policydomain.Engine = engineOff
+	dOff := usecase.NewDeciderWithHolderAndTaint(reload.NewReloadableEngine(&eOff), nil)
+	dOff.Decide(call)
+	if engineOff.captured.Tainted {
+		t.Errorf("nil taint lookup should leave Context.Tainted false")
+	}
+
+	// lookup returning true -> tainted.
+	engineOn := &recordingEngine{}
+	var eOn policydomain.Engine = engineOn
+	dOn := usecase.NewDeciderWithHolderAndTaint(reload.NewReloadableEngine(&eOn), func(domain.ToolCall) bool { return true })
+	dOn.Decide(call)
+	if !engineOn.captured.Tainted {
+		t.Errorf("taint lookup returning true should set Context.Tainted")
+	}
+}
