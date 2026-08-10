@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Entry is one audit record: what identity tried to call what tool, and
 // what happened.
@@ -27,6 +30,59 @@ type Entry struct {
 	// tracing is enabled. Empty when tracing is disabled — no all-zero
 	// placeholder IDs cluttering the audit log.
 	TraceID string
+
+	// Effect records, for a write-shaped gated call, the change the call
+	// claimed to make plus the proxy-visible signal from the upstream
+	// response. nil for reads/lifecycle calls and for every pre-Effect
+	// entry. Observe-only: it never affects a decision.
+	Effect *Effect
+
+	// EffectStatus is the classification derived from Effect; empty when no
+	// Effect was recorded.
+	EffectStatus EffectStatus
+}
+
+// EffectStatus classifies whether a write-shaped call's claimed change was
+// confirmed, left unconfirmed, or contradicted by the proxy-visible response.
+type EffectStatus string
+
+const (
+	EffectStatusConfirmed    EffectStatus = "claimed_and_confirmed"
+	EffectStatusUnconfirmed  EffectStatus = "claimed_but_unconfirmed"
+	EffectStatusContradicted EffectStatus = "claimed_but_contradicted"
+	EffectStatusNotAWrite    EffectStatus = "not_a_write"
+)
+
+// Effect captures the change a gated call claimed to make and the
+// proxy-visible signal from the upstream response. A proxy sees request and
+// response but not world-state, so this is a boundary signal, not a semantic
+// guarantee — a true claimed-vs-actual diff is the PostConditionVerifier's
+// (Stage 2) job.
+type Effect struct {
+	Target      string            // resource URI / tool target
+	ClaimedOp   string            // tool or method name
+	ClaimedArgs map[string]string // redacted mutating params
+
+	ResponseStatus int  // upstream transport status
+	RPCError       bool // JSON-RPC error present in the response
+	NoOpSignal     bool // proxy-visible no-op / empty result / success:false
+}
+
+// Verdict is a PostConditionVerifier's answer for a claimed effect.
+type Verdict string
+
+const (
+	VerdictConfirmed    Verdict = "confirmed"
+	VerdictContradicted Verdict = "contradicted"
+	VerdictUnknown      Verdict = "unknown"
+)
+
+// PostConditionVerifier consults actual state for an entry's claimed effect
+// and returns a verdict. It runs out of band (never in the request path).
+// Stage 2 seam — declared so Stage 1's data model is shaped to feed it; no
+// implementation ships yet.
+type PostConditionVerifier interface {
+	Verify(ctx context.Context, e Entry) (Verdict, error)
 }
 
 // Writer persists an audit Entry.
