@@ -254,6 +254,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		auditTool = call.Method
 	}
 
+	// successReason is threaded into the eventual allow/forward call below —
+	// empty for an ordinary allow, non-empty when the allow needs a durable
+	// audit-trail marker (a consumed approval grant, or a budget check that
+	// failed open).
+	successReason := ""
+
 	verdict := h.decider.Decide(call)
 	switch verdict.Outcome {
 	case prdomain.OutcomeNeedsApproval:
@@ -277,7 +283,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// res.Approved: a live grant admits this call — fall through to the
-		// allow/forward path below.
+		// allow/forward path below. Mark the audit reason so this entry
+		// reads as "pre-approved" rather than an indistinguishable ordinary
+		// allow.
+		successReason = "approved via grant (pending id consumed)"
 	case prdomain.OutcomeDeny:
 		// verdict.Reason may carry detailed policy-engine diagnostics (with
 		// the OPA backend, potentially internal error text, file paths, or
@@ -294,7 +303,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// widening that key space to arbitrary resource URIs is a
 		// separate design question, deliberately out of scope. See
 		// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
-		h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", "")
+		h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
 		return
 	}
 
@@ -313,10 +322,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// trace — the Warn log line the limiter emits is one line per request,
 	// easy to lose under load, and /readyz stays green through the
 	// query-level failures that trigger this. An ordinary allow keeps its
-	// empty reason: only a genuine fail-open populates this.
-	successReason := ""
+	// empty reason. Appended (not overwritten) so a fail-open budget check
+	// on a grant-consuming retry keeps both markers.
 	if budgetVerdict.FailedOpen {
-		successReason = budgetVerdict.Reason
+		if successReason != "" {
+			successReason += "; " + budgetVerdict.Reason
+		} else {
+			successReason = budgetVerdict.Reason
+		}
 	}
 
 	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
