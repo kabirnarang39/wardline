@@ -146,6 +146,47 @@ policy-pack marketplace, HA deployment.
   evaluation (one decision per RPC at stream start, mirroring the HTTP
   transport's one-decision-per-request).
 
+## v2.1 (shipped)
+
+- **Post-condition audit fields** — every write-shaped gated call (`tools/call`)
+  now records what it *claimed* to change: target, claimed op, redacted
+  claimed args, and the proxy-visible response signal (status, JSON-RPC
+  error, no-op detection), classified as `claimed_but_unconfirmed` or
+  `claimed_but_contradicted`. A `PostConditionVerifier` interface is
+  declared as the Stage-2 seam a domain-aware verifier could implement to
+  diff claimed vs. actual state — deliberately **not implemented**: a
+  proxy sees request/response, never the upstream's real world-state, so
+  that diff needs domain knowledge only an operator's own verifier can
+  supply. See [Baseline: Proxy, Policy, and
+  Audit](/features/baseline-proxy-policy-audit/).
+- **Taint tracking** — a coarse, gateway-level integrity label per
+  `(tenant, identity, session)`: a call to a configured untrusted-source
+  tool taints the session (TTL-bounded, explicitly declassifiable),
+  exposed to policy as `input.tainted`. Session is an explicit
+  `X-Wardline-Session` header when the client cooperates, a TTL-window
+  fallback otherwise. Deliberately **not** information-flow control — one
+  boolean per session, not per-datum flow tracking; that's permanently out
+  of scope for a proxy (see [Taint Tracking](/features/taint-tracking/)'s
+  boundary section).
+- **Approval workflow** — a third policy outcome, `needs_approval`
+  (`input.tainted`/`input.job_over_budget` pairs naturally with it), backed
+  by an approve-and-retry queue: the flagged call is held (never forwarded)
+  and returns 202 with a pending id; an operator approves or denies via
+  loopback-guarded endpoints or the dashboard; approval mints a
+  single-use, TTL-bounded grant that admits exactly one retry. Fails
+  closed (denies) when the flag is off but a policy still emits
+  `needs_approval`. See [Approval Workflow](/features/approval-workflow/).
+- **Per-job budget ceiling** — a hard cap on total gated calls per
+  `(tenant, identity, session)` job, independent of the existing
+  per-window budget: a zero-config hard proxy gate (429, decision
+  `job_budget_exceeded` — deliberately distinct from `throttled`, so a
+  runaway job is greppable as its own diagnostic signal) plus optional
+  `input.job_over_budget` policy exposure so an over-budget job can route
+  to approval instead of a flat block. Request-count only in this cut, not
+  token/cost — a token/cost `Meter` is a possible future adapter behind
+  the same interface. In-memory and Postgres-backed (`postgres_storage`)
+  meters both ship. See [Per-Job Budget Ceiling](/features/job-budget/).
+
 ## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future
