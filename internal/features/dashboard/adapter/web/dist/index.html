@@ -36,6 +36,10 @@
           <span>Blocked</span>
           <span class="nav-count" id="nav-count-blocked" hidden></span>
         </button>
+        <button class="nav-item" data-view="approvals">
+          <span class="nav-icon" data-icon="approvals"></span>
+          <span>Approvals</span>
+        </button>
         <button class="nav-item" data-view="federation">
           <span class="nav-icon" data-icon="federation"></span>
           <span>Federation</span>
@@ -280,6 +284,31 @@
             <tbody id="blocked-rows"></tbody>
           </table>
           <p id="blocked-empty" class="empty-state" hidden>No identities are currently blocked.</p>
+        </div>
+      </section>
+
+      <section id="view-approvals" class="view" aria-labelledby="view-approvals-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-approvals-heading">Approvals</h1>
+            <p class="view-sub" id="approval-subtitle"></p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Identity</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Tool</th>
+                <th scope="col">Params</th>
+                <th scope="col">Requested</th>
+                <th scope="col"></th>
+              </tr>
+            </thead>
+            <tbody id="approval-rows"></tbody>
+          </table>
+          <p id="approval-empty" class="empty-state" hidden>No pending approvals.</p>
         </div>
       </section>
 

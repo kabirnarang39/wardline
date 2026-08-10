@@ -936,7 +936,16 @@ func runServe(logger *slog.Logger, args []string) {
 			})
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource)
+		// approvalSource backs the dashboard Approvals view -- only wired
+		// when approval_workflow is on (approvalManager non-nil). Kept an
+		// interface var so a typed *Manager nil never defeats the handler's
+		// nil check, mirroring approvalPort above.
+		var approvalSource dashboardadapter.ApprovalSource
+		if approvalManager != nil {
+			approvalSource = approvalManager
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
