@@ -98,6 +98,7 @@ type contextInput struct {
 	RemoteAddr string `json:"remote_addr"`
 	UserAgent  string `json:"user_agent"`
 	Tenant     string `json:"tenant"`
+	Tainted    bool   `json:"tainted"`
 }
 
 // Evaluate runs the prepared query against pc and extracts an allow/deny
@@ -174,5 +175,6 @@ func buildInput(pc domain.Context) (contextInput, error) {
 		RemoteAddr: pc.RemoteAddr,
 		UserAgent:  pc.UserAgent,
 		Tenant:     pc.Tenant,
+		Tainted:    pc.Tainted,
 	}, nil
 }
