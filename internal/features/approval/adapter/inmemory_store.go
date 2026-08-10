@@ -25,7 +25,7 @@ func (s *InMemoryStore) CreateRequest(r domain.Request) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.requests[r.ID]; exists {
-		return fmt.Errorf("approval request %q already exists: %w", r.ID, nil)
+		return fmt.Errorf("approval request %q already exists", r.ID)
 	}
 	s.requests[r.ID] = r
 	return nil
@@ -55,10 +55,10 @@ func (s *InMemoryStore) DecideRequest(id string, status domain.Status, decidedBy
 	defer s.mu.Unlock()
 	r, ok := s.requests[id]
 	if !ok {
-		return domain.Request{}, fmt.Errorf("approval request %q not found: %w", id, nil)
+		return domain.Request{}, fmt.Errorf("approval request %q not found", id)
 	}
 	if r.Status != domain.StatusPending {
-		return domain.Request{}, fmt.Errorf("approval request %q already %s: %w", id, r.Status, nil)
+		return domain.Request{}, fmt.Errorf("approval request %q already %s", id, r.Status)
 	}
 	r.Status = status
 	r.DecidedBy = decidedBy
