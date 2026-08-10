@@ -19,11 +19,13 @@ the full request as JSON:
 {
   "identity": "agent-abc123",
   "tool": "read_file",
+  "method": "tools/call",
   "params": {"name": "read_file", "arguments": {"path": "/tmp/x"}},
   "timestamp": "2026-07-27T10:00:00Z",
   "remote_addr": "10.0.0.5:54321",
   "user_agent": "some-agent/1.0",
-  "tenant": "acme"
+  "tenant": "acme",
+  "tainted": false
 }
 ```
 

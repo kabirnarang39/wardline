@@ -18,4 +18,42 @@ allow {
 ```
 
 `input` is the full request context — see
-[Policy Backends](/concepts/policy-backends/) for the exact JSON shape.
+[Policy Backends](/concepts/policy-backends/) for the exact JSON shape,
+including `input.method` and `input.tainted` (only meaningful when
+[taint tracking](/features/taint-tracking/) is on; always `false` otherwise).
+
+## Result keys and precedence
+
+Wardline reads up to four keys from the evaluated result object. Only
+`allow` is required — the other three are opt-in, and their absence is
+identical to `false`, so an existing policy that only ever returned `allow`
+(and optionally `reason`) behaves exactly as before.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `allow` | bool (required) | Grants the call. Missing or non-boolean → deny. |
+| `reason` | string (optional) | Recorded in the audit log only, never sent to the caller. Defaults to `"opa decision"` when absent. |
+| `approval` | bool (optional) | When `true` and the call isn't hard-denied, the outcome is `needs_approval` instead of allow — see [Approval workflow](/features/approval-workflow/). |
+| `hard_deny` | bool (optional) | Forces a deny even if `approval` or `allow` is also `true`. |
+
+Precedence is **`hard_deny` &gt; `approval` &gt; `allow`**, evaluated in that
+order — fail-safe: a policy that both denies and requests approval always
+denies. Pairing `approval` with [`input.tainted`](/features/taint-tracking/)
+is the intended use:
+
+```rego
+package wardline.authz
+
+default allow = false
+
+is_write { input.method == "tools/call" }
+
+approval {
+    input.tainted
+    is_write
+}
+
+allow {
+    input.identity == "agent-abc123"
+}
+```
