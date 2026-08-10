@@ -764,7 +764,13 @@ func runServe(logger *slog.Logger, args []string) {
 	if jobBudgetChecker != nil {
 		jobBudgetPort = jobBudgetChecker
 	}
-	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort)
+	// costBudgetPort: job_cost_budget composition-root wiring (config,
+	// meter, flag) lands in a later task -- nil here is the same
+	// not-yet-wired state every other optional port started in, and the
+	// handler's nil check (see CostBudgetChecker's doc comment) makes this
+	// a no-op, not a partial feature.
+	var costBudgetPort proxyadapter.CostBudgetChecker
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort)
 
 	startedAt := time.Now()
 
