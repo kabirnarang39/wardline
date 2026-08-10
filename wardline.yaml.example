@@ -18,6 +18,7 @@ features: {}
 #   grpc_transport: true       # off by default — fronts a gRPC upstream on a second listener; see README.md "gRPC transport"
 #   taint_tracking: true       # off by default — taints a session after an untrusted-source read; see docs "Taint tracking"
 #   approval_workflow: true    # off by default — needs_approval policy outcome + approve-and-retry queue; see docs "Approval workflow"
+#   job_budget: true           # off by default — hard per-job (tenant/identity/session) call ceiling; see docs "Per-Job Budget Ceiling"
 # grpc_listen: ":8081"         # required when features.grpc_transport is true — host:port to accept gRPC on
 # grpc_upstream: "localhost:50051"  # required when features.grpc_transport is true — upstream gRPC target
 # audit:
@@ -101,6 +102,8 @@ features: {}
 #   session_header: "X-Wardline-Session"   # optional — defaults to "X-Wardline-Session"
 # approval:
 #   grant_ttl_seconds: 300         # optional — how long an approval's single-use grant stays valid; defaults to 300
+# job_budget:
+#   requests_per_job: 500          # optional — total calls allowed per (tenant, identity, session) job; defaults to 500
 # federation:
 #   instance_id: "eu-cluster-1"
 #   # optional, defaults to os.Hostname() — set to something unique when
