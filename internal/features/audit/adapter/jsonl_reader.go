@@ -80,6 +80,7 @@ func (r *JSONLReader) Query(ctx context.Context, from, to time.Time) ([]domain.E
 			LatencyMS: raw.LatencyMS,
 			Reason:    raw.Reason,
 			TraceID:   raw.TraceID,
+			SessionID: raw.SessionID,
 		})
 	}
 	if err := scanner.Err(); err != nil {

@@ -36,6 +36,17 @@ func sessionAt(now time.Time) string {
 	return SessionID("", "acme", "alice", now, 300)
 }
 
+func TestEngine_HeaderSessionSetReadAgree(t *testing.T) {
+	e := NewEngine(testCfg(), newFakeStore(), func() time.Time { return t0 })
+	// Untrusted read carrying an explicit session header on the entry.
+	entry := auditdomain.Entry{Identity: "alice", Tenant: "acme", Tool: "web_fetch", Decision: "allow", Timestamp: t0, SessionID: "run-42"}
+	e.Publish(entry)
+	// The decision-time read uses the same explicit session id.
+	assert.True(t, e.Current("acme", "alice", "run-42", t0).Tainted)
+	// A different session id is NOT tainted (isolation).
+	assert.False(t, e.Current("acme", "alice", "run-99", t0).Tainted)
+}
+
 func TestEngine_UntrustedReadTaints(t *testing.T) {
 	e := NewEngine(testCfg(), newFakeStore(), func() time.Time { return t0 })
 	e.Publish(entry("web_fetch", "allow", t0))

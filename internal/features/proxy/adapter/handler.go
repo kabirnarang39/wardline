@@ -369,7 +369,7 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 }
 
 func (h *Handler) record(identity, tenant, tool, decision, reason, traceID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
-	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, effect, status)
+	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, "", effect, status)
 }
 
 // readResponseSignal reads a bounded prefix of the upstream response body to
