@@ -55,7 +55,7 @@ func (e *Engine) Publish(entry auditdomain.Entry) {
 	if entry.Decision == "deny" || entry.Decision == "blocked" || entry.Decision == "throttled" {
 		return
 	}
-	session := SessionID("", entry.Tenant, entry.Identity, entry.Timestamp, e.cfg.Window())
+	session := SessionID(entry.SessionID, entry.Tenant, entry.Identity, entry.Timestamp, e.cfg.Window())
 	key := taintKey(entry.Tenant, entry.Identity, session)
 
 	if _, ok := e.declassify[entry.Tool]; ok {

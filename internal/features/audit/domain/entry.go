@@ -40,6 +40,11 @@ type Entry struct {
 	// EffectStatus is the classification derived from Effect; empty when no
 	// Effect was recorded.
 	EffectStatus EffectStatus
+
+	// SessionID is the explicit X-Wardline-Session for this call, when the
+	// caller sent one. Empty when absent (the taint engine then falls back
+	// to its TTL window). Optional/additive — omitempty in serialization.
+	SessionID string
 }
 
 // EffectStatus classifies whether a write-shaped call's claimed change was

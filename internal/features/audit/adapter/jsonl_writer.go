@@ -19,6 +19,7 @@ type entryJSON struct {
 	TraceID      string      `json:"trace_id,omitempty"`
 	Effect       *effectJSON `json:"effect,omitempty"`
 	EffectStatus string      `json:"effect_status,omitempty"`
+	SessionID    string      `json:"session_id,omitempty"`
 }
 
 type effectJSON struct {
@@ -67,6 +68,7 @@ func (w *JSONLWriter) Write(e domain.Entry) error {
 		TraceID:      e.TraceID,
 		Effect:       toEffectJSON(e.Effect),
 		EffectStatus: string(e.EffectStatus),
+		SessionID:    e.SessionID,
 	})
 	if err != nil {
 		return err

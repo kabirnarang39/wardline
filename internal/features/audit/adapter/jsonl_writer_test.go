@@ -2,12 +2,35 @@ package adapter_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
 )
+
+func TestJSONLWriter_SessionIDOmittedWhenEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+	if err := w.Write(domain.Entry{Identity: "a", Tool: "t", Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "session_id") {
+		t.Errorf("empty SessionID must be omitted, got line: %s", buf.String())
+	}
+}
+
+func TestJSONLWriter_SessionIDRoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	w := adapter.NewJSONLWriter(&buf)
+	if err := w.Write(domain.Entry{Identity: "a", Tool: "t", Decision: "allow", SessionID: "sess-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"session_id":"sess-1"`) {
+		t.Errorf("expected session_id in output, got: %s", buf.String())
+	}
+}
 
 func TestJSONLWriter_EffectPresent_Serializes(t *testing.T) {
 	var buf bytes.Buffer
