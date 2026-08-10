@@ -391,3 +391,39 @@ func TestOPAEngine_TaintGatesWrite(t *testing.T) {
 		t.Errorf("expected a tainted read to remain allowed, got %q", taintedRead.Effect)
 	}
 }
+
+const approvalSource = `package wardline.authz
+
+default allow = false
+
+is_write { input.method == "tools/call" }
+approval { input.tainted; is_write }
+hard_deny { input.tool == "forbidden" }
+
+allow {
+	input.identity == "agent-abc123"
+	not hard_deny
+}
+`
+
+func TestOPAEngine_NeedsApproval(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(approvalSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// tainted write -> needs approval (not allow, not plain deny)
+	got := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file", Method: "tools/call", Tainted: true})
+	if got.Effect != domain.EffectNeedsApproval {
+		t.Errorf("expected needs_approval for a tainted write, got %q", got.Effect)
+	}
+	// deny beats approval: a hard-denied tainted write denies, never asks
+	denied := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "forbidden", Method: "tools/call", Tainted: true})
+	if denied.Effect != domain.EffectDeny {
+		t.Errorf("expected deny to beat approval, got %q", denied.Effect)
+	}
+	// untainted write allows
+	allowed := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file", Method: "tools/call", Tainted: false})
+	if allowed.Effect != domain.EffectAllow {
+		t.Errorf("expected allow for an untainted write, got %q", allowed.Effect)
+	}
+}
