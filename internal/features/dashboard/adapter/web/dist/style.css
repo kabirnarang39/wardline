@@ -1081,6 +1081,39 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
   .btn-unblock:active { transform: none; }
 }
 
+/* Approvals view: Approve/Deny share btn-unblock's shape, differing only
+   in accent (allow vs deny). Kept adjacent so they stay in step with it. */
+.btn-approve,
+.btn-deny {
+  min-height: 44px;
+  padding: 0 14px;
+  background: transparent;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--duration-standard) var(--ease-out), color var(--duration-standard) var(--ease-out);
+}
+
+.btn-approve { border: 1px solid var(--allow); color: var(--allow); }
+.btn-approve:hover { background: var(--allow); color: var(--paper); }
+
+.btn-deny { border: 1px solid var(--deny); color: var(--deny); margin-left: 8px; }
+.btn-deny:hover { background: var(--deny); color: var(--paper); }
+
+.btn-approve:active,
+.btn-deny:active {
+  transform: scale(0.97);
+  transition: transform var(--duration-micro) var(--ease-hover), background-color var(--duration-standard) var(--ease-hover), color var(--duration-standard) var(--ease-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-approve:active,
+  .btn-deny:active { transform: none; }
+}
+
 .btn-primary {
   position: relative;
   display: inline-flex;

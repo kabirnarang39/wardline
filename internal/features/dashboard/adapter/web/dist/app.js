@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance, fetchApprovals, decideApproval } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -68,6 +68,7 @@ const state = {
   lastFederationID: 0,
   reloadLog: [],
   lastReloadLogID: 0,
+  approvals: [],
 };
 
 function escapeHTML(s) {
@@ -648,6 +649,76 @@ async function confirmUnblock(identity, tenant) {
     return;
   }
   pollBlocked();
+}
+
+// renderApprovals mirrors renderBlockedTable: a table with a per-row action
+// (Approve/Deny here, Unblock there), re-rendered wholesale each poll tick.
+// The endpoint JSON-encodes the raw approval/domain.Request, so fields are
+// capitalized (a.Identity, a.Tool, a.Params, a.CreatedAt) -- same convention
+// as the Activity view's LiveEntry, not the snake_case *Entry wire shapes.
+function renderApprovals() {
+  const tbody = document.getElementById('approval-rows');
+  const empty = document.getElementById('approval-empty');
+  if (!tbody) return;
+
+  const entries = state.approvals;
+  const subtitle = document.getElementById('approval-subtitle');
+  if (subtitle) {
+    subtitle.textContent = `${entries.length} pending approval${entries.length === 1 ? '' : 's'}`;
+  }
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = entries.map((a) => {
+    const params = Object.entries(a.Params || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+    return `
+    <tr>
+      <td>${escapeHTML(a.Identity)}</td>
+      <td>${escapeHTML(a.Tenant)}</td>
+      <td class="tool-cell">${escapeHTML(formatTool(a.Tool))}</td>
+      <td class="reason-cell" title="${escapeHTML(params)}">${escapeHTML(params)}</td>
+      <td>${escapeHTML(formatTime(a.CreatedAt))}</td>
+      <td>
+        <button class="btn-approve" data-id="${escapeHTML(a.ID)}">Approve</button>
+        <button class="btn-deny" data-id="${escapeHTML(a.ID)}">Deny</button>
+      </td>
+    </tr>
+  `;
+  }).join('');
+
+  tbody.querySelectorAll('.btn-approve').forEach((btn) => {
+    btn.addEventListener('click', () => decideApprovalAction(btn.dataset.id, 'approve'));
+  });
+  tbody.querySelectorAll('.btn-deny').forEach((btn) => {
+    btn.addEventListener('click', () => decideApprovalAction(btn.dataset.id, 'deny'));
+  });
+}
+
+async function pollApprovals() {
+  if (!disabledPollers.has('approvals')) {
+    try {
+      state.approvals = await fetchApprovals();
+    } catch (err) {
+      // Same "not wired" posture as pollBlocked/pollAnomalies: pollerFailed()
+      // stops future retries once a 404 confirms approval_workflow is off.
+      pollerFailed('approvals', err);
+    }
+  }
+  renderApprovals();
+}
+
+async function decideApprovalAction(id, action) {
+  const result = await decideApproval(id, action);
+  if (!result.ok) {
+    window.alert(`Could not ${action}: ${result.message}`);
+    return;
+  }
+  pollApprovals();
 }
 
 // configLoadedAtMs is when the running config was put in place: the epoch of
@@ -1366,6 +1437,7 @@ function switchView(name) {
     else btn.removeAttribute('aria-current');
   });
   if (name === 'overview') renderOverview();
+  if (name === 'approvals') renderApprovals();
   if (name === 'blocked') renderBlockedTable();
   if (name === 'policy') loadPolicy();
   if (name === 'status') loadStatus();
@@ -1558,6 +1630,7 @@ function init() {
   pollAnomalies();
   pollFederation();
   pollBlocked();
+  pollApprovals();
   pollReloadLog();
   renderOverview();
   setInterval(pollAudit, POLL_INTERVAL_MS);
@@ -1565,6 +1638,7 @@ function init() {
   setInterval(pollFederation, POLL_INTERVAL_MS);
   setInterval(pollReloadLog, POLL_INTERVAL_MS);
   setInterval(pollBlocked, POLL_INTERVAL_MS);
+  setInterval(pollApprovals, POLL_INTERVAL_MS);
 }
 
 init();

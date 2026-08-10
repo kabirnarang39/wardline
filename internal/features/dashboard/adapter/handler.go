@@ -11,6 +11,7 @@ import (
 
 	anomalydomain "github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
+	approvaldomain "github.com/kabirnarang39/wardline/internal/features/approval/domain"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
@@ -46,6 +47,17 @@ type StatusSource interface {
 // writing, so the endpoint's wire shape is not tied to that type.
 type AnomalySource interface {
 	Since(afterID int64, limit int, tenantFilter string) []anomalyusecase.Alert
+}
+
+// ApprovalSource is the subset of approval/usecase.Manager's behavior
+// Handler depends on -- the pending queue read plus the two decision
+// mutations. ListPending("") returns every tenant's pending requests
+// (the dashboard is operator-global). Approve/Deny return an error for an
+// unknown or already-decided id, which handleApprovalDecision maps to 404.
+type ApprovalSource interface {
+	ListPending(tenant string) []approvaldomain.Request
+	Approve(id, by string) error
+	Deny(id, by string) error
 }
 
 // FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
@@ -244,6 +256,7 @@ type Handler struct {
 	reloadHistory     ReloadHistorySource
 	callerInfo        CallerInfoResolver
 	compliance        ComplianceSource
+	approvals         ApprovalSource
 	mux               *http.ServeMux
 }
 
@@ -286,14 +299,21 @@ type Handler struct {
 // compliance backs GET /dashboard/api/compliance -- nil (audit trail not
 // queryable, e.g. audit.output is stdout) answers 404, the same
 // "not wired" posture as every other nil-source route above.
-func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance}
+// approvals backs GET /dashboard/api/approvals and POST
+// /dashboard/api/approvals/{id}/{approve,deny} -- nil (approval_workflow
+// off, or web_ui off) answers 404 the same way; the two mutating routes
+// are additionally gated by the same config:edit reloadAuth the policy/
+// budget editors use.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource, approvals ApprovalSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance, approvals: approvals}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
 	mux.HandleFunc("/dashboard/api/policy", h.handlePolicy)
 	mux.HandleFunc("/dashboard/api/status", h.handleStatus)
 	mux.HandleFunc("/dashboard/api/anomalies", h.handleAnomalies)
+	mux.HandleFunc("/dashboard/api/approvals", h.handleApprovals)
+	mux.HandleFunc("/dashboard/api/approvals/", h.handleApprovalDecision)
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
@@ -413,6 +433,62 @@ func (h *Handler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, entries)
+}
+
+// handleApprovals serves GET /dashboard/api/approvals -- the pending
+// approval queue, operator-global (ListPending("")), gated only by the
+// outer dashboard:view wrap like every other read route. nil source
+// (approval_workflow off) answers 404, matching handleAnomalies.
+func (h *Handler) handleApprovals(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.approvals == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	pending := h.approvals.ListPending("")
+	if pending == nil {
+		pending = []approvaldomain.Request{}
+	}
+	writeJSON(w, pending)
+}
+
+// handleApprovalDecision serves POST /dashboard/api/approvals/{id}/approve
+// and .../deny -- deciding a pending request. This is a mutation with real
+// security weight (releasing a held write, or refusing it), so it is gated
+// by the same config:edit ReloadAuthorizer the policy/budget editors use,
+// separately from the read-only dashboard:view permission. appliedBy comes
+// only from ReloadAuthorizer.Authorize, never anything the client supplies.
+// An unknown or already-decided id surfaces as 404.
+func (h *Handler) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.approvals == nil || h.reloadAuth == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	id, action, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/dashboard/api/approvals/"), "/")
+	if !ok || id == "" || (action != "approve" && action != "deny") {
+		http.Error(w, "path must be /dashboard/api/approvals/{id}/{approve|deny}", http.StatusBadRequest)
+		return
+	}
+	appliedBy, ok := h.reloadAuth.Authorize(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	decide := h.approvals.Approve
+	if action == "deny" {
+		decide = h.approvals.Deny
+	}
+	if err := decide(id, appliedBy); err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Request) {

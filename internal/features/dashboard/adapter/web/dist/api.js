@@ -84,6 +84,40 @@ export async function writeBudget(def, tenantOverrides, toolOverrides) {
   return { ok: false, status: res.status, message };
 }
 
+// fetchApprovals reads the pending approval queue. Mirrors fetchBlocked:
+// a non-ok response throws with err.status set, so pollApprovals can call
+// pollerFailed() and stop retrying once a 404 confirms approval_workflow
+// is off on this server. Note the endpoint JSON-encodes the raw
+// approval/domain.Request (no json tags), so the caller reads capitalized
+// fields (ID, Identity, Tenant, Tool, Params, CreatedAt) -- same as the
+// Activity view's raw LiveEntry, not the snake_case *Entry wire shapes.
+export async function fetchApprovals() {
+  const res = await fetch('api/approvals');
+  if (!res.ok) {
+    const err = new Error(`approvals fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+// decideApproval POSTs an approve/deny decision for one pending request.
+// Same {ok}/{ok:false,status,message} shape as unblockIdentity: 204 is
+// success, 403 (no config:edit), 404 (unknown/already-decided id, or
+// feature off), 400 (bad path) all surface as ok:false with a message.
+export async function decideApproval(id, action) {
+  const res = await fetch(`api/approvals/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+  if (res.status === 204) {
+    return { ok: true };
+  }
+  let message = `${action} failed: ${res.status}`;
+  try {
+    const body = await res.text();
+    if (body) message = body.trim();
+  } catch { /* keep the generic message */ }
+  return { ok: false, status: res.status, message };
+}
+
 export async function fetchStatus() {
   const res = await fetch('api/status');
   if (!res.ok) {
