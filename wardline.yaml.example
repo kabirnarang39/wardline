@@ -16,6 +16,7 @@ features: {}
 #   federation: true           # off by default, requires anomaly_detection — see README.md "Federation"
 #   scim: true                 # off by default, provisions RBAC bindings from an IdP — see README.md "SCIM"
 #   grpc_transport: true       # off by default — fronts a gRPC upstream on a second listener; see README.md "gRPC transport"
+#   taint_tracking: true       # off by default — taints a session after an untrusted-source read; see docs "Taint tracking"
 # grpc_listen: ":8081"         # required when features.grpc_transport is true — host:port to accept gRPC on
 # grpc_upstream: "localhost:50051"  # required when features.grpc_transport is true — upstream gRPC target
 # audit:

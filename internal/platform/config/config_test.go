@@ -1853,3 +1853,54 @@ compliance:
 		t.Fatalf("unexpected error for a valid compliance_scheduled_export config: %v", err)
 	}
 }
+
+func TestLoad_TaintBlockParses(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+features:
+  taint_tracking: true
+taint:
+  untrusted_sources:
+    - web_fetch
+    - http_get
+  declassify_sources:
+    - human_approve
+  ttl_seconds: 120
+  session_window_seconds: 60
+  session_header: "X-Session"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Taint.UntrustedSources; len(got) != 2 || got[0] != "web_fetch" || got[1] != "http_get" {
+		t.Errorf("unexpected untrusted_sources: %+v", got)
+	}
+	if got := cfg.Taint.DeclassifySources; len(got) != 1 || got[0] != "human_approve" {
+		t.Errorf("unexpected declassify_sources: %+v", got)
+	}
+	if cfg.Taint.TTLSeconds != 120 || cfg.Taint.SessionWindowSeconds != 60 || cfg.Taint.SessionHeader != "X-Session" {
+		t.Errorf("unexpected taint numeric/header fields: %+v", cfg.Taint)
+	}
+}
+
+func TestLoad_TaintBlockAbsentIsZeroValue(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Taint.UntrustedSources != nil || cfg.Taint.TTLSeconds != 0 {
+		t.Errorf("expected zero-value TaintConfig when the block is absent, got %+v", cfg.Taint)
+	}
+}
