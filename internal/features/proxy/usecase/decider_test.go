@@ -126,3 +126,23 @@ func TestDecide_TaintLookupSetsContextTainted(t *testing.T) {
 		t.Errorf("taint lookup returning true should set Context.Tainted")
 	}
 }
+
+func TestDecide_JobBudgetLookupSetsContextJobOverBudget(t *testing.T) {
+	call := domain.ToolCall{Identity: "alice", Tool: "delete", Tenant: "acme"}
+
+	engineOff := &recordingEngine{}
+	var eOff policydomain.Engine = engineOff
+	dOff := usecase.NewDeciderWithHolderTaintAndJobBudget(reload.NewReloadableEngine(&eOff), nil, nil)
+	dOff.Decide(call)
+	if engineOff.captured.JobOverBudget {
+		t.Errorf("nil job-budget lookup should leave Context.JobOverBudget false")
+	}
+
+	engineOn := &recordingEngine{}
+	var eOn policydomain.Engine = engineOn
+	dOn := usecase.NewDeciderWithHolderTaintAndJobBudget(reload.NewReloadableEngine(&eOn), nil, func(domain.ToolCall) bool { return true })
+	dOn.Decide(call)
+	if !engineOn.captured.JobOverBudget {
+		t.Errorf("job-budget lookup returning true should set Context.JobOverBudget")
+	}
+}

@@ -11,13 +11,20 @@ import (
 // lookup means untainted, so the feature adds zero behavior when off.
 type TaintLookup func(domain.ToolCall) bool
 
+// JobBudgetLookup reports whether a call's (tenant, identity, session) job
+// has exceeded its per-job request ceiling. Supplied only when job_budget is
+// on; a nil lookup means within budget, so the feature adds zero behavior
+// when off.
+type JobBudgetLookup func(domain.ToolCall) bool
+
 // Decider evaluates a ToolCall against the policy engine and returns
 // whether the call may proceed. The engine is held behind a
 // ReloadableEngine so a hot reload takes effect on the very next Decide
 // call, on this same Decider instance, with no restart.
 type Decider struct {
-	policy *reload.ReloadableEngine[policydomain.Engine]
-	taint  TaintLookup
+	policy    *reload.ReloadableEngine[policydomain.Engine]
+	taint     TaintLookup
+	jobBudget JobBudgetLookup
 }
 
 // NewDecider wraps policy in a fresh, private ReloadableEngine holder --
@@ -43,17 +50,26 @@ func NewDeciderWithHolderAndTaint(holder *reload.ReloadableEngine[policydomain.E
 	return &Decider{policy: holder, taint: taint}
 }
 
+// NewDeciderWithHolderTaintAndJobBudget is NewDeciderWithHolder plus both a
+// taint lookup and a job-budget lookup, each consulted at decision time. A nil
+// lookup means the feature is off for that dimension (untainted or within
+// budget, respectively), so the feature adds zero behavior when both are nil.
+func NewDeciderWithHolderTaintAndJobBudget(holder *reload.ReloadableEngine[policydomain.Engine], taint TaintLookup, jobBudget JobBudgetLookup) *Decider {
+	return &Decider{policy: holder, taint: taint, jobBudget: jobBudget}
+}
+
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	pc := policydomain.Context{
-		Identity:   call.Identity,
-		Tenant:     call.Tenant,
-		Tool:       call.Tool,
-		Method:     call.Method,
-		Params:     call.Params,
-		Timestamp:  call.Timestamp,
-		RemoteAddr: call.RemoteAddr,
-		UserAgent:  call.UserAgent,
-		Tainted:    d.taint != nil && d.taint(call),
+		Identity:      call.Identity,
+		Tenant:        call.Tenant,
+		Tool:          call.Tool,
+		Method:        call.Method,
+		Params:        call.Params,
+		Timestamp:     call.Timestamp,
+		RemoteAddr:    call.RemoteAddr,
+		UserAgent:     call.UserAgent,
+		Tainted:       d.taint != nil && d.taint(call),
+		JobOverBudget: d.jobBudget != nil && d.jobBudget(call),
 	}
 	engine := *d.policy.Current()
 	decision := engine.Evaluate(pc)
