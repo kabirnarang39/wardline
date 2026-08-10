@@ -122,6 +122,12 @@ type Handler struct {
 	// approval is nil unless the approval_workflow feature is wired; a nil
 	// port makes needs_approval fail closed (deny) — see ServeHTTP.
 	approval ApprovalPort
+
+	// sessionHeader names the request header carrying an explicit agent
+	// session id, plumbed onto ToolCall.SessionID and the audit Entry so
+	// taint/approval scope to a session, not just (tenant, identity). "" (the
+	// default NewHandler passes) disables it — r.Header.Get("") returns "".
+	sessionHeader string
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -130,13 +136,14 @@ type Handler struct {
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
-	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil)
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "")
 }
 
-// NewHandlerWithApproval is NewHandler plus an ApprovalPort, wired only
-// when the approval_workflow feature is on. A nil port (what NewHandler
-// passes) makes a needs_approval policy outcome fail closed.
-func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort) *Handler {
+// NewHandlerWithApproval is NewHandler plus an ApprovalPort (wired only when
+// the approval_workflow feature is on — a nil port, what NewHandler passes,
+// makes a needs_approval policy outcome fail closed) and a session header
+// (plumbed whenever taint or approval is on; "" disables it).
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -158,6 +165,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 
 		trustedIdentityHeader: trustedIdentityHeader,
 		approval:              approval,
+		sessionHeader:         sessionHeader,
 	}
 }
 
@@ -186,7 +194,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", start, nil, "")
+		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "")
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -194,7 +202,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := proxyusecase.ParseRequest(identity, tenant, body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", start, nil, "")
+		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "")
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
 	}
@@ -206,7 +214,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.autoBlockChecker != nil {
 		blockVerdict := h.autoBlockChecker.Check(identity, tenant, start)
 		if !blockVerdict.Allowed {
-			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, start, nil, "")
+			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, parsed.Call.SessionID, start, nil, "")
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "blocked due to anomalous behavior")
 			return
@@ -227,6 +235,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	call.Timestamp = start
 	call.RemoteAddr = r.RemoteAddr
 	call.UserAgent = r.Header.Get("User-Agent")
+	// Populate the session id from the configured header (r.Header.Get("")
+	// returns "" when the feature is disabled). Set on parsed.Call too so the
+	// approval port and every parsed-in-scope finish/forward call — which read
+	// parsed.Call.SessionID — carry the same value.
+	call.SessionID = r.Header.Get(h.sessionHeader)
+	parsed.Call.SessionID = call.SessionID
 
 	// auditTool is what's recorded/traced for this request. call.Tool is
 	// "" only for an untargeted resources/prompts call (e.g.
@@ -245,19 +259,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.approval == nil {
 			// Fail closed: policy asked for approval but the feature isn't
 			// wired, so there's no way to obtain one — deny.
-			h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "")
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 			return
 		}
 		redacted := proxyusecase.RedactSecrets(proxyusecase.ShallowParams(parsed.Call.Params))
 		res, err := h.approval.OnNeedsApproval(tenant, identity, auditTool, parsed.Method, parsed.Call.SessionID, redacted)
 		if err != nil {
-			h.finish(span, identity, tenant, auditTool, "deny", err.Error(), start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "deny", err.Error(), parsed.Call.SessionID, start, nil, "")
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 			return
 		}
 		if !res.Approved {
-			h.finish(span, identity, tenant, auditTool, "needs_approval", verdict.Reason, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "needs_approval", verdict.Reason, parsed.Call.SessionID, start, nil, "")
 			writeJSONRPCError(w, http.StatusAccepted, rpcCodeServerErr, parsed.ID, "awaiting operator approval; retry after approval (pending id: "+res.PendingID+")")
 			return
 		}
@@ -268,7 +282,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, start, nil, "")
+		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "")
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 		return
 	}
@@ -287,7 +301,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, start, nil, "")
+		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, parsed.Call.SessionID, start, nil, "")
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
@@ -323,7 +337,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 		// The upstream never responded, so a claimed write definitely did not
 		// take effect — record it as contradicted.
 		eff, st := proxyusecase.ExtractEffect(parsed, proxyusecase.EffectSignal{ResponseStatus: http.StatusBadGateway}, proxyusecase.RedactSecrets)
-		h.finish(span, identity, tenant, tool, "error", "", start, eff, st)
+		h.finish(span, identity, tenant, tool, "error", "", parsed.Call.SessionID, start, eff, st)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -331,7 +345,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 			recorded = true
 			sig := readResponseSignal(resp)
 			eff, st := proxyusecase.ExtractEffect(parsed, sig, proxyusecase.RedactSecrets)
-			h.finish(span, identity, tenant, tool, successDecision, successReason, start, eff, st)
+			h.finish(span, identity, tenant, tool, successDecision, successReason, parsed.Call.SessionID, start, eff, st)
 		}
 		return nil
 	}
@@ -379,7 +393,7 @@ func retryAfterSeconds(d time.Duration) int {
 // entry for a completed request — every return point in
 // ServeHTTP/forward needs both, so they're combined here rather than
 // repeated at each call site.
-func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
+func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
 	span.SetAttributes(
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
@@ -410,11 +424,11 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	if sc := span.SpanContext(); sc.IsValid() {
 		traceID = sc.TraceID().String()
 	}
-	h.record(identity, tenant, tool, decision, reason, traceID, start, effect, status)
+	h.record(identity, tenant, tool, decision, reason, traceID, sessionID, start, effect, status)
 }
 
-func (h *Handler) record(identity, tenant, tool, decision, reason, traceID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
-	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, "", effect, status)
+func (h *Handler) record(identity, tenant, tool, decision, reason, traceID, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
+	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, sessionID, effect, status)
 }
 
 // readResponseSignal reads a bounded prefix of the upstream response body to
