@@ -37,3 +37,18 @@ type Verdict struct {
 	// Mirrors jobbudget.Verdict.FailedOpen / budget.Verdict.FailedOpen.
 	FailedOpen bool
 }
+
+// Entry is one job's running cost total, for the dashboard's read-only
+// view. Key is opaque (the length-prefixed composition is one-way by
+// design) -- tenant/identity/session are not decomposed for display.
+type Entry struct {
+	Key   string
+	Total int
+}
+
+// Lister is an optional capability a Meter MAY implement, for the
+// dashboard's read-only cost-budget view. Not part of Meter itself --
+// mirrors jobbudget/domain.Lister exactly.
+type Lister interface {
+	ListNearCeiling(limit int) []Entry
+}
