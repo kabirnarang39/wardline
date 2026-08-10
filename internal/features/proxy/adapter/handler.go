@@ -24,6 +24,7 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	prdomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
 )
@@ -33,6 +34,16 @@ import (
 // importing the real usecase package's flags/limiter wiring.
 type BudgetChecker interface {
 	Check(identity, tenant, tool string, now time.Time) budgetdomain.Verdict
+}
+
+// JobBudgetChecker is the subset of jobbudget/usecase.Checker's behavior
+// Handler depends on. nil means job_budget is off -- the hard gate is
+// skipped entirely, matching every other optional port on this Handler.
+// Check is the INCREMENTING method -- this hard gate must be the only call
+// site for it in the codebase; the policy-exposure read path uses the
+// non-incrementing Checker.IsOverBudget instead, wired into the Decider.
+type JobBudgetChecker interface {
+	Check(tenant, identity, session string, now time.Time) jobbudgetdomain.Verdict
 }
 
 // AutoBlockChecker is the subset of anomaly/usecase.BlockChecker's
@@ -128,6 +139,10 @@ type Handler struct {
 	// taint/approval scope to a session, not just (tenant, identity). "" (the
 	// default NewHandler passes) disables it — r.Header.Get("") returns "".
 	sessionHeader string
+
+	// jobBudgetChecker is nil unless the job_budget feature is wired; a nil
+	// checker skips the per-job ceiling hard gate entirely (see ServeHTTP).
+	jobBudgetChecker JobBudgetChecker
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -136,14 +151,16 @@ type Handler struct {
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
-	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "")
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil)
 }
 
 // NewHandlerWithApproval is NewHandler plus an ApprovalPort (wired only when
 // the approval_workflow feature is on — a nil port, what NewHandler passes,
-// makes a needs_approval policy outcome fail closed) and a session header
-// (plumbed whenever taint or approval is on; "" disables it).
-func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string) *Handler {
+// makes a needs_approval policy outcome fail closed), a session header
+// (plumbed whenever taint or approval is on; "" disables it), and a
+// JobBudgetChecker (wired only when job_budget is on; nil skips the hard
+// gate entirely).
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -166,6 +183,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 		trustedIdentityHeader: trustedIdentityHeader,
 		approval:              approval,
 		sessionHeader:         sessionHeader,
+		jobBudgetChecker:      jobBudgetChecker,
 	}
 }
 
@@ -332,6 +350,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The per-job ceiling hard gate: a second, independent budget dimension
+	// from the per-window BudgetChecker above -- keyed by (tenant, identity,
+	// session) rather than a rolling window, so it gets its own audit
+	// decision ("job_budget_exceeded") rather than reusing "throttled",
+	// which would make the two mechanisms indistinguishable in the audit
+	// trail. This is the only call site for JobBudgetChecker.Check (the
+	// incrementing method) in the codebase -- see the interface doc comment.
+	if h.jobBudgetChecker != nil {
+		jbVerdict := h.jobBudgetChecker.Check(tenant, identity, parsed.Call.SessionID, start)
+		if !jbVerdict.Allowed {
+			h.finish(span, identity, tenant, auditTool, "job_budget_exceeded", jbVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+			writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "job budget ceiling exceeded")
+			return
+		}
+		if jbVerdict.FailedOpen {
+			if successReason != "" {
+				successReason += "; " + jbVerdict.Reason
+			} else {
+				successReason = jbVerdict.Reason
+			}
+		}
+	}
+
 	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
 }
 
@@ -425,9 +466,9 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
 	// ponytail: explicit success allowlist, not a switch with a default —
-	// decision is a closed set of 7 literals this file alone produces
+	// decision is a closed set of 8 literals this file alone produces
 	// ("allow", "deny", "throttled", "passthrough", "error", "blocked",
-	// "needs_approval"), not caller-controlled. A future 8th decision value needs a human to add
+	// "needs_approval", "job_budget_exceeded"), not caller-controlled. A future 9th decision value needs a human to add
 	// it here too; forgetting fails safe (Error), not silently open.
 	// Upgrade to a typed decision enum with an exhaustive switch if that
 	// becomes a real maintenance pain point.

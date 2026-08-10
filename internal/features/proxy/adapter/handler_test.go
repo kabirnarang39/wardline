@@ -27,6 +27,7 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	policyusecase "github.com/kabirnarang39/wardline/internal/features/policy/usecase"
 	"github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
@@ -1256,7 +1257,7 @@ func TestHandler_NeedsApprovalEnqueuesReturns202(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"}, "")
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"}, "", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusAccepted {
@@ -1277,7 +1278,7 @@ func TestHandler_NeedsApprovalWithGrantForwards(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "")
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusOK {
@@ -1322,7 +1323,7 @@ func TestHandler_SessionHeaderRecordedOnEntry(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "X-Wardline-Session")
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "X-Wardline-Session", nil)
 
 	req := newRequest("agent-abc123", "delete_file")
 	req.Header.Set("X-Wardline-Session", "run-7")
@@ -1350,7 +1351,7 @@ func TestHandler_SessionHeaderRecordedOnBlockedEntry(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(panickingEngine{t: t})
 	autoBlock := fakeAutoBlockChecker{verdict: anomalydomain.BlockVerdict{Allowed: false, Reason: "blocked"}}
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, autoBlock, "", nil, "X-Wardline-Session")
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, autoBlock, "", nil, "X-Wardline-Session", nil)
 
 	req := newRequest("agent-abc123", "delete_file")
 	req.Header.Set("X-Wardline-Session", "run-9")
@@ -1362,5 +1363,88 @@ func TestHandler_SessionHeaderRecordedOnBlockedEntry(t *testing.T) {
 	}
 	if len(writer.entries) != 1 || writer.entries[0].Decision != "blocked" || writer.entries[0].SessionID != "run-9" {
 		t.Fatalf("expected one blocked entry with SessionID=run-9, got %+v", writer.entries)
+	}
+}
+
+// stubJobBudgetChecker is a fixed-verdict JobBudgetChecker for tests --
+// mirrors alwaysAllowBudgetChecker's role for the per-window BudgetChecker.
+type stubJobBudgetChecker struct{ verdict jobbudgetdomain.Verdict }
+
+func (s stubJobBudgetChecker) Check(_, _, _ string, _ time.Time) jobbudgetdomain.Verdict {
+	return s.verdict
+}
+
+// TestHandler_JobBudgetExceededReturns429WithDistinctDecision proves the
+// per-job ceiling hard gate returns 429 with its own "job_budget_exceeded"
+// audit decision -- distinct from the per-window budget's "throttled" -- and
+// never reaches upstream.
+func TestHandler_JobBudgetExceededReturns429WithDistinctDecision(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { upstreamHit = true }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: false, Reason: "job budget ceiling 500 reached", Count: 501}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	if upstreamHit {
+		t.Fatal("upstream must not be hit once the job budget ceiling is exceeded")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "job_budget_exceeded" {
+		t.Fatalf("expected one job_budget_exceeded entry (distinct from throttled), got %+v", writer.entries)
+	}
+}
+
+// TestHandler_JobBudgetUnderCeilingForwards proves an allowed job-budget
+// verdict does not block the call from reaching upstream.
+func TestHandler_JobBudgetUnderCeilingForwards(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: true, Count: 3}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow entry, got %+v", writer.entries)
+	}
+}
+
+// TestHandler_JobBudgetNilCheckerNoEffect proves a nil JobBudgetChecker
+// (feature off) leaves behavior unchanged -- the established pattern for
+// every optional port on this Handler.
+func TestHandler_JobBudgetNilCheckerNoEffect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with job budget unwired (feature off), got %d", w.Code)
 	}
 }

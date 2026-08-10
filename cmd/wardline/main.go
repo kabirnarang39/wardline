@@ -712,7 +712,10 @@ func runServe(logger *slog.Logger, args []string) {
 	// mtlsHeader is "" unless bootstrap_source is mtls; when set, the proxy
 	// strips it before forwarding so the untrusted upstream never learns
 	// the string that mints Wardline bearer tokens.
-	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader)
+	// jobBudgetChecker (the hard-gate wiring) is nil for now — a later task
+	// wires job_budget's Checker.Check in here; see
+	// internal/features/proxy/adapter.JobBudgetChecker.
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, nil)
 
 	startedAt := time.Now()
 
