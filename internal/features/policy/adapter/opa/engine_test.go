@@ -427,3 +427,30 @@ func TestOPAEngine_NeedsApproval(t *testing.T) {
 		t.Errorf("expected allow for an untainted write, got %q", allowed.Effect)
 	}
 }
+
+const jobBudgetPolicySource = `package wardline.authz
+
+default allow = false
+
+approval { input.job_over_budget }
+
+allow {
+	input.identity == "agent-abc123"
+	not input.job_over_budget
+}
+`
+
+func TestOPAEngine_JobOverBudgetReachesRegoAndRoutesToApproval(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(jobBudgetPolicySource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	underBudget := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", JobOverBudget: false})
+	if underBudget.Effect != domain.EffectAllow {
+		t.Errorf("expected allow when under job budget, got %q", underBudget.Effect)
+	}
+	overBudget := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", JobOverBudget: true})
+	if overBudget.Effect != domain.EffectNeedsApproval {
+		t.Errorf("expected needs_approval when over job budget, got %q", overBudget.Effect)
+	}
+}
