@@ -39,6 +39,13 @@ type TaintConfig struct {
 	SessionHeader        string   `yaml:"session_header"`
 }
 
+// ApprovalConfig configures request approvals. Only meaningful when the
+// approval_workflow feature flag is on. The numeric field defaults
+// (see approval/domain) when unset.
+type ApprovalConfig struct {
+	GrantTTLSeconds int `yaml:"grant_ttl_seconds"`
+}
+
 // BudgetConfig configures the per-identity rate limiter. Only validated
 // (and only meaningful) when the budget_enforcement feature flag is on.
 // Tenants holds optional per-tenant overrides of the global default above,
@@ -336,6 +343,7 @@ type Config struct {
 	Compliance      ComplianceConfig `yaml:"compliance"`
 	Retention       RetentionConfig  `yaml:"retention"`
 	Taint           TaintConfig      `yaml:"taint"`
+	Approval        ApprovalConfig   `yaml:"approval"`
 	Features        map[string]bool  `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving

@@ -1904,3 +1904,41 @@ audit:
 		t.Errorf("expected zero-value TaintConfig when the block is absent, got %+v", cfg.Taint)
 	}
 }
+
+func TestLoad_ApprovalBlockParses(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+features:
+  approval_workflow: true
+approval:
+  grant_ttl_seconds: 600
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Approval.GrantTTLSeconds != 600 {
+		t.Errorf("unexpected grant_ttl_seconds: %d, expected 600", cfg.Approval.GrantTTLSeconds)
+	}
+}
+
+func TestLoad_ApprovalBlockAbsentIsZeroValue(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Approval.GrantTTLSeconds != 0 {
+		t.Errorf("expected zero-value ApprovalConfig when the block is absent, got %+v", cfg.Approval)
+	}
+}
