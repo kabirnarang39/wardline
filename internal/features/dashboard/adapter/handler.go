@@ -491,14 +491,18 @@ func (h *Handler) handleApprovalDecision(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	id, action, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/dashboard/api/approvals/"), "/")
-	if !ok || id == "" || (action != "approve" && action != "deny") {
-		http.Error(w, "path must be /dashboard/api/approvals/{id}/{approve|deny}", http.StatusBadRequest)
-		return
-	}
+	// Authorization checked before the path is parsed: a caller without
+	// config-edit rights gets a uniform 403 regardless of whether their
+	// path happens to be well-formed, rather than a 400 that leaks "your
+	// path shape was wrong" to an unauthorized caller.
 	appliedBy, ok := h.reloadAuth.Authorize(r)
 	if !ok {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	id, action, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/dashboard/api/approvals/"), "/")
+	if !ok || id == "" || (action != "approve" && action != "deny") {
+		http.Error(w, "path must be /dashboard/api/approvals/{id}/{approve|deny}", http.StatusBadRequest)
 		return
 	}
 	decide := h.approvals.Approve

@@ -140,16 +140,16 @@ func (e *OPAEngine) Evaluate(pc domain.Context) domain.Decision {
 		return domain.Decision{Effect: domain.EffectDeny, Reason: "policy's allow value is missing or not a boolean"}
 	}
 
-	hard_deny, _ := result["hard_deny"].(bool)
-	approval, _ := result["approval"].(bool)
+	hardDeny, _ := result["hard_deny"].(bool)
+	needsApproval, _ := result["approval"].(bool)
 	reason, _ := result["reason"].(string)
 	if reason == "" {
 		reason = "opa decision"
 	}
 	switch {
-	case hard_deny:
+	case hardDeny:
 		return domain.Decision{Effect: domain.EffectDeny, Reason: reason}
-	case approval:
+	case needsApproval:
 		return domain.Decision{Effect: domain.EffectNeedsApproval, Reason: reason}
 	case allow:
 		return domain.Decision{Effect: domain.EffectAllow, Reason: reason}

@@ -53,12 +53,14 @@ const (
 
 // Verdict is the result of evaluating a ToolCall against policy. Allow is
 // kept as a derived convenience (Outcome == OutcomeAllow) for existing
-// callers that only distinguish proceed from not.
+// callers that only distinguish proceed from not. The real pending-approval
+// id (when Outcome is OutcomeNeedsApproval) flows through
+// approval/usecase.Result.PendingID instead, read directly by the proxy
+// handler -- Verdict has no field for it.
 type Verdict struct {
-	Allow     bool
-	Outcome   Outcome
-	Reason    string
-	PendingID string
+	Allow   bool
+	Outcome Outcome
+	Reason  string
 }
 
 // ParsedRequest is the result of parsing an incoming MCP JSON-RPC

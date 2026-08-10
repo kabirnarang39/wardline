@@ -76,3 +76,16 @@ func TestInMemoryMeter_ListNearCeiling_EmptyWhenNoCounts(t *testing.T) {
 	m := adapter.NewInMemoryMeter()
 	assert.Empty(t, m.ListNearCeiling(10))
 }
+
+// A non-positive limit must return no entries, matching PostgresMeter's
+// ListNearCeiling (Postgres rejects a negative LIMIT and zero legitimately
+// returns no rows) -- the two Lister implementations must agree on this
+// input even though this repo's only caller today always passes a positive
+// constant.
+func TestInMemoryMeter_ListNearCeiling_NonPositiveLimitReturnsEmpty(t *testing.T) {
+	m := adapter.NewInMemoryMeter()
+	_, _ = m.Increment("k", time.Now())
+
+	assert.Equal(t, []domain.Entry{}, m.ListNearCeiling(0))
+	assert.Equal(t, []domain.Entry{}, m.ListNearCeiling(-1))
+}
