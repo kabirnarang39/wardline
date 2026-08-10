@@ -24,6 +24,7 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	costbudgetdomain "github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
 	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	prdomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
@@ -44,6 +45,13 @@ type BudgetChecker interface {
 // non-incrementing Checker.IsOverBudget instead, wired into the Decider.
 type JobBudgetChecker interface {
 	Check(tenant, identity, session string, now time.Time) jobbudgetdomain.Verdict
+}
+
+// CostBudgetChecker is the subset of costbudget/usecase.Checker's behavior
+// Handler depends on. nil means job_cost_budget is off -- the cost hard
+// gate is skipped entirely, matching every other optional port.
+type CostBudgetChecker interface {
+	Check(tenant, identity, session, tool string, now time.Time) costbudgetdomain.Verdict
 }
 
 // AutoBlockChecker is the subset of anomaly/usecase.BlockChecker's
@@ -143,6 +151,11 @@ type Handler struct {
 	// jobBudgetChecker is nil unless the job_budget feature is wired; a nil
 	// checker skips the per-job ceiling hard gate entirely (see ServeHTTP).
 	jobBudgetChecker JobBudgetChecker
+
+	// costBudgetChecker is nil unless the job_cost_budget feature is wired;
+	// a nil checker skips the per-job cost/token ceiling hard gate entirely
+	// (see ServeHTTP).
+	costBudgetChecker CostBudgetChecker
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -151,16 +164,17 @@ type Handler struct {
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
 func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
-	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil)
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil, nil)
 }
 
 // NewHandlerWithApproval is NewHandler plus an ApprovalPort (wired only when
 // the approval_workflow feature is on — a nil port, what NewHandler passes,
 // makes a needs_approval policy outcome fail closed), a session header
-// (plumbed whenever taint or approval is on; "" disables it), and a
+// (plumbed whenever taint or approval is on; "" disables it), a
 // JobBudgetChecker (wired only when job_budget is on; nil skips the hard
-// gate entirely).
-func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker) *Handler {
+// gate entirely), and a CostBudgetChecker (wired only when job_cost_budget
+// is on; nil skips its hard gate entirely).
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker, costBudgetChecker CostBudgetChecker) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -184,6 +198,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 		approval:              approval,
 		sessionHeader:         sessionHeader,
 		jobBudgetChecker:      jobBudgetChecker,
+		costBudgetChecker:     costBudgetChecker,
 	}
 }
 
@@ -399,6 +414,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The per-job cost/token ceiling hard gate: a third, independent budget
+	// dimension alongside the per-window BudgetChecker and the per-job
+	// request-count JobBudgetChecker -- keyed the same (tenant, identity,
+	// session) way, own audit decision ("cost_budget_exceeded"). Shares
+	// admittedViaGrant with the job-budget gate above: one approval, once
+	// granted, overrides every ceiling dimension the needs_approval routing
+	// could have tripped, not just whichever policy field happened to
+	// trigger it -- the operator approved the call, not one specific
+	// objection to it. This is the only call site for
+	// CostBudgetChecker.Check (the amount-adding method) in the codebase.
+	if h.costBudgetChecker != nil {
+		cbVerdict := h.costBudgetChecker.Check(tenant, identity, parsed.Call.SessionID, call.Tool, start)
+		if !cbVerdict.Allowed && !admittedViaGrant {
+			h.finish(span, identity, tenant, auditTool, "cost_budget_exceeded", cbVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+			writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "cost budget ceiling exceeded")
+			return
+		}
+		if !cbVerdict.Allowed && admittedViaGrant {
+			// Same narrow, additive carve-out as the job-budget gate above --
+			// only reachable when OutcomeNeedsApproval consumed a live grant.
+			note := "cost budget ceiling exceeded but call was pre-approved via grant"
+			if successReason != "" {
+				successReason += "; " + note
+			} else {
+				successReason = note
+			}
+		}
+		if cbVerdict.Allowed && cbVerdict.FailedOpen {
+			if successReason != "" {
+				successReason += "; " + cbVerdict.Reason
+			} else {
+				successReason = cbVerdict.Reason
+			}
+		}
+	}
+
 	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
 }
 
@@ -492,9 +543,9 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	// tradeoff, not an oversight — the operator opts into tracing and owns
 	// their collector's access control.
 	// ponytail: explicit success allowlist, not a switch with a default —
-	// decision is a closed set of 8 literals this file alone produces
+	// decision is a closed set of 9 literals this file alone produces
 	// ("allow", "deny", "throttled", "passthrough", "error", "blocked",
-	// "needs_approval", "job_budget_exceeded"), not caller-controlled. A future 9th decision value needs a human to add
+	// "needs_approval", "job_budget_exceeded", "cost_budget_exceeded"), not caller-controlled. A future 10th decision value needs a human to add
 	// it here too; forgetting fails safe (Error), not silently open.
 	// Upgrade to a typed decision enum with an exhaustive switch if that
 	// becomes a real maintenance pain point.
