@@ -13,8 +13,9 @@ at the policy layer instead of statistically.
 When an identity calls a tool you've marked untrusted (a web fetch, a scraper,
 anything that pulls attacker-influenceable text into the agent's context),
 Wardline sets a single integrity taint label on that identity's session. The
-label is exposed to policy as `input.tainted`, so a rule can deny — or, later,
-route to approval — the write that follows a tainted read. Enable with:
+label is exposed to policy as `input.tainted`, so a rule can deny — or route
+to [approval]({{< relref "approval-workflow" >}}) — the write that follows a
+tainted read. Enable with:
 
 ```yaml
 features:
@@ -45,6 +46,11 @@ allow {
   not deny_tainted_write
 }
 ```
+
+A hard deny is the simplest policy; pairing `input.tainted` with `approval`
+instead routes the tainted write to a human via [approval
+workflow]({{< relref "approval-workflow" >}}) rather than blocking it outright
+— see that page for the full result contract.
 
 The taint is set out of band from the live audit stream (the same mechanism
 anomaly detection consumes), then read synchronously at decision time as a

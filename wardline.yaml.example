@@ -17,6 +17,7 @@ features: {}
 #   scim: true                 # off by default, provisions RBAC bindings from an IdP — see README.md "SCIM"
 #   grpc_transport: true       # off by default — fronts a gRPC upstream on a second listener; see README.md "gRPC transport"
 #   taint_tracking: true       # off by default — taints a session after an untrusted-source read; see docs "Taint tracking"
+#   approval_workflow: true    # off by default — needs_approval policy outcome + approve-and-retry queue; see docs "Approval workflow"
 # grpc_listen: ":8081"         # required when features.grpc_transport is true — host:port to accept gRPC on
 # grpc_upstream: "localhost:50051"  # required when features.grpc_transport is true — upstream gRPC target
 # audit:
@@ -89,6 +90,17 @@ features: {}
 #     enabled: true           # requires anomaly.ml_score.enabled: true -- acts on ml_score's value
 #     score_threshold: 4.0    # usually stricter than ml_score.score_threshold -- log at a lower bar than you block at
 #     block_duration_seconds: 300   # strictly time-bounded; no manual early unblock -- see README.md "Auto-block"
+# taint:
+#   untrusted_sources:            # tool names whose invocation taints the calling session
+#     - web_fetch
+#     - http_get
+#   declassify_sources:           # tool names that explicitly clear taint (e.g. an audited human-approval step)
+#     - human_approve
+#   ttl_seconds: 300               # optional — how long a taint label lasts; defaults to 300
+#   session_window_seconds: 300    # optional — fallback session width when no session_header is sent; defaults to 300
+#   session_header: "X-Wardline-Session"   # optional — defaults to "X-Wardline-Session"
+# approval:
+#   grant_ttl_seconds: 300         # optional — how long an approval's single-use grant stays valid; defaults to 300
 # federation:
 #   instance_id: "eu-cluster-1"
 #   # optional, defaults to os.Hostname() — set to something unique when
