@@ -93,6 +93,14 @@ type Context struct {
 	// A rule with Method == "" is treated as "tools/call" when matching
 	// against this field — see Rule.Method.
 	Method string
+
+	// Tainted reports whether the calling identity's session currently
+	// carries an integrity taint (it read from an untrusted source within
+	// the taint TTL). Populated only when the taint_tracking feature is on;
+	// always false otherwise, so a policy referencing input.tainted behaves
+	// identically to before when the feature is off. Engine-neutral: exposed
+	// to Rego as input.tainted today, readable by other engines later.
+	Tainted bool
 }
 
 // Engine evaluates whether a Context's identity may make its tool call.

@@ -346,3 +346,48 @@ func TestLoadRegoFile_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+const taintGatedWriteSource = `package wardline.authz
+
+default allow = false
+
+# A tainted session may not perform a write-shaped call.
+is_write {
+	input.method == "tools/call"
+}
+
+deny_tainted_write {
+	input.tainted
+	is_write
+}
+
+allow {
+	input.identity == "agent-abc123"
+	not deny_tainted_write
+}
+`
+
+// TestOPAEngine_TaintGatesWrite proves input.tainted reaches Rego and can gate
+// a write: an untainted write is allowed, the same write from a tainted
+// session is denied, and a tainted *read* (non tools/call) is still allowed.
+func TestOPAEngine_TaintGatesWrite(t *testing.T) {
+	e, err := opa.NewOPAEngine("policy.rego", []byte(taintGatedWriteSource))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	untaintedWrite := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file", Method: "tools/call", Tainted: false})
+	if untaintedWrite.Effect != domain.EffectAllow {
+		t.Errorf("expected an untainted write to be allowed, got %q (reason: %q)", untaintedWrite.Effect, untaintedWrite.Reason)
+	}
+
+	taintedWrite := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "delete_file", Method: "tools/call", Tainted: true})
+	if taintedWrite.Effect != domain.EffectDeny {
+		t.Errorf("expected a tainted write to be denied, got %q", taintedWrite.Effect)
+	}
+
+	taintedRead := e.Evaluate(domain.Context{Identity: "agent-abc123", Tool: "read_file", Method: "resources/read", Tainted: true})
+	if taintedRead.Effect != domain.EffectAllow {
+		t.Errorf("expected a tainted read to remain allowed, got %q", taintedRead.Effect)
+	}
+}
