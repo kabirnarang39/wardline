@@ -84,6 +84,90 @@ gives this feature's `GET /dashboard/api/anomalies` a live view in the
 UI — see [Observability](/deployment/observability/)'s "Live dashboard"
 section.
 
+## Recall benchmark
+
+The false-positive claim above is regression-guarded by
+`TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic`. The numbers
+below go further: real recall, per attack shape and severity, against
+the *shipped example config* from this page (`ml_score` threshold 3.0,
+`auto_block` threshold 8.0), measured against the actual `Detector` and
+`BlockChecker` code — not a mockup. Reproduce with:
+
+```bash
+go test ./internal/features/anomaly/usecase/ -run TestRecallBenchmark -v
+```
+
+Every scenario warms a fresh identity for 20 windows (~30 calls/window,
+±20% jitter) before the attack traffic, then reads real block/anomaly
+state off the real detector. Source: `recall_benchmark_test.go`.
+
+**Abrupt spike** — single-window spike at N× a ~30 calls/window baseline, 20 independent trials per multiple:
+
+| Spike | Recall |
+|---|---|
+| 1.5× | 0% |
+| 2× | 0% |
+| 3× | 100% |
+| 5× | 100% |
+| 10× | 100% |
+| 20× | 100% |
+
+Detection is a step function, not graduated: nothing below 3× the
+identity's own baseline blocks, and everything at or above it does, for
+this config. An attacker who knows (or guesses) that shape can stay just
+under 3× and never trip `auto_block` on a single spike — the mechanism
+this "Known limitations" section's next entry describes.
+
+**Low-and-slow** — ramp rate = +N calls/window from the same baseline, up to a 150-window ceiling:
+
+| Ramp | Result |
+|---|---|
+| +1/window | never blocked (150 windows, reached 6.0× baseline) |
+| +2/window | never blocked (150 windows, reached 11.0× baseline) |
+| +3/window | never blocked (150 windows, reached 16.0× baseline) |
+| +5/window | blocked at window 9 (2.7× baseline) |
+| +10/window | blocked at window 4 (2.7× baseline) |
+
+The blind spot has a real, measured edge, not just a qualitative
+"exists": a ramp of +3 calls/window or slower evaded detection entirely
+through 150 windows and 16× the original call rate in this run. A ramp
+of +5/window or faster is, in practice, closer to an abrupt spike than a
+patient evasion — it gets caught almost as fast as one.
+
+**Deny-rate spike** — single-window deny ratio, 20 trials per rate. `deny_rate_spike` (always logs, never blocks on its own) vs. `ml_score`/`auto_block`:
+
+| Deny ratio | Flagged | Auto-blocked |
+|---|---|---|
+| 20% | 20/20 | 0/20 |
+| 40% | 20/20 | 12/20 |
+| 60% | 20/20 | 11/20 |
+| 80% | 20/20 | 8/20 |
+| 100% | 20/20 | 13/20 |
+
+`deny_rate_spike` fires reliably at every tested ratio, matching its
+design (no window-completion gate). Auto-block recall is real but
+noisier and non-monotonic across ratios — it depends on `ml_score`'s
+deny-ratio feature and its own volume-decline gate, not the raw ratio
+alone, so a spike gets logged well before (and independently of)
+whether it also crosses the stricter block threshold.
+
+**Novel-tool enumeration** — single-window burst of brand-new distinct tools, 20 trials per size:
+
+| Burst | Recall |
+|---|---|
+| 2 | 0% |
+| 5 | 0% |
+| 10 | 0% |
+| 20 | 0% |
+| 40 | 100% |
+
+**False-positive rate** — 20 independent identities/seeds, 300 windows each (6,000 windows total) of steady ~30 calls/window traffic with ±20% jitter, post-warmup: **0/6,000 flagged (0.00%)**, matching the single-seed regression test above at 20× the sample size.
+
+This is one synthetic corpus against the shipped example config, not an
+independent red-team evaluation — see "Known limitations" below for what
+it doesn't cover (most importantly, low-and-slow, which this benchmark
+quantifies rather than closes).
+
 ## Known limitations
 
 - **Low-and-slow evasion.** Because the baseline is self-learned per
