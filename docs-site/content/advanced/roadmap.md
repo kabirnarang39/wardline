@@ -209,6 +209,45 @@ policy-pack marketplace, HA deployment.
   default) and applies the same fallback taint tracking uses — working
   independently of `taint_tracking` being on.
 
+## v2.3 (shipped)
+
+- **Drift detection (CUSUM)** — a one-sided CUSUM control chart over
+  `call_rate` and `tool_diversity`, closing most of `ml_score`'s
+  documented low-and-slow blind spot (a per-window z-score test is
+  provably strong against abrupt shifts and provably weak against small
+  sustained ones — CUSUM is the standard statistical-process-control
+  technique for exactly that gap). Requires `ml_score.enabled` (reuses
+  its baseline rather than duplicating it). Real, measured recall
+  numbers — not a claim — in [Anomaly Detection](/features/anomaly-detection/)'s
+  "Recall benchmark" section. Optional `h_jitter_fraction` moving-target
+  defense (HMAC-secret-keyed per identity) raises, but does not
+  eliminate, the cost of an attack calibrated to the public default
+  threshold — see that page's "Adversarial scenarios" for the honest
+  numbers on both.
+- **Tenant-aggregate anomaly detection** — a new heuristic baselining
+  the sum of every identity's call volume within a tenant, closing the
+  gap no per-identity heuristic (including drift_detection) can close
+  by construction: many identities each individually staying under
+  their own threshold. Detection-only (logs, never auto-blocks — there
+  is no single identity to block for a tenant-level signal). HA-safe
+  with `features.postgres_storage` on — window totals merge atomically
+  across replicas, verified against a real Postgres instance with two
+  real detectors each seeing only half a coordinated spike. See
+  [Anomaly Detection](/features/anomaly-detection/)'s "Adversarial
+  scenarios".
+- **Identity-churn detection** — a new heuristic baselining the count
+  of never-before-seen identities appearing in a tenant per window,
+  closing the gap no per-identity mechanism can close by construction
+  (including `drift_detection`'s own `h_jitter_fraction`): an attacker
+  minting disposable identities to re-roll for a favorable per-identity
+  jitter draw, discarding whichever gets caught. Detection-only, same
+  "no single identity to block" reasoning as tenant-aggregate detection.
+  Measured directly: 30 throwaway identities in one window, 0/30
+  individually caught by any per-identity heuristic, flagged by this
+  one. In-memory only this cycle — see [Anomaly
+  Detection](/features/anomaly-detection/)'s "Adversarial scenarios" and
+  "Known limitations".
+
 ## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future

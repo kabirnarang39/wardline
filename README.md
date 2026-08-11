@@ -49,8 +49,8 @@ Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concep
 
 ## Key Features
 
-- **Real-time anomaly auto-block**<br>
-  Four self-baselining heuristics (rate spike, novel tool, deny-rate spike, and a combined `ml_score` z-score via Welford's algorithm — no training data, no external model) that don't just alert: `auto_block` *rejects* a flagged identity's calls for a bounded TTL. Enforcement, not a log line.
+- **Real-time anomaly auto-block, abrupt *and* sustained**<br>
+  Seven self-baselining heuristics — rate spike, novel tool, deny-rate spike, a combined `ml_score` z-score, a CUSUM `drift_detection` control chart, cross-identity `tenant_anomaly` aggregation, and `identity_churn` (a burst of never-before-seen identities in one tenant) — all via Welford/CUSUM online statistics, no training data, no external model. `auto_block` *rejects* a flagged identity's calls for a bounded TTL, not a log line. `drift_detection` specifically closes the low-and-slow gap a per-window z-score test can't: the standard statistical-process-control technique (Montgomery's CUSUM, the "de facto workhorse" of sequential intrusion detection) for a slow, sustained ramp no single window looks anomalous on its own. `identity_churn` closes the gap `drift_detection`'s own `h_jitter_fraction` moving-target defense can't by construction: an attacker minting disposable identities to re-roll for a favorable per-identity jitter draw — measured directly, 0/30 throwaway identities individually caught by any per-identity heuristic, `identity_churn` flagged the burst. Real, measured recall numbers (not a marketing claim) in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark), including the honest residuals (a real, quantified mimicry ceiling, and identity_churn's own current in-memory-only scope) in [adversarial scenarios](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#adversarial-scenarios).
 
 - **Three policy backends, one binary**<br>
   Static YAML, embedded OPA/Rego, and embedded AWS Cedar — switched by a single `policy_backend` config key, with no external process and no network hop.
@@ -92,6 +92,8 @@ curl -X POST http://localhost:8080 \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}'
 ```
 
+`X-Wardline-Identity` is a plain, unauthenticated header here — anyone who can reach the proxy can claim to be any identity. That's fine for this local, no-upstream smoke test; it is **not** fine for anything reachable by someone else. Before pointing this at a real upstream, turn on `credential_issuance` (verified RS256 bearer tokens replace the spoofable header) and `rbac` — see [Hardening](#hardening) below.
+
 Prebuilt binaries (linux/darwin/windows · amd64/arm64) and multi-arch images ship on every `v*` tag via [Releases](https://github.com/kabirnarang39/wardline/releases) and [GHCR](https://github.com/kabirnarang39/wardline/pkgs/container/wardline).
 
 ## Documentation
@@ -131,7 +133,7 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 
 ## Performance
 
-Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%).
+Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. `BenchmarkDetector_Publish` (same machine): **~255 ns/op** with the four original heuristics, **~299 ns/op** (+17%) with `drift_detection` (K/H jitter included), `tenant_anomaly`, and `identity_churn` all on — the full seven-heuristic stack still costs under 300ns per call, 5 allocations either way (`identity_churn` only runs its own logic on a genuine first sighting, near-zero marginal cost at steady-state identity cardinality). Verified race-free under real concurrent load, not just sequentially: `TestConcurrencyStress_ProductionLikeMultiTenantTraffic` runs 205 goroutines (5 tenants × 40 identities + 5 concurrent attackers) against one shared `Detector` under `go test -race`, no data race. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%) and broadened to 0/6,000 windows across 20 seeds — unchanged with `drift_detection`, `tenant_anomaly`, and `identity_churn` also on — plus a real per-attack-shape recall curve (abrupt spike, low-and-slow, deny-rate spike, novel-tool enumeration) and an adversarial battery (distributed sybil, mimicry ceiling, burst-pause duty cycling, disposable-identity rotation) in the [anomaly detection recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
 
 ## Security
 
@@ -147,7 +149,7 @@ features:
   rbac: true                  # gate the dashboard and admin actions on real permissions
 ```
 
-With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. Anomaly detection catches *abrupt* abuse but not *low-and-slow* ramps (see [its known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/)), so keep explicit policy + budget limits as the hard floor.
+With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. `ml_score`/`auto_block` alone catch *abrupt* abuse but not *low-and-slow* ramps; `drift_detection` (a CUSUM control chart, on by default in the shipped example config) closes most of that gap — real, measured numbers, not a claim, in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark) — but a real residual (a ~1.15x sustained-forever ceiling for an attacker who's read the public thresholds) remains, see [known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#known-limitations). Keep explicit policy + budget limits as the hard floor regardless.
 
 ## Project status
 

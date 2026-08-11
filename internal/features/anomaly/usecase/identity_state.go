@@ -76,4 +76,18 @@ type identityState struct {
 	lastSeen          time.Time
 	mlStats           mlFeatureState
 	lastCallAt        time.Time
+
+	// driftCUSUM is drift_detection's running one-sided CUSUM
+	// accumulator over call_rate's standardized per-window deviation --
+	// persistent across windows (unlike windowCounts), reset to 0 on any
+	// below-allowance window and after every alarm (see checkDrift's doc
+	// comment). Zero value is exactly a fresh CUSUM's own starting state,
+	// so no separate "has this identity ever been scored" tracking is
+	// needed the way mlStats.rate.count already provides for onlineStat.
+	driftCUSUM float64
+	// driftDiversityCUSUM is checkDrift's second, independent CUSUM
+	// accumulator over tool_diversity -- same mechanics as driftCUSUM,
+	// separate state because the two features' baselines (and thus
+	// their z values) are unrelated (see checkDrift's doc comment).
+	driftDiversityCUSUM float64
 }

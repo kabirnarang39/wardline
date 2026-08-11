@@ -39,6 +39,28 @@ type baselineStore interface {
 	SaveAll(snapshots map[string]IdentityStateSnapshot, deletedKeys []string) error
 }
 
+// tenantWindowStore is the narrow interface PostgresTenantWindowStore
+// satisfies -- an atomic add-and-read for one tenant's current window
+// total, genuinely shared across replicas. nil-able: when nil,
+// checkTenantDrift scores only this replica's own local total (today's
+// behavior, unchanged).
+type tenantWindowStore interface {
+	AddAndGet(tenantName string, windowStart time.Time, delta int) (int, error)
+}
+
+// tenantBaselineStoreIface is the narrow interface
+// PostgresTenantBaselineStore satisfies -- per-instance restart
+// persistence for tenant baselines, deliberately NOT the same sharing
+// model as tenantWindowStore: every replica converges to the same
+// baseline by folding the same cross-replica-*merged* total (see
+// checkTenantDrift), not by reading each other's baseline rows. Named
+// with an Iface suffix only to avoid colliding with the
+// tenantBaselineStore field name Detector needs below.
+type tenantBaselineStoreIface interface {
+	LoadAll() (map[string]OnlineStatSnapshot, error)
+	SaveAll(baselines map[string]OnlineStatSnapshot) error
+}
+
 // Detector implements audit/domain.LiveSink: every published audit entry
 // is run through all enabled heuristics. Publish must never block or
 // error outward -- the same contract every other LiveSink already
@@ -60,6 +82,25 @@ type Detector struct {
 	// share a baseline. Every read, write, and iteration of this map
 	// must go through tenantIdentityKey.
 	state map[string]*identityState
+
+	// tenantState is TenantAnomaly's aggregate-per-tenant baseline --
+	// keyed by tenant alone (never composed via tenantIdentityKey; there
+	// is no identity component), lazily initialized on first use. See
+	// checkTenantDrift/tenant_detector.go.
+	tenantState map[string]*tenantWindowState
+
+	// churnState is IdentityChurn's aggregate-per-tenant new-identity-
+	// count baseline -- deliberately its own map, not folded into
+	// tenantState (see churnWindowState's own doc comment for why).
+	// Lazily initialized on first use. See
+	// checkIdentityChurn/identity_churn_detector.go.
+	churnState map[string]*churnWindowState
+
+	// tenantWindowStorePg/tenantBaselineStorePg are nil-able -- see
+	// their interface types' doc comments for what each does and does
+	// NOT share across replicas.
+	tenantWindowStorePg   tenantWindowStore
+	tenantBaselineStorePg tenantBaselineStoreIface
 }
 
 func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore) *Detector {
@@ -94,6 +135,49 @@ func (d *Detector) LoadBaselines() error {
 	defer d.mu.Unlock()
 	for key, snap := range snapshots {
 		d.state[key] = snap.toIdentityState()
+	}
+	return nil
+}
+
+// NewDetectorWithTenantStores is NewDetector plus the two optional
+// Postgres-backed tenant_anomaly stores (see their interface types'
+// doc comments above). NewDetector itself stays untouched -- every
+// existing call site (production and test) that doesn't need
+// HA-shared tenant state keeps working exactly as before; only
+// main.go's postgres_storage + tenant_anomaly.enabled branch needs
+// this one.
+func NewDetectorWithTenantStores(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore, tenantWindows tenantWindowStore, tenantBaselines tenantBaselineStoreIface) *Detector {
+	d := NewDetector(cfg, writer, buffer, blocker, onError, now, store)
+	d.tenantWindowStorePg = tenantWindows
+	d.tenantBaselineStorePg = tenantBaselines
+	return d
+}
+
+// LoadTenantBaselines populates each tenant's rateStat from
+// tenantBaselineStorePg, if any -- a no-op returning nil when nil.
+// Mirrors LoadBaselines' exact calling convention: called once,
+// synchronously, by the composition root immediately after
+// NewDetectorWithTenantStores and before StartGC begins.
+func (d *Detector) LoadTenantBaselines() error {
+	if d.tenantBaselineStorePg == nil {
+		return nil
+	}
+	snapshots, err := d.tenantBaselineStorePg.LoadAll()
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.tenantState == nil {
+		d.tenantState = make(map[string]*tenantWindowState)
+	}
+	for tenantName, snap := range snapshots {
+		ts, ok := d.tenantState[tenantName]
+		if !ok {
+			ts = &tenantWindowState{}
+			d.tenantState[tenantName] = ts
+		}
+		ts.rateStat = onlineStat{mean: snap.Mean, m2: snap.M2, count: snap.Count}
 	}
 	return nil
 }
@@ -161,6 +245,12 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	now := d.now()
 	key := tenantIdentityKey(e.Tenant, e.Identity)
 	st, ok := d.state[key]
+	// isNewIdentity must be read from the same lookup recordAndCheck
+	// already does above -- a second, later check against d.state would
+	// always see !ok == false (this call's own st = &identityState{...}
+	// just below made it exist), so "new" has to be captured here, at
+	// this exact point, or it can never be true again.
+	isNewIdentity := !ok
 	if !ok {
 		st = &identityState{tools: make(map[string]struct{}), windowStart: now}
 		d.state[key] = st
@@ -221,8 +311,38 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	// st.mlStats -- once per call in the *following* window, silently
 	// over-weighting whichever window happens to contain the most calls.
 	if d.cfg.MLScore.Enabled && windowJustCompleted {
+		// checkDrift runs before checkMLScore, not after: it reads
+		// mlStats.rate's baseline via zCount exactly as checkMLScore's own
+		// zRate does, and checkMLScore conditionally folds this window's
+		// rate into that same baseline at the end of its own body. Calling
+		// checkDrift first guarantees it always sees the pre-fold
+		// baseline -- the same one zRate is computed against -- rather
+		// than one that (whenever this window wasn't itself flagged by
+		// ml_score) already includes this window's own value.
+		if d.cfg.Drift.Enabled {
+			toEmit = append(toEmit, d.checkDrift(e, st)...)
+		}
 		if a, ok := d.checkMLScore(e, st); ok {
 			toEmit = append(toEmit, a)
+		}
+	}
+
+	// Tenant-aggregate detection runs on its own, tenant-scoped window
+	// boundary -- independent of windowJustCompleted above, which is
+	// this entry's *identity's* window. See checkTenantDrift's doc
+	// comment.
+	if d.cfg.TenantAnomaly.Enabled {
+		if a := d.checkTenantDrift(e); a != nil {
+			toEmit = append(toEmit, *a)
+		}
+	}
+	// Same "own tenant-scoped window, independent of any identity's
+	// window" reasoning as tenant_anomaly above -- but only accumulated
+	// on a genuine first sighting, never every call, since the whole
+	// signal is "how many NEW identities," not "how much traffic."
+	if d.cfg.IdentityChurn.Enabled && isNewIdentity {
+		if a := d.checkIdentityChurn(e.Tenant, now); a != nil {
+			toEmit = append(toEmit, *a)
 		}
 	}
 	return toEmit
@@ -359,6 +479,91 @@ func zCount(s *onlineStat, x float64) float64 {
 // (8) is unchanged from round 11's choice -- only its identity as an
 // independent constant is new.
 const denyRatioContinuityWeight = 8
+
+// checkDrift must be called with d.mu held, only once per completed
+// window (see checkMLScore's own doc comment for why windowJustCompleted
+// gating matters), and before checkMLScore in the same call (see
+// recordAndCheck) so it reads mlStats.rate's baseline pre-fold. Requires
+// MLScore.Enabled -- see DriftConfig's doc comment for why.
+//
+// Implements a one-sided CUSUM (cumulative sum) control chart over
+// call_rate: the standard, decades-proven statistical-process-control
+// technique for exactly the gap a per-window z-score test like
+// ml_score's own zRate cannot close (see DriftConfig's doc comment,
+// docs/features/anomaly-detection.md's "Known limitations" and "Recall
+// benchmark" sections, and TestDetector_AutoBlock_LowAndSlowEvades).
+//
+//	S_t = max(0, S_{t-1} + z_t - K); alarms when S_t > H
+//
+// z_t is this window's call_rate deviation, scored through the exact
+// same zCount helper (and the exact same mlStats.rate baseline) zRate
+// already uses in checkMLScore -- one shared baseline, not a duplicated
+// one. The accumulator (identityState.driftCUSUM) resets to 0 both when
+// it would go negative (a below-allowance window shouldn't bank
+// "credit" that cancels out a future gradual rise, it should simply
+// stop accumulating) and after every alarm (standard post-alarm CUSUM
+// reset: monitoring restarts for the next drift rather than staying
+// pinned at an ever-growing value for as long as a sustained shift
+// continues).
+func (d *Detector) checkDrift(e auditdomain.Entry, st *identityState) []domain.Anomaly {
+	if st.prev.total < d.cfg.Drift.MinCalls {
+		return nil
+	}
+	h := driftEffectiveH(e.Identity, d.cfg.Drift)
+
+	var anomalies []domain.Anomaly
+	if a, ok := d.checkDriftFeature(e, "call_rate", &st.driftCUSUM,
+		zCount(&st.mlStats.rate, float64(st.prev.total)), h); ok {
+		anomalies = append(anomalies, a)
+	}
+	// tool_diversity's CUSUM closes the slow-novel-tool-drip gap
+	// TestAdversarialBenchmark_SlowNovelToolDrip measures: novel_tool
+	// logs every first-ever sighting unconditionally, but ml_score's own
+	// tool_diversity feature only escalates from a burst within one
+	// window (see the novel-tool-enumeration recall table) -- a drip of
+	// one new tool per window never moves any single window's count far
+	// enough. The same small-persistent-deviation shape CUSUM already
+	// closes for call_rate applies identically here: it doesn't matter
+	// which feature z_t comes from, only that it's standardized.
+	if a, ok := d.checkDriftFeature(e, "tool_diversity", &st.driftDiversityCUSUM,
+		zCount(&st.mlStats.diversity, float64(len(st.prev.uniqueTools))), h); ok {
+		anomalies = append(anomalies, a)
+	}
+	return anomalies
+}
+
+// checkDriftFeature runs one feature's CUSUM update/alarm/reset cycle --
+// factored out of checkDrift so call_rate and tool_diversity (identical
+// mechanics, different accumulator and z) can't drift apart. cusum is a
+// pointer into the caller's own persistent accumulator field.
+func (d *Detector) checkDriftFeature(e auditdomain.Entry, feature string, cusum *float64, z, h float64) (domain.Anomaly, bool) {
+	*cusum = math.Max(0, *cusum+z-d.cfg.Drift.K)
+	if *cusum <= h {
+		return domain.Anomaly{}, false
+	}
+	fired := *cusum
+	*cusum = 0 // post-alarm reset -- see checkDrift's doc comment
+
+	var autoBlockSeconds int
+	if d.cfg.AutoBlock.Enabled && d.blocker != nil {
+		d.blocker.Block(e.Identity, e.Tenant, fmt.Sprintf(
+			"drift_detection cusum %.2f exceeded decision threshold %.2f over a sustained rise in %s",
+			fired, h, feature))
+		autoBlockSeconds = d.cfg.AutoBlock.BlockDurationSeconds
+	}
+	return domain.Anomaly{
+		Timestamp: d.now(),
+		Identity:  e.Identity,
+		Tenant:    e.Tenant,
+		Kind:      domain.KindDrift,
+		Detail: fmt.Sprintf(
+			"cumulative sustained rise in %s (cusum %.2f) exceeded decision threshold %.2f",
+			feature, fired, h),
+		Entry:            e,
+		Score:            &fired,
+		AutoBlockSeconds: autoBlockSeconds,
+	}, true
+}
 
 // checkMLScore must be called with d.mu held, and only once per completed
 // window -- the caller (recordAndCheck) enforces this by gating the call
@@ -640,15 +845,18 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // in a quiet window, is not one.
 //
 // The two use *different* volume gates, because they have different
-// denominators. inter_arrival_time is gated on zRate >= 0: its delta count is
-// total-1 within a window, the same quantity zRate measures, so a decline in
-// zRate is a valid proxy for "this window's inter-arrival sample shrank."
-// deny_ratio is gated on zToolCalls >= 0 -- its own denominator is toolCalls,
+// denominators. inter_arrival_time is gated on zRate >= 0:
+// its delta count is total-1 within a window, the same quantity zRate
+// measures, so a decline in zRate is a valid proxy for "this window's
+// inter-arrival sample shrank." deny_ratio is gated on
+// zToolCalls >= 0 -- its own denominator is toolCalls,
 // not total (round 9: zRate can hold steady or rise via protocol passthrough
 // or tool-less error traffic while toolCalls itself collapses, which
 // re-opened the exact ratio-volume-decline artifact round 7's zRate-based
 // gate was built to close, since padding total satisfies that gate without
-// protecting the denominator it actually needs to protect).
+// protecting the denominator it actually needs to protect). See
+// volumeDeclineMargin's own doc comment for why both gates compare against
+// a small negative margin, not a bare zero.
 //
 // The trade-off in both cases: a genuine attack at conspicuously low volume
 // no longer auto-blocks either -- still logged via the unaffected two-sided
@@ -659,18 +867,53 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // The result is floored at 0: if every feature moved in the benign
 // direction, there is no case for blocking at all, not a large negative
 // "score."
+// volumeDeclineMargin is how far below zero zToolCalls/zRate must fall
+// before the volume-decline gates in maxHarmfulZ below treat that as
+// real evidence of a decline, rather than a bare "which side of zero"
+// sign check.
+//
+// A bare `>= 0` gate on a z-score is a hard cutoff with no hysteresis:
+// when the gated feature's true value sits within its own baseline's
+// noise band of the mean -- exactly the case for an attack that doesn't
+// itself change call volume, e.g. a deny-rate spike at an unchanged
+// call count -- its z-score's SIGN is effectively a coin flip driven by
+// which way that noise happened to land, not by anything about the
+// attack. Direct instrumentation of TestRecallBenchmark_DenyRateSpike
+// confirmed exactly this: a severe, correctly-scored deny_ratio
+// candidate (blockScore z=9.57, far past the shipped example's 8.0
+// auto_block threshold) was excluded from blockScore whenever
+// zToolCalls's noise-driven sign happened to be negative, and admitted
+// whenever it happened to be positive -- identical attack severity,
+// coin-flip outcome, purely from an unrelated feature's sampling noise
+// (the benchmark's own "40% deny ratio: 12/20 auto-blocked" result was
+// this coin flip, not a real signal about deny-rate severity).
+//
+// A one-sigma margin is the standard fix for a gate that flaps under
+// noise right at its own crossing point (hysteresis): require the
+// gated feature to be at least this many standard deviations below its
+// baseline before treating it as evidence of an actual decline, rather
+// than treating any negative point estimate as one. 1.0 is deliberately
+// modest -- this gate exists to protect against a genuine volume-decline
+// artifact inflating deny_ratio/inter_arrival_time (see checkMLScore's
+// own comment on why those two need this gate at all), not to make the
+// gate hard to trip: a real decline clears 1 sigma quickly, while noise
+// within 1 sigma of the mean -- exactly zToolCalls/zRate's own
+// definition of "ordinary" -- no longer silently vetoes a real, severe
+// anomaly on a different feature.
+const volumeDeclineMargin = 1.0
+
 func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival float64) (float64, string) {
 	best := zRate
 	feature := "call_rate"
 	if v := zDiversity; v > best {
 		best, feature = v, "tool_diversity"
 	}
-	if zToolCalls >= 0 {
+	if zToolCalls >= -volumeDeclineMargin {
 		if v := zDenyBlock; v > best {
 			best, feature = v, "deny_ratio"
 		}
 	}
-	if zRate >= 0 {
+	if zRate >= -volumeDeclineMargin {
 		if v := -zInterArrival; v > best {
 			best, feature = v, "inter_arrival_time"
 		}

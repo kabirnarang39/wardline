@@ -31,9 +31,19 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
   the same pattern as credential revocation above. Without it the
   limiter is in-process and the effective budget scales with replica
   count. See [Budget Enforcement](/features/budget-enforcement/).
-- Anomaly-detection state stays per-replica — an already-documented
-  limitation, not fixed by this cycle (anomaly signal is diluted across
-  replicas).
+- Anomaly-detection state is mostly HA-safe when `postgres_storage` is
+  also on: `auto_block` decisions are shared across the fleet (a block
+  written by one replica is honored by every other replica), per-identity
+  baselines persist across restarts (though per-instance, not merged —
+  each replica keeps learning from the traffic it itself sees), and
+  `tenant_anomaly`'s aggregate window totals merge atomically across
+  replicas, so a coordinated spike split across the fleet by the load
+  balancer is still caught. What's still per-replica-only: per-identity
+  baselines aren't pooled into one fleet-wide baseline (only persisted),
+  and `drift_detection`'s CUSUM accumulators follow that same
+  per-instance-persisted-not-merged shape. See [Anomaly
+  Detection](/features/anomaly-detection/)'s own limitations section for
+  the exact per-mechanism breakdown.
 - The dashboard's live audit view stays per-replica — no cluster-wide
   aggregation yet.
 - No automatic session/sticky-affinity load balancing is recommended as

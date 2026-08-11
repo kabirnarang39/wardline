@@ -14,6 +14,9 @@ const (
 	KindNovelTool     Kind = "novel_tool"
 	KindDenyRateSpike Kind = "deny_rate_spike"
 	KindMLScore       Kind = "ml_score"
+	KindDrift         Kind = "drift_detection"
+	KindTenantDrift   Kind = "tenant_aggregate_spike"
+	KindIdentityChurn Kind = "identity_churn"
 )
 
 // Anomaly is one flagged behavioral signal: an identity did something
