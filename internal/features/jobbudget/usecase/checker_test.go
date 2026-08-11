@@ -101,3 +101,24 @@ func TestChecker_IsOverBudgetFlagOffAlwaysFalse(t *testing.T) {
 	c := usecase.NewChecker(f, newFakeMeter(), domain.Config{RequestsPerJob: 1})
 	assert.False(t, c.IsOverBudget("acme", "alice", "sess-1", time.Now()))
 }
+
+// TestChecker_NoSessionHeaderFallsBackToTTLWindow proves a job with no
+// explicit session (the empty string a missing X-Wardline-Session header
+// produces) still shares one ceiling across calls within the same
+// session-window bucket -- the same TTL-fallback platformsession.SessionID
+// gives taint tracking, now applied here too. Without this, every
+// no-header call would key off a literal "" session and never roll over.
+func TestChecker_NoSessionHeaderFallsBackToTTLWindow(t *testing.T) {
+	f := flags.NewStaticProvider(map[string]bool{"job_budget": true})
+	c := usecase.NewChecker(f, newFakeMeter(), domain.Config{RequestsPerJob: 2, SessionWindowSeconds: 300})
+	base := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+	c.Check("acme", "alice", "", base)
+	v := c.Check("acme", "alice", "", base.Add(100*time.Second)) // same window
+	assert.Equal(t, 2, v.Count)
+
+	// Next window bucket -- a fresh ceiling, same as taint's own rollover.
+	v = c.Check("acme", "alice", "", base.Add(400*time.Second))
+	assert.True(t, v.Allowed)
+	assert.Equal(t, 1, v.Count)
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
@@ -15,7 +16,10 @@ const jobBudgetFeatureFlag = "job_budget"
 // jobKey composes (tenant, identity, session) into one unambiguous key —
 // the same length-prefixed anti-spoofing composition taint.taintKey and
 // approval.grantKey use, so two tenants' identically-named identities or
-// sessions never share a job ceiling.
+// sessions never share a job ceiling. session is expected to already be
+// resolved (explicit header value, or the TTL-window fallback bucket) —
+// see Check/IsOverBudget, which apply platformsession.SessionID before
+// calling this.
 func jobKey(tenantName, identity, session string) string {
 	base := tenant.Key(tenantName, identity)
 	return strconv.Itoa(len(base)) + ":" + base + session
@@ -37,6 +41,7 @@ func (c *Checker) Check(tenantName, identity, session string, now time.Time) dom
 	if !c.flags.Enabled(jobBudgetFeatureFlag) {
 		return domain.Verdict{Allowed: true, Reason: "job budget disabled"}
 	}
+	session = platformsession.SessionID(session, tenantName, identity, now, c.cfg.Window())
 	count, err := c.meter.Increment(jobKey(tenantName, identity, session), now)
 	if err != nil {
 		// Availability over enforcement on a genuine backend error — same
@@ -64,6 +69,7 @@ func (c *Checker) IsOverBudget(tenantName, identity, session string, now time.Ti
 	if !c.flags.Enabled(jobBudgetFeatureFlag) {
 		return false
 	}
+	session = platformsession.SessionID(session, tenantName, identity, now, c.cfg.Window())
 	count, err := c.meter.Current(jobKey(tenantName, identity, session), now)
 	if err != nil {
 		return false

@@ -1749,6 +1749,53 @@ audit:
 	}
 }
 
+func TestLoad_JobCostBudgetBlockParses(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+features:
+  job_cost_budget: true
+job_cost_budget:
+  ceiling: 500
+  tool_costs:
+    llm_call: 50
+  default_cost: 2
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JobCostBudget.Ceiling != 500 {
+		t.Errorf("unexpected ceiling: %+v", cfg.JobCostBudget)
+	}
+	if cfg.JobCostBudget.ToolCosts["llm_call"] != 50 {
+		t.Errorf("unexpected tool_costs: %+v", cfg.JobCostBudget.ToolCosts)
+	}
+	if cfg.JobCostBudget.DefaultCost != 2 {
+		t.Errorf("unexpected default_cost: %+v", cfg.JobCostBudget)
+	}
+}
+
+func TestLoad_JobCostBudgetBlockAbsentIsZeroValue(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9000"
+policy_file: "./policy.yaml"
+audit:
+  output: stdout
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JobCostBudget.Ceiling != 0 || cfg.JobCostBudget.ToolCosts != nil {
+		t.Errorf("expected zero-value JobCostBudgetConfig, got %+v", cfg.JobCostBudget)
+	}
+}
+
 func TestLoad_AnomalyRetentionDaysOnStdoutRejected(t *testing.T) {
 	path := writeTemp(t, `
 listen: ":8080"

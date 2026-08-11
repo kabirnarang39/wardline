@@ -50,6 +50,24 @@ type ApprovalConfig struct {
 // job_budget feature flag is on.
 type JobBudgetConfig struct {
 	RequestsPerJob int `yaml:"requests_per_job"`
+
+	// SessionWindowSeconds is the fallback session-window width used when
+	// a call carries no X-Wardline-Session header -- mirrors taint's own
+	// session_window_seconds, own knob so job-budget's window stays
+	// configurable independently of taint_tracking being on.
+	SessionWindowSeconds int `yaml:"session_window_seconds"`
+}
+
+// JobCostBudgetConfig configures per-job cost budgets. Only meaningful when the
+// job_cost_budget feature flag is on.
+type JobCostBudgetConfig struct {
+	Ceiling     int            `yaml:"ceiling"`
+	ToolCosts   map[string]int `yaml:"tool_costs"`
+	DefaultCost int            `yaml:"default_cost"`
+
+	// SessionWindowSeconds mirrors JobBudgetConfig.SessionWindowSeconds
+	// exactly, own knob for cost-budget's own fallback window.
+	SessionWindowSeconds int `yaml:"session_window_seconds"`
 }
 
 // BudgetConfig configures the per-identity rate limiter. Only validated
@@ -336,22 +354,23 @@ type Config struct {
 	// the host's system root pool, server name from GRPCUpstream) instead
 	// of plaintext. Default false preserves the plaintext-to-mesh behavior;
 	// set true when Wardline talks directly to a TLS-terminating upstream.
-	GRPCUpstreamTLS bool             `yaml:"grpc_upstream_tls"`
-	PolicyBackend   string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
-	Audit           AuditConfig      `yaml:"audit"`
-	Budget          BudgetConfig     `yaml:"budget"`
-	Tracing         TracingConfig    `yaml:"tracing"`
-	Credential      CredentialConfig `yaml:"credential"`
-	RBAC            RBACConfig       `yaml:"rbac"`
-	Scim            ScimConfig       `yaml:"scim"`
-	Anomaly         AnomalyConfig    `yaml:"anomaly"`
-	Federation      FederationConfig `yaml:"federation"`
-	Compliance      ComplianceConfig `yaml:"compliance"`
-	Retention       RetentionConfig  `yaml:"retention"`
-	Taint           TaintConfig      `yaml:"taint"`
-	Approval        ApprovalConfig   `yaml:"approval"`
-	JobBudget       JobBudgetConfig  `yaml:"job_budget"`
-	Features        map[string]bool  `yaml:"features"`
+	GRPCUpstreamTLS bool                `yaml:"grpc_upstream_tls"`
+	PolicyBackend   string              `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
+	Audit           AuditConfig         `yaml:"audit"`
+	Budget          BudgetConfig        `yaml:"budget"`
+	Tracing         TracingConfig       `yaml:"tracing"`
+	Credential      CredentialConfig    `yaml:"credential"`
+	RBAC            RBACConfig          `yaml:"rbac"`
+	Scim            ScimConfig          `yaml:"scim"`
+	Anomaly         AnomalyConfig       `yaml:"anomaly"`
+	Federation      FederationConfig    `yaml:"federation"`
+	Compliance      ComplianceConfig    `yaml:"compliance"`
+	Retention       RetentionConfig     `yaml:"retention"`
+	Taint           TaintConfig         `yaml:"taint"`
+	Approval        ApprovalConfig      `yaml:"approval"`
+	JobBudget       JobBudgetConfig     `yaml:"job_budget"`
+	JobCostBudget   JobCostBudgetConfig `yaml:"job_cost_budget"`
+	Features        map[string]bool     `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
 	// requests normally after receiving SIGTERM/SIGINT before it begins

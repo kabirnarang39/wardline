@@ -27,6 +27,7 @@ import (
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
 	auditusecase "github.com/kabirnarang39/wardline/internal/features/audit/usecase"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
+	costbudgetdomain "github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
 	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	policydomain "github.com/kabirnarang39/wardline/internal/features/policy/domain"
 	policyusecase "github.com/kabirnarang39/wardline/internal/features/policy/usecase"
@@ -1257,7 +1258,7 @@ func TestHandler_NeedsApprovalEnqueuesReturns202(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"}, "", nil)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: false, pendingID: "pid-1"}, "", nil, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusAccepted {
@@ -1278,7 +1279,7 @@ func TestHandler_NeedsApprovalWithGrantForwards(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", nil)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", nil, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
 	if w.Code != http.StatusOK {
@@ -1323,7 +1324,7 @@ func TestHandler_SessionHeaderRecordedOnEntry(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "X-Wardline-Session", nil)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "X-Wardline-Session", nil, nil)
 
 	req := newRequest("agent-abc123", "delete_file")
 	req.Header.Set("X-Wardline-Session", "run-7")
@@ -1351,7 +1352,7 @@ func TestHandler_SessionHeaderRecordedOnBlockedEntry(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(panickingEngine{t: t})
 	autoBlock := fakeAutoBlockChecker{verdict: anomalydomain.BlockVerdict{Allowed: false, Reason: "blocked"}}
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, autoBlock, "", nil, "X-Wardline-Session", nil)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, autoBlock, "", nil, "X-Wardline-Session", nil, nil)
 
 	req := newRequest("agent-abc123", "delete_file")
 	req.Header.Set("X-Wardline-Session", "run-9")
@@ -1388,7 +1389,7 @@ func TestHandler_JobBudgetExceededReturns429WithDistinctDecision(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: false, Reason: "job budget ceiling 500 reached", Count: 501}}
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb, nil)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -1415,7 +1416,7 @@ func TestHandler_JobBudgetUnderCeilingForwards(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
 	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: true, Count: 3}}
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", jb, nil)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -1439,7 +1440,7 @@ func TestHandler_JobBudgetNilCheckerNoEffect(t *testing.T) {
 	writer := &fakeWriter{}
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil, nil)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
@@ -1468,7 +1469,7 @@ func TestHandler_ApprovedGrantOverridesJobBudgetHardGate(t *testing.T) {
 	recorder := auditusecase.NewRecorder(writer, nil, nil)
 	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
 	jb := stubJobBudgetChecker{verdict: jobbudgetdomain.Verdict{Allowed: false, Reason: "job budget ceiling 500 reached", Count: 501}}
-	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", jb)
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", jb, nil)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, newRequest("agent-abc123", "delete_file"))
@@ -1488,5 +1489,120 @@ func TestHandler_ApprovedGrantOverridesJobBudgetHardGate(t *testing.T) {
 	}
 	if !strings.Contains(reason, "job budget ceiling exceeded but call was pre-approved via grant") {
 		t.Fatalf("expected Reason to note the job-budget override, got %q", reason)
+	}
+}
+
+// stubCostBudgetChecker mirrors stubJobBudgetChecker's role for the
+// cost/token dimension -- Check gains a tool parameter since cost is
+// per-tool-priced (see costbudget/usecase.Checker.Check), unlike
+// jobbudget's flat per-call increment.
+type stubCostBudgetChecker struct{ verdict costbudgetdomain.Verdict }
+
+func (s stubCostBudgetChecker) Check(_, _, _, _ string, _ time.Time) costbudgetdomain.Verdict {
+	return s.verdict
+}
+
+// TestHandler_CostBudgetExceededReturns429WithDistinctDecision proves the
+// per-job cost ceiling hard gate returns 429 with its own
+// "cost_budget_exceeded" audit decision -- distinct from both "throttled"
+// and "job_budget_exceeded" -- and never reaches upstream.
+func TestHandler_CostBudgetExceededReturns429WithDistinctDecision(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { upstreamHit = true }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	cb := stubCostBudgetChecker{verdict: costbudgetdomain.Verdict{Allowed: false, Reason: "cost budget ceiling 1000 reached", Total: 1050}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil, cb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	if upstreamHit {
+		t.Fatal("upstream must not be hit once the cost budget ceiling is exceeded")
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "cost_budget_exceeded" {
+		t.Fatalf("expected one cost_budget_exceeded entry, got %+v", writer.entries)
+	}
+}
+
+// TestHandler_CostBudgetUnderCeilingForwards proves an allowed cost-budget
+// verdict does not block the call from reaching upstream.
+func TestHandler_CostBudgetUnderCeilingForwards(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	cb := stubCostBudgetChecker{verdict: costbudgetdomain.Verdict{Allowed: true, Total: 30}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil, cb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestHandler_CostBudgetNilCheckerNoEffect proves a nil CostBudgetChecker
+// (feature off) leaves behavior unchanged -- the established pattern for
+// every optional port on this Handler.
+func TestHandler_CostBudgetNilCheckerNoEffect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectAllow})
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", nil, "", nil, nil)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with cost budget unwired (feature off), got %d", w.Code)
+	}
+}
+
+// TestHandler_ApprovedGrantOverridesCostBudgetHardGate proves a call
+// admitted via a just-consumed approval grant (OutcomeNeedsApproval,
+// res.Approved) is forwarded even when the cost-budget checker's verdict
+// says the ceiling is exceeded -- mirrors
+// TestHandler_ApprovedGrantOverridesJobBudgetHardGate exactly, cost
+// dimension instead of job-budget, proving both hard gates read the same
+// admittedViaGrant flag rather than maintaining independent state that
+// could disagree.
+func TestHandler_ApprovedGrantOverridesCostBudgetHardGate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"result":"ok"}`)) }))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	writer := &fakeWriter{}
+	recorder := auditusecase.NewRecorder(writer, nil, nil)
+	decider := proxyusecase.NewDecider(fakeEngine{effect: policydomain.EffectNeedsApproval})
+	cb := stubCostBudgetChecker{verdict: costbudgetdomain.Verdict{Allowed: false, Reason: "cost budget ceiling 1000 reached", Total: 1050}}
+	handler := adapter.NewHandlerWithApproval(decider, recorder, upstreamURL, alwaysAllowBudgetChecker{}, noopTracer, adapter.HeaderIdentity{}, testLogger, nil, "", fakeApproval{approved: true}, "", nil, cb)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, newRequest("agent-abc123", "read_file"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a grant-admitted call even over the cost ceiling, got %d", w.Code)
+	}
+	if len(writer.entries) != 1 || writer.entries[0].Decision != "allow" {
+		t.Fatalf("expected one allow entry, got %+v", writer.entries)
+	}
+	if !strings.Contains(writer.entries[0].Reason, "pre-approved via grant") {
+		t.Errorf("expected the audit reason to note the cost-ceiling override, got %q", writer.entries[0].Reason)
 	}
 }

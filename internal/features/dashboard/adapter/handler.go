@@ -14,6 +14,7 @@ import (
 	approvaldomain "github.com/kabirnarang39/wardline/internal/features/approval/domain"
 	budgetdomain "github.com/kabirnarang39/wardline/internal/features/budget/domain"
 	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
+	costbudgetdomain "github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
 	"github.com/kabirnarang39/wardline/internal/features/dashboard/domain"
 	federationusecase "github.com/kabirnarang39/wardline/internal/features/federation/usecase"
 	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
@@ -75,6 +76,21 @@ type ApprovalSource interface {
 // limitation (see jobbudgetdomain.Lister's own doc comment).
 type JobBudgetSource interface {
 	ListNearCeiling(limit int) []jobbudgetdomain.Entry
+}
+
+// CostBudgetSource is the subset of costbudget's optional Lister capability
+// Handler depends on -- a read-only view of job keys nearing/at their
+// per-job cost/token ceiling. Mirrors JobBudgetSource exactly: main.go
+// wires the concrete meter through this interface via a type assertion
+// onto costbudgetdomain.Lister, for the same reason JobBudgetSource does
+// (widening costbudgetdomain.Meter would force every Meter implementation
+// to support enumeration, which the core Checker never needs). Entries
+// carry the opaque job key and its running total only -- the key's
+// tenant/identity/session are NOT decomposed for display, the same known,
+// documented limitation as JobBudgetSource (see costbudgetdomain.Lister's
+// own doc comment).
+type CostBudgetSource interface {
+	ListNearCeiling(limit int) []costbudgetdomain.Entry
 }
 
 // FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
@@ -275,6 +291,7 @@ type Handler struct {
 	compliance        ComplianceSource
 	approvals         ApprovalSource
 	jobBudget         JobBudgetSource
+	costBudget        CostBudgetSource
 	mux               *http.ServeMux
 }
 
@@ -324,8 +341,11 @@ type Handler struct {
 // budget editors use. jobBudget backs GET /dashboard/api/job-budget -- nil
 // (job_budget off, or web_ui off) answers 404 the same way; unlike
 // approvals this view is read-only with no decision/mutation counterpart.
-func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource, approvals ApprovalSource, jobBudget JobBudgetSource) *Handler {
-	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance, approvals: approvals, jobBudget: jobBudget}
+// costBudget backs GET /dashboard/api/cost-budget -- nil (job_cost_budget
+// off, or web_ui off) answers 404 the same way; mirrors jobBudget exactly,
+// including the read-only, no-mutation-counterpart posture.
+func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, assets fs.FS, anomalies AnomalySource, federation FederationSource, blocked BlockedSource, scope TenantScopeResolver, unblock UnblockAuthorizer, rbac RBACSource, budget BudgetSource, reloadCoordinator *reload.ReloadCoordinator, reloadAuth ReloadAuthorizer, reloadHistory ReloadHistorySource, callerInfo CallerInfoResolver, policyWriter PolicyWriter, budgetWriter BudgetWriter, compliance ComplianceSource, approvals ApprovalSource, jobBudget JobBudgetSource, costBudget CostBudgetSource) *Handler {
+	h := &Handler{audit: audit, status: status, policy: policy, policyWriter: policyWriter, anomalies: anomalies, federation: federation, blocked: blocked, scope: scope, unblock: unblock, rbac: rbac, budget: budget, budgetWriter: budgetWriter, reloadCoordinator: reloadCoordinator, reloadAuth: reloadAuth, reloadHistory: reloadHistory, callerInfo: callerInfo, compliance: compliance, approvals: approvals, jobBudget: jobBudget, costBudget: costBudget}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dashboard/api/audit", h.handleAudit)
@@ -335,6 +355,7 @@ func NewHandler(audit AuditSource, status StatusSource, policy PolicySource, ass
 	mux.HandleFunc("/dashboard/api/approvals", h.handleApprovals)
 	mux.HandleFunc("/dashboard/api/approvals/", h.handleApprovalDecision)
 	mux.HandleFunc("/dashboard/api/job-budget", h.handleJobBudget)
+	mux.HandleFunc("/dashboard/api/cost-budget", h.handleCostBudget)
 	mux.HandleFunc("/dashboard/api/federation/correlated", h.handleFederationCorrelated)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked", h.handleBlocked)
 	mux.HandleFunc("/dashboard/api/anomalies/blocked/", h.handleUnblock)
@@ -533,6 +554,27 @@ func (h *Handler) handleJobBudget(w http.ResponseWriter, r *http.Request) {
 	entries := h.jobBudget.ListNearCeiling(defaultAuditLimit)
 	if entries == nil {
 		entries = []jobbudgetdomain.Entry{}
+	}
+	writeJSON(w, entries)
+}
+
+// handleCostBudget serves GET /dashboard/api/cost-budget -- a read-only
+// snapshot of job keys nearing/at their per-job cost/token budget
+// ceiling, sourced from costbudget's optional Lister capability (see
+// CostBudgetSource's doc comment). Mirrors handleJobBudget exactly: nil
+// source (job_cost_budget off, or web_ui off) answers 404, and this view
+// has no decision/mutation counterpart -- a Lister only reads.
+func (h *Handler) handleCostBudget(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowed(w, r) {
+		return
+	}
+	if h.costBudget == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	entries := h.costBudget.ListNearCeiling(defaultAuditLimit)
+	if entries == nil {
+		entries = []costbudgetdomain.Entry{}
 	}
 	writeJSON(w, entries)
 }

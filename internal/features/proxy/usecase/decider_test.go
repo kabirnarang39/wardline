@@ -146,3 +146,23 @@ func TestDecide_JobBudgetLookupSetsContextJobOverBudget(t *testing.T) {
 		t.Errorf("job-budget lookup returning true should set Context.JobOverBudget")
 	}
 }
+
+func TestDecide_CostBudgetLookupSetsContextCostOverBudget(t *testing.T) {
+	call := domain.ToolCall{Identity: "alice", Tool: "llm_call", Tenant: "acme"}
+
+	engineOff := &recordingEngine{}
+	var eOff policydomain.Engine = engineOff
+	dOff := usecase.NewDeciderWithHolderTaintJobBudgetAndCostBudget(reload.NewReloadableEngine(&eOff), nil, nil, nil)
+	dOff.Decide(call)
+	if engineOff.captured.CostOverBudget {
+		t.Errorf("nil cost-budget lookup should leave Context.CostOverBudget false")
+	}
+
+	engineOn := &recordingEngine{}
+	var eOn policydomain.Engine = engineOn
+	dOn := usecase.NewDeciderWithHolderTaintJobBudgetAndCostBudget(reload.NewReloadableEngine(&eOn), nil, nil, func(domain.ToolCall) bool { return true })
+	dOn.Decide(call)
+	if !engineOn.captured.CostOverBudget {
+		t.Errorf("cost-budget lookup returning true should set Context.CostOverBudget")
+	}
+}

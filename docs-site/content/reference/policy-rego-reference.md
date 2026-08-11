@@ -21,13 +21,17 @@ allow {
 [Policy Backends](/concepts/policy-backends/) for the exact JSON shape,
 including `input.method`, `input.tainted` (only meaningful when
 [taint tracking](/features/taint-tracking/) is on; always `false`
-otherwise), and `input.job_over_budget` (only meaningful when [per-job
+otherwise), `input.job_over_budget` (only meaningful when [per-job
 budget ceiling](/features/job-budget/) is on; always `false` otherwise —
 `true` when the calling job has already reached its `requests_per_job`
-ceiling based on calls prior to this one). Both `input.tainted` and
-`input.job_over_budget` are read-only, request-context fields — not to be
-confused with `approval` and `hard_deny` below, which are keys a policy
-*returns* in its result object.
+ceiling based on calls prior to this one), and `input.cost_over_budget`
+(only meaningful when [per-job cost/token budget](/features/cost-budget/)
+is on; always `false` otherwise — `true` when the calling job's declared
+cost total has already reached its `ceiling` based on calls prior to this
+one). `input.tainted`, `input.job_over_budget`, and `input.cost_over_budget`
+are all read-only, request-context fields — not to be confused with
+`approval` and `hard_deny` below, which are keys a policy *returns* in its
+result object.
 
 ## Result keys and precedence
 
@@ -45,8 +49,9 @@ identical to `false`, so an existing policy that only ever returned `allow`
 
 Precedence is **`hard_deny` &gt; `approval` &gt; `allow`**, evaluated in that
 order — fail-safe: a policy that both denies and requests approval always
-denies. Pairing `approval` with [`input.tainted`](/features/taint-tracking/)
-or [`input.job_over_budget`](/features/job-budget/) is the intended use:
+denies. Pairing `approval` with [`input.tainted`](/features/taint-tracking/),
+[`input.job_over_budget`](/features/job-budget/), or
+[`input.cost_over_budget`](/features/cost-budget/) is the intended use:
 
 ```rego
 package wardline.authz

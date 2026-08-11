@@ -2,8 +2,10 @@
 // supplied header, or a TTL-window fallback bucket when no header is
 // present. Shared by every feature that needs to bucket per-caller
 // activity into a "session" without requiring client cooperation: taint
-// tracking (this function's original home) and per-job budget both key
-// off it today.
+// tracking (this function's original home), per-job budget, and per-job
+// cost budget all key off it today, each with its own configurable
+// window (SessionWindowSeconds on each feature's own Config) so any one
+// of them works without the others being on.
 package session
 
 import (

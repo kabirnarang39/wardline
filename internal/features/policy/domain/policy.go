@@ -109,6 +109,13 @@ type Context struct {
 	// otherwise, so a policy referencing input.job_over_budget behaves
 	// identically to before when the feature is off.
 	JobOverBudget bool
+
+	// CostOverBudget reports whether the calling identity's current job
+	// (tenant, identity, session) has exceeded its per-job cost/token
+	// ceiling. Populated only when job_cost_budget is on; always false
+	// otherwise, so a policy referencing input.cost_over_budget behaves
+	// identically to before when the feature is off.
+	CostOverBudget bool
 }
 
 // Engine evaluates whether a Context's identity may make its tool call.

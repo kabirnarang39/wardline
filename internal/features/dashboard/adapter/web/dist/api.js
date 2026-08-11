@@ -139,6 +139,21 @@ export async function fetchJobBudget() {
   return res.json();
 }
 
+// fetchCostBudget mirrors fetchJobBudget exactly, for the cost-budget
+// view. The endpoint JSON-encodes the raw costbudget/domain.Entry (no
+// json tags), so fields are capitalized (e.Key, e.Total) -- Total, not
+// Count, is the field name here (job-budget counts requests, cost-budget
+// sums cost/token amounts).
+export async function fetchCostBudget() {
+  const res = await fetch('api/cost-budget');
+  if (!res.ok) {
+    const err = new Error(`cost-budget fetch failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
 export async function fetchStatus() {
   const res = await fetch('api/status');
   if (!res.ok) {
