@@ -66,6 +66,11 @@
           <span>Job Budget</span>
           <span class="nav-count" id="nav-count-jobbudget" hidden></span>
         </button>
+        <button class="nav-item" data-view="cost-budget">
+          <span class="nav-icon" data-icon="budget"></span>
+          <span>Cost Budget</span>
+          <span class="nav-count" id="nav-count-costbudget" hidden></span>
+        </button>
         <button class="nav-item" data-view="credentials">
           <span class="nav-icon" data-icon="credentials"></span>
           <span>Credentials</span>
@@ -492,6 +497,27 @@
             <tbody id="jobbudget-rows"></tbody>
           </table>
           <p id="jobbudget-empty" class="empty-state" hidden>No job-budget activity recorded yet.</p>
+        </div>
+      </section>
+
+      <section id="view-cost-budget" class="view" aria-labelledby="view-cost-budget-heading" hidden>
+        <div class="view-header">
+          <div>
+            <h1 id="view-cost-budget-heading">Cost Budget</h1>
+            <p class="view-sub">Job keys nearest their per-job cost/token ceiling. Keys are opaque (tenant/identity/session are not decomposed for display) — read-only, no approve/deny equivalent.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th scope="col">Job key</th>
+                <th scope="col">Total</th>
+              </tr>
+            </thead>
+            <tbody id="costbudget-rows"></tbody>
+          </table>
+          <p id="costbudget-empty" class="empty-state" hidden>No cost-budget activity recorded yet.</p>
         </div>
       </section>
 
