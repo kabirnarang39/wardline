@@ -16,3 +16,13 @@ func TestConfig_ExplicitValueWins(t *testing.T) {
 	c := domain.Config{RequestsPerJob: 42}
 	assert.Equal(t, 42, c.Limit())
 }
+
+func TestConfig_WindowDefaultsWhenUnset(t *testing.T) {
+	var c domain.Config
+	assert.Equal(t, domain.DefaultSessionWindowSeconds, c.Window())
+}
+
+func TestConfig_WindowExplicitValueWins(t *testing.T) {
+	c := domain.Config{SessionWindowSeconds: 60}
+	assert.Equal(t, 60, c.Window())
+}

@@ -50,6 +50,12 @@ type ApprovalConfig struct {
 // job_budget feature flag is on.
 type JobBudgetConfig struct {
 	RequestsPerJob int `yaml:"requests_per_job"`
+
+	// SessionWindowSeconds is the fallback session-window width used when
+	// a call carries no X-Wardline-Session header -- mirrors taint's own
+	// session_window_seconds, own knob so job-budget's window stays
+	// configurable independently of taint_tracking being on.
+	SessionWindowSeconds int `yaml:"session_window_seconds"`
 }
 
 // JobCostBudgetConfig configures per-job cost budgets. Only meaningful when the
@@ -58,6 +64,10 @@ type JobCostBudgetConfig struct {
 	Ceiling     int            `yaml:"ceiling"`
 	ToolCosts   map[string]int `yaml:"tool_costs"`
 	DefaultCost int            `yaml:"default_cost"`
+
+	// SessionWindowSeconds mirrors JobBudgetConfig.SessionWindowSeconds
+	// exactly, own knob for cost-budget's own fallback window.
+	SessionWindowSeconds int `yaml:"session_window_seconds"`
 }
 
 // BudgetConfig configures the per-identity rate limiter. Only validated

@@ -96,3 +96,23 @@ func TestChecker_IsOverBudgetFlagOffAlwaysFalse(t *testing.T) {
 	c := usecase.NewChecker(f, newFakeMeter(), domain.Config{Ceiling: 1})
 	assert.False(t, c.IsOverBudget("acme", "alice", "sess-1", time.Now()))
 }
+
+// TestChecker_NoSessionHeaderFallsBackToTTLWindow mirrors jobbudget's own
+// test of the same name: a job with no explicit session (the empty string
+// a missing X-Wardline-Session header produces) still shares one ceiling
+// across calls within the same session-window bucket.
+func TestChecker_NoSessionHeaderFallsBackToTTLWindow(t *testing.T) {
+	f := flags.NewStaticProvider(map[string]bool{"job_cost_budget": true})
+	c := usecase.NewChecker(f, newFakeMeter(), domain.Config{Ceiling: 100, ToolCosts: map[string]int{"llm_call": 60}, SessionWindowSeconds: 300})
+	base := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+	c.Check("acme", "alice", "", "llm_call", base)
+	v := c.Check("acme", "alice", "", "llm_call", base.Add(100*time.Second)) // same window
+	assert.False(t, v.Allowed)
+	assert.Equal(t, 120, v.Total)
+
+	// Next window bucket -- a fresh ceiling, same as taint's own rollover.
+	v = c.Check("acme", "alice", "", "llm_call", base.Add(400*time.Second))
+	assert.True(t, v.Allowed)
+	assert.Equal(t, 60, v.Total)
+}

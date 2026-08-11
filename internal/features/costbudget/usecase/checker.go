@@ -7,6 +7,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
@@ -17,7 +18,10 @@ const costBudgetFeatureFlag = "job_cost_budget"
 // taint.taintKey, and approval.grantKey all use. costbudget's counters
 // live in their own map/table (never shared with jobbudget's), so this
 // key never collides with a jobbudget key even though the composition is
-// identical -- the two features never read/write the same store.
+// identical -- the two features never read/write the same store. session
+// is expected to already be resolved (explicit header value, or the
+// TTL-window fallback bucket) -- see Check/IsOverBudget, which apply
+// platformsession.SessionID before calling this.
 func costKey(tenantName, identity, session string) string {
 	base := tenant.Key(tenantName, identity)
 	return strconv.Itoa(len(base)) + ":" + base + session
@@ -40,6 +44,7 @@ func (c *Checker) Check(tenantName, identity, session, tool string, now time.Tim
 		return domain.Verdict{Allowed: true, Reason: "cost budget disabled"}
 	}
 	amount := c.cfg.CostOf(tool)
+	session = platformsession.SessionID(session, tenantName, identity, now, c.cfg.Window())
 	total, err := c.meter.Add(costKey(tenantName, identity, session), amount, now)
 	if err != nil {
 		return domain.Verdict{Allowed: true, Reason: fmt.Sprintf("cost budget check failed open: %v", err), FailedOpen: true}
@@ -60,6 +65,7 @@ func (c *Checker) IsOverBudget(tenantName, identity, session string, now time.Ti
 	if !c.flags.Enabled(costBudgetFeatureFlag) {
 		return false
 	}
+	session = platformsession.SessionID(session, tenantName, identity, now, c.cfg.Window())
 	total, err := c.meter.Current(costKey(tenantName, identity, session), now)
 	if err != nil {
 		return false

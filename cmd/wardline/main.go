@@ -380,7 +380,7 @@ func runServe(logger *slog.Logger, args []string) {
 	// to the concrete adapter the dashboard can reach.
 	var jobBudgetMeter jobbudgetdomain.Meter
 	if jobBudgetEnabled {
-		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob}
+		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob, SessionWindowSeconds: cfg.JobBudget.SessionWindowSeconds}
 		if postgresStorageEnabled {
 			pm, err := jobbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
 			if err != nil {
@@ -424,7 +424,7 @@ func runServe(logger *slog.Logger, args []string) {
 		} else {
 			costBudgetMeter = costbudgetadapter.NewInMemoryMeter()
 		}
-		costBudgetCfg := costbudgetdomain.Config{Ceiling: cfg.JobCostBudget.Ceiling, ToolCosts: cfg.JobCostBudget.ToolCosts, DefaultCost: cfg.JobCostBudget.DefaultCost}
+		costBudgetCfg := costbudgetdomain.Config{Ceiling: cfg.JobCostBudget.Ceiling, ToolCosts: cfg.JobCostBudget.ToolCosts, DefaultCost: cfg.JobCostBudget.DefaultCost, SessionWindowSeconds: cfg.JobCostBudget.SessionWindowSeconds}
 		costBudgetChecker = costbudgetusecase.NewChecker(featureFlags, costBudgetMeter, costBudgetCfg)
 		logger.Info("cost budget enabled", "ceiling", costBudgetCfg.Limit())
 	}
