@@ -504,21 +504,27 @@ number look good:
   *different* tenants (by design — see `tenant_anomaly`'s own scoping),
   and `tenant_anomaly` only ever logs, it does not auto-block (there is
   no single identity to block for a tenant-level signal).
-- `identity_churn` is in-memory only, per-replica, this cycle — no
-  Postgres/HA persistence or cross-replica merge yet (same trajectory
-  `tenant_anomaly` itself took: shipped in-memory first, closed HA as
-  its own follow-up once the in-memory version was proven correct).
-  Under HA with `postgres_storage` off, a rotation attack split across
-  replicas by a load balancer dilutes each replica's own view of the
-  churn burst, the same gap `tenant_anomaly` had before its own HA
-  extension. A slow trickle of new identities — one every many windows,
-  deliberately spread below any per-window churn threshold — also
-  evades a plain per-window count, the same shape a slow call-volume
-  ramp evaded `tenant_anomaly` before `drift_detection`'s CUSUM
-  extension; a future CUSUM-over-churn-count extension would close it
-  using the same mechanics already built for `call_rate`/
-  `tool_diversity`, not new machinery — not built this cycle to keep
-  scope bounded.
+- `identity_churn` is now HA-safe when `postgres_storage` is also on —
+  same shape as `tenant_anomaly`'s own HA extension: each replica
+  upserts its own just-finished window's local new-identity count into
+  a shared `identity_churn_window_totals` row and every replica scores
+  and folds the *merged, cross-replica* total into its baseline, so a
+  disposable-identity rotation attack split across replicas by a load
+  balancer is caught the same way it's caught split across identities
+  on one instance — verified against a real Postgres instance with two
+  real `Detector`s, neither replica's own local half of a split
+  rotation burst alone crossing the threshold, only the merged total.
+  `identity_churn` also now has a CUSUM extension
+  (`identity_churn.cusum_enabled`, its own `k`/`h`, independent of
+  `drift_detection`'s) closing the slow-trickle gap a plain per-window
+  count can't: one new disposable identity every many windows,
+  individually always below `rate_multiplier`, still accumulates toward
+  and crosses the CUSUM threshold — same `cusumStep` mechanics
+  `drift_detection` already uses for `call_rate`/`tool_diversity`, not
+  new machinery. Without `postgres_storage`, `identity_churn` is
+  in-memory only, per-replica — a rotation attack split across replicas
+  by a load balancer dilutes each replica's own view of the burst, the
+  same gap `tenant_anomaly` has without `postgres_storage` too.
 - Baseline state (rate/novel-tool/`ml_score` history) resets on
   restart, in-memory only — UNLESS `features.postgres_storage` is also
   on: baselines then persist to a shared Postgres table and reload at

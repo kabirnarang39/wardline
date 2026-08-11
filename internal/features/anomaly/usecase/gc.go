@@ -60,9 +60,11 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 	// Same 2x-interval idle-eviction reasoning as tenantState above,
 	// applied to identity_churn's own (separate) per-tenant map: a
 	// tenant with no new identities in that long simply reappears as a
-	// fresh baseline on its next one. No Postgres persistence to worry
-	// about cleaning up here at all -- identity_churn has none this
-	// cycle (see its own design doc's "scope" section).
+	// fresh baseline on its next one. Same deliberately-deferred
+	// per-key-row-delete gap as tenantState's own comment above when
+	// churnBaselineStorePg is configured -- an evicted tenant's last
+	// checkpointed row lingers harmless until that tenant's churn
+	// activity resumes and this same GC tick's save logic overwrites it.
 	for key, cs := range d.churnState {
 		if cs.lastSeen.Before(cutoff) {
 			delete(d.churnState, key)
@@ -102,6 +104,16 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 			tenantToSave[tenantName] = OnlineStatSnapshot{Mean: ts.rateStat.mean, M2: ts.rateStat.m2, Count: ts.rateStat.count}
 		}
 	}
+	// Same consistent-point-in-time-copy-under-d.mu shape as
+	// tenantToSave/toSave above, one more time for identity_churn's own
+	// (baseline, CUSUM) pair.
+	var churnToSave map[string]ChurnBaselineSnapshot
+	if d.churnBaselineStorePg != nil {
+		churnToSave = make(map[string]ChurnBaselineSnapshot, len(d.churnState))
+		for tenantName, cs := range d.churnState {
+			churnToSave[tenantName] = ChurnBaselineSnapshot{Mean: cs.rateStat.mean, M2: cs.rateStat.m2, Count: cs.rateStat.count, CUSUM: cs.churnCUSUM}
+		}
+	}
 	d.mu.Unlock()
 
 	// The snapshot map (and deletedKeys) are built while still holding
@@ -136,6 +148,12 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 	if d.tenantBaselineStorePg != nil {
 		if err := d.tenantBaselineStorePg.SaveAll(tenantToSave); err != nil && d.onError != nil {
 			d.onError(fmt.Errorf("tenant_anomaly baseline checkpoint save failed: %w", err))
+		}
+	}
+
+	if d.churnBaselineStorePg != nil {
+		if err := d.churnBaselineStorePg.SaveAll(churnToSave); err != nil && d.onError != nil {
+			d.onError(fmt.Errorf("identity_churn baseline checkpoint save failed: %w", err))
 		}
 	}
 }

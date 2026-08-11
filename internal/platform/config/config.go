@@ -298,6 +298,13 @@ type IdentityChurnConfig struct {
 	Enabled          bool    `yaml:"enabled"`
 	RateMultiplier   float64 `yaml:"rate_multiplier"`
 	MinNewIdentities int     `yaml:"min_new_identities"`
+
+	// CUSUMEnabled/K/H mirror DriftConfig's own fields -- see
+	// anomaly/domain.IdentityChurnConfig.CUSUMEnabled's doc comment for
+	// why this is a separate K/H, not a reuse of drift_detection's.
+	CUSUMEnabled bool    `yaml:"cusum_enabled"`
+	K            float64 `yaml:"k"`
+	H            float64 `yaml:"h"`
 }
 
 // AnomalyConfig configures anomaly detection. Only validated (and only
@@ -728,6 +735,14 @@ func (c *Config) validate() error {
 			}
 			if c.Anomaly.IdentityChurn.MinNewIdentities <= 0 {
 				problems = append(problems, "anomaly.identity_churn.min_new_identities must be > 0 when anomaly.identity_churn.enabled is true")
+			}
+			if c.Anomaly.IdentityChurn.CUSUMEnabled {
+				if c.Anomaly.IdentityChurn.K <= 0 {
+					problems = append(problems, "anomaly.identity_churn.k must be > 0 when anomaly.identity_churn.cusum_enabled is true")
+				}
+				if c.Anomaly.IdentityChurn.H <= 0 {
+					problems = append(problems, "anomaly.identity_churn.h must be > 0 when anomaly.identity_churn.cusum_enabled is true")
+				}
 			}
 		}
 		if c.Anomaly.GCIntervalSeconds <= 0 {
