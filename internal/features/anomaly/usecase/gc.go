@@ -39,11 +39,19 @@ const abandonedInstancePruneFactor = 4
 func (d *Detector) gc(now time.Time, interval time.Duration) {
 	d.mu.Lock()
 	cutoff := now.Add(-2 * interval)
-	// Tenant-aggregate baselines (in-memory only, no Postgres persistence
-	// this cycle -- see domain.TenantAnomalyConfig) use the same 2x-
-	// interval idle cutoff as identity state: a tenant with no traffic in
-	// that long simply reappears as a fresh baseline on its next call,
-	// same "safe to evict" reasoning as identityState below.
+	// Tenant-aggregate baselines use the same 2x-interval idle cutoff as
+	// identity state: a tenant with no traffic in that long simply
+	// reappears as a fresh baseline on its next call, same "safe to
+	// evict" reasoning as identityState below. Unlike identityState's
+	// own eviction, this does not also delete the tenant's row from
+	// tenant_baselines (no per-key delete plumbed through
+	// tenantBaselineStorePg yet) -- a small, deliberately deferred gap,
+	// same posture as tenant_window_totals having no reaper yet (see
+	// the HA design spec's "what's explicitly out of scope"): an
+	// evicted tenant's last-checkpointed row lingers, harmless, until a
+	// future cleanup pass, and self-corrects the moment that tenant's
+	// traffic resumes and this same GC tick's save logic below
+	// overwrites it again.
 	for key, ts := range d.tenantState {
 		if ts.lastSeen.Before(cutoff) {
 			delete(d.tenantState, key)
@@ -70,6 +78,17 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 		toSave = make(map[string]IdentityStateSnapshot, len(d.state))
 		for key, st := range d.state {
 			toSave[key] = snapshotIdentityState(st)
+		}
+	}
+	// Same "consistent point-in-time copy, built under d.mu, saved after
+	// release" shape as toSave above -- see its own comment just below
+	// for why the Postgres round trip must not happen while d.mu is
+	// held.
+	var tenantToSave map[string]OnlineStatSnapshot
+	if d.tenantBaselineStorePg != nil {
+		tenantToSave = make(map[string]OnlineStatSnapshot, len(d.tenantState))
+		for tenantName, ts := range d.tenantState {
+			tenantToSave[tenantName] = OnlineStatSnapshot{Mean: ts.rateStat.mean, M2: ts.rateStat.m2, Count: ts.rateStat.count}
 		}
 	}
 	d.mu.Unlock()
@@ -100,6 +119,12 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 			if _, err := pruner.PruneStale(abandonedInstancePruneFactor * interval); err != nil && d.onError != nil {
 				d.onError(fmt.Errorf("anomaly baseline stale-prune failed: %w", err))
 			}
+		}
+	}
+
+	if d.tenantBaselineStorePg != nil {
+		if err := d.tenantBaselineStorePg.SaveAll(tenantToSave); err != nil && d.onError != nil {
+			d.onError(fmt.Errorf("tenant_anomaly baseline checkpoint save failed: %w", err))
 		}
 	}
 }
