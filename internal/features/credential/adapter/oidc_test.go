@@ -270,3 +270,126 @@ func TestNewOIDCBootstrapper_404JWKSURIFailsFast(t *testing.T) {
 		t.Fatal("NewOIDCBootstrapper hung past jwksBootstrapTimeout on a 404 jwks_uri")
 	}
 }
+
+// newTestDiscoveryServer serves both a JWKS (containing priv's public
+// key) and a standard OIDC discovery document at
+// /.well-known/openid-configuration whose jwks_uri points back at its
+// own /jwks path -- one server standing in for a real IdP that serves
+// both endpoints. issuerOverride, if non-empty, is what the discovery
+// document claims as its own "issuer" -- empty means "the server's own
+// URL" (the normal, matching case); tests that need to prove a mismatch
+// is rejected pass a different value.
+func newTestDiscoveryServer(t *testing.T, priv *rsa.PrivateKey, kid, issuerOverride string) *httptest.Server {
+	t.Helper()
+	pub, err := jwk.PublicKeyOf(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.KeyIDKey, kid); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		t.Fatal(err)
+	}
+	set := jwk.NewSet()
+	if err := set.AddKey(pub); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	})
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		issuer := issuerOverride
+		if issuer == "" {
+			issuer = srv.URL
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 issuer,
+			"jwks_uri":               srv.URL + "/jwks",
+			"authorization_endpoint": srv.URL + "/authorize", // unused field, proves unknown-field tolerance
+		})
+	})
+	srv = httptest.NewServer(mux)
+	return srv
+}
+
+// TestNewOIDCBootstrapper_DiscoversJWKSURIWhenEmpty is discovery's actual
+// point: leaving OIDCConfig.JWKSURI empty still produces a working
+// bootstrapper, end to end (a real token signed by the discovered key
+// verifies successfully) -- jwks_uri never named explicitly anywhere in
+// this test.
+func TestNewOIDCBootstrapper_DiscoversJWKSURIWhenEmpty(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	srv := newTestDiscoveryServer(t, key, "test-key", "")
+	defer srv.Close()
+
+	b, err := NewOIDCBootstrapper(srv.URL, "", "wardline", "sub", "tenant")
+	if err != nil {
+		t.Fatalf("NewOIDCBootstrapper with empty jwks_uri: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	token := signTestIDToken(t, key, "test-key", srv.URL, "wardline", "alice", "acme")
+	identity, tenantName, err := b.Authenticate(token)
+	if err != nil || identity != "alice" || tenantName != "acme" {
+		t.Fatalf("got (%q, %q, %v), want (\"alice\", \"acme\", nil)", identity, tenantName, err)
+	}
+}
+
+// TestNewOIDCBootstrapper_DiscoveryIssuerMismatchRejected pins
+// discoverJWKSURI's own defense-in-depth check (OpenID Connect Discovery
+// 1.0 §4.3): a discovery document whose declared issuer doesn't match
+// the issuer this bootstrapper was configured to trust must be rejected
+// outright, not silently used.
+func TestNewOIDCBootstrapper_DiscoveryIssuerMismatchRejected(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	srv := newTestDiscoveryServer(t, key, "test-key", "https://attacker.example.com/")
+	defer srv.Close()
+
+	_, err := NewOIDCBootstrapper(srv.URL, "", "wardline", "sub", "tenant")
+	if err == nil {
+		t.Fatal("expected an error for a discovery document declaring a mismatched issuer")
+	}
+}
+
+// TestNewOIDCBootstrapper_DiscoveryMissingJWKSURIRejected covers a
+// malformed discovery document (issuer matches, but no jwks_uri at all)
+// -- a real IdP is never expected to omit it, but this bootstrapper must
+// fail closed rather than silently registering an empty jwks_uri.
+func TestNewOIDCBootstrapper_DiscoveryMissingJWKSURIRejected(t *testing.T) {
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": srv.URL})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := NewOIDCBootstrapper(srv.URL, "", "wardline", "sub", "tenant")
+	if err == nil {
+		t.Fatal("expected an error for a discovery document with no jwks_uri")
+	}
+}
+
+// TestNewOIDCBootstrapper_Discovery404FailsFast covers an issuer with no
+// discovery endpoint at all (a common misconfiguration: issuer set to
+// the wrong URL, or an IdP that genuinely doesn't support discovery) --
+// must fail fast at construction, not hang or silently proceed with an
+// empty jwks_uri.
+func TestNewOIDCBootstrapper_Discovery404FailsFast(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := NewOIDCBootstrapper(srv.URL, "", "wardline", "sub", "tenant")
+	if err == nil {
+		t.Fatal("expected an error for a 404 discovery document")
+	}
+}

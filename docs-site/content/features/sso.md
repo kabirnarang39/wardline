@@ -55,9 +55,14 @@ exit) within that bound rather than hanging.
 
 ## Known limitations
 
-- **No OIDC discovery document fetching** — `issuer`, `jwks_uri`, and
-  `audience` must be configured explicitly; nothing is resolved from
-  `/.well-known/openid-configuration`.
+- `issuer` and `audience` must be configured explicitly. `jwks_uri` is
+  optional — leave it unset and Wardline resolves it at startup from
+  `issuer`'s own `/.well-known/openid-configuration` discovery document
+  (standard OIDC discovery, every major IdP implements it), validating
+  the document's own `issuer` field matches before trusting its
+  `jwks_uri`. Set `jwks_uri` explicitly to skip discovery entirely — an
+  IdP with a non-standard or unreachable discovery endpoint, or an
+  operator who prefers to pin the value.
 - **One IdP at a time** — a single `credential.oidc` block; no
   multiple-issuer or issuer-to-tenant mapping.
 - Cross-tenant credential-revoke scoping falls back to requiring a

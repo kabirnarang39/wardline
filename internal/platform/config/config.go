@@ -142,7 +142,13 @@ type TracingConfig struct {
 // OIDCConfig configures the OIDC SSO bootstrap adapter. Only validated
 // (and only meaningful) when credential.bootstrap_source is "oidc".
 type OIDCConfig struct {
-	Issuer        string `yaml:"issuer"`
+	Issuer string `yaml:"issuer"`
+	// JWKSURI is optional -- when empty, the bootstrapper resolves it at
+	// startup from issuer's own /.well-known/openid-configuration
+	// discovery document (standard OIDC discovery, RFC-adjacent to the
+	// core spec every major IdP implements). Set explicitly to skip
+	// discovery entirely (an IdP with a non-standard or unreachable
+	// discovery endpoint, or an operator who prefers to pin the value).
 	JWKSURI       string `yaml:"jwks_uri"`
 	Audience      string `yaml:"audience"`
 	IdentityClaim string `yaml:"identity_claim"` // defaults to "sub"
@@ -615,9 +621,15 @@ func (c *Config) validate() error {
 			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret", "oidc", or "mtls", got %q`, c.Credential.BootstrapSource))
 		}
 		if c.Credential.BootstrapSource == "oidc" {
-			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.JWKSURI == "" || c.Credential.OIDC.Audience == "" {
-				problems = append(problems, "credential.oidc.issuer, jwks_uri, and audience must all be set when credential.bootstrap_source is \"oidc\"")
+			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.Audience == "" {
+				problems = append(problems, "credential.oidc.issuer and audience must both be set when credential.bootstrap_source is \"oidc\"")
 			}
+			// jwks_uri is no longer required: when empty, the bootstrapper
+			// resolves it from issuer's own /.well-known/openid-configuration
+			// discovery document at startup (see
+			// credentialadapter.NewOIDCBootstrapper). An operator who
+			// already sets jwks_uri explicitly keeps that exact behavior,
+			// unchanged -- discovery only runs when it's empty.
 			if c.Credential.OIDC.IdentityClaim == "" {
 				c.Credential.OIDC.IdentityClaim = "sub"
 			}
