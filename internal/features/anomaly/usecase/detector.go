@@ -640,15 +640,18 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // in a quiet window, is not one.
 //
 // The two use *different* volume gates, because they have different
-// denominators. inter_arrival_time is gated on zRate >= 0: its delta count is
-// total-1 within a window, the same quantity zRate measures, so a decline in
-// zRate is a valid proxy for "this window's inter-arrival sample shrank."
-// deny_ratio is gated on zToolCalls >= 0 -- its own denominator is toolCalls,
+// denominators. inter_arrival_time is gated on zRate >= 0:
+// its delta count is total-1 within a window, the same quantity zRate
+// measures, so a decline in zRate is a valid proxy for "this window's
+// inter-arrival sample shrank." deny_ratio is gated on
+// zToolCalls >= 0 -- its own denominator is toolCalls,
 // not total (round 9: zRate can hold steady or rise via protocol passthrough
 // or tool-less error traffic while toolCalls itself collapses, which
 // re-opened the exact ratio-volume-decline artifact round 7's zRate-based
 // gate was built to close, since padding total satisfies that gate without
-// protecting the denominator it actually needs to protect).
+// protecting the denominator it actually needs to protect). See
+// volumeDeclineMargin's own doc comment for why both gates compare against
+// a small negative margin, not a bare zero.
 //
 // The trade-off in both cases: a genuine attack at conspicuously low volume
 // no longer auto-blocks either -- still logged via the unaffected two-sided
@@ -659,18 +662,53 @@ func maxAbsZ(zRate, zDiversity, zDeny, zInterArrival float64) (float64, string) 
 // The result is floored at 0: if every feature moved in the benign
 // direction, there is no case for blocking at all, not a large negative
 // "score."
+// volumeDeclineMargin is how far below zero zToolCalls/zRate must fall
+// before the volume-decline gates in maxHarmfulZ below treat that as
+// real evidence of a decline, rather than a bare "which side of zero"
+// sign check.
+//
+// A bare `>= 0` gate on a z-score is a hard cutoff with no hysteresis:
+// when the gated feature's true value sits within its own baseline's
+// noise band of the mean -- exactly the case for an attack that doesn't
+// itself change call volume, e.g. a deny-rate spike at an unchanged
+// call count -- its z-score's SIGN is effectively a coin flip driven by
+// which way that noise happened to land, not by anything about the
+// attack. Direct instrumentation of TestRecallBenchmark_DenyRateSpike
+// confirmed exactly this: a severe, correctly-scored deny_ratio
+// candidate (blockScore z=9.57, far past the shipped example's 8.0
+// auto_block threshold) was excluded from blockScore whenever
+// zToolCalls's noise-driven sign happened to be negative, and admitted
+// whenever it happened to be positive -- identical attack severity,
+// coin-flip outcome, purely from an unrelated feature's sampling noise
+// (the benchmark's own "40% deny ratio: 12/20 auto-blocked" result was
+// this coin flip, not a real signal about deny-rate severity).
+//
+// A one-sigma margin is the standard fix for a gate that flaps under
+// noise right at its own crossing point (hysteresis): require the
+// gated feature to be at least this many standard deviations below its
+// baseline before treating it as evidence of an actual decline, rather
+// than treating any negative point estimate as one. 1.0 is deliberately
+// modest -- this gate exists to protect against a genuine volume-decline
+// artifact inflating deny_ratio/inter_arrival_time (see checkMLScore's
+// own comment on why those two need this gate at all), not to make the
+// gate hard to trip: a real decline clears 1 sigma quickly, while noise
+// within 1 sigma of the mean -- exactly zToolCalls/zRate's own
+// definition of "ordinary" -- no longer silently vetoes a real, severe
+// anomaly on a different feature.
+const volumeDeclineMargin = 1.0
+
 func maxHarmfulZ(zRate, zDiversity, zDenyBlock, zToolCalls, zInterArrival float64) (float64, string) {
 	best := zRate
 	feature := "call_rate"
 	if v := zDiversity; v > best {
 		best, feature = v, "tool_diversity"
 	}
-	if zToolCalls >= 0 {
+	if zToolCalls >= -volumeDeclineMargin {
 		if v := zDenyBlock; v > best {
 			best, feature = v, "deny_ratio"
 		}
 	}
-	if zRate >= 0 {
+	if zRate >= -volumeDeclineMargin {
 		if v := -zInterArrival; v > best {
 			best, feature = v, "inter_arrival_time"
 		}

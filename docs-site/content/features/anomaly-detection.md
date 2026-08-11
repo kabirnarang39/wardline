@@ -139,17 +139,29 @@ patient evasion — it gets caught almost as fast as one.
 | Deny ratio | Flagged | Auto-blocked |
 |---|---|---|
 | 20% | 20/20 | 0/20 |
-| 40% | 20/20 | 12/20 |
-| 60% | 20/20 | 11/20 |
-| 80% | 20/20 | 8/20 |
-| 100% | 20/20 | 13/20 |
+| 40% | 20/20 | 20/20 |
+| 60% | 20/20 | 20/20 |
+| 80% | 20/20 | 20/20 |
+| 100% | 20/20 | 20/20 |
 
 `deny_rate_spike` fires reliably at every tested ratio, matching its
-design (no window-completion gate). Auto-block recall is real but
-noisier and non-monotonic across ratios — it depends on `ml_score`'s
-deny-ratio feature and its own volume-decline gate, not the raw ratio
-alone, so a spike gets logged well before (and independently of)
-whether it also crosses the stricter block threshold.
+design (no window-completion gate). Auto-block is a clean step function
+above 20%, but it wasn't always this clean: an earlier run of this
+benchmark showed noisy, non-monotonic auto-block recall (40% blocked
+only 12/20 trials, 80% only 8/20) — a *higher*-severity attack blocking
+*less* reliably than a lower one. Direct instrumentation traced this to
+`maxHarmfulZ`'s deny-ratio volume-decline gate: it excluded an
+already-correctly-scored, severe `deny_ratio` candidate (z=9.57, well
+past the 8.0 auto_block threshold) whenever an *unrelated* feature
+(`toolCalls`, whose value in this scenario sits within noise of its own
+baseline mean, since a deny-rate attack doesn't itself change call
+volume) had a negative z-score — a coin flip driven by warmup sampling
+noise, not by attack severity. Fixed by giving the gate a one-sigma
+hysteresis margin (`volumeDeclineMargin` in `detector.go`) instead of a
+bare zero cutoff, so noise within 1 standard deviation of the baseline
+no longer silently vetoes a real anomaly on a different feature. Full
+regression suite, including the 0% false-positive result below, is
+unchanged by the fix.
 
 **Novel-tool enumeration** — single-window burst of brand-new distinct tools, 20 trials per size:
 
@@ -161,7 +173,18 @@ whether it also crosses the stricter block threshold.
 | 20 | 0% |
 | 40 | 100% |
 
-**False-positive rate** — 20 independent identities/seeds, 300 windows each (6,000 windows total) of steady ~30 calls/window traffic with ±20% jitter, post-warmup: **0/6,000 flagged (0.00%)**, matching the single-seed regression test above at 20× the sample size.
+Unlike the deny-rate result above, this step function is *not* a gate
+artifact — verified directly against `zCount`'s own floor formula
+(`max(1, sqrt(baseline mean))`): with this scenario's ~6-tool baseline
+diversity, the auto_block threshold requires roughly `6 + 8×√6 ≈ 26`
+new tools in one window, which lands exactly between the tested 20
+(0%) and 40 (100%) points. `tool_diversity`'s baseline mean is much
+smaller than `call_rate`'s (~30), so it needs a *larger* relative
+multiple to trigger the same shared z-threshold — the expected
+consequence of a Poisson-style `√mean` variance floor applied to
+features at very different scales, not a miscalibration to fix.
+
+**False-positive rate** — 20 independent identities/seeds, 300 windows each (6,000 windows total) of steady ~30 calls/window traffic with ±20% jitter, post-warmup: **0/6,000 flagged (0.00%)**, matching the single-seed regression test above at 20× the sample size, and unchanged by the deny-rate gate fix above.
 
 This is one synthetic corpus against the shipped example config, not an
 independent red-team evaluation — see "Known limitations" below for what
