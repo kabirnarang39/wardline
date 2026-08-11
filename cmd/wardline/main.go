@@ -642,6 +642,17 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	rbacReload := newRBACReloadFn(rbacHolder, *configPath, rbacEnabled, scimEnabled, scimBindingStore)
+	// watchedPolicyReload/watchedRBACReload/watchedBudgetReload are what
+	// the config-file watcher (see the config_file_watch block near the
+	// end of runServe) actually calls. Default to the plain closures
+	// just built; if webUIEnabled, they're overridden below to the
+	// SAME wrapped closures reloadCoordinator uses for the manual POST
+	// /dashboard/api/reload/{domain} path (the "policy" one additionally
+	// refreshes policyInfoHolder so the dashboard's Rule editor reflects
+	// an auto-reload too, not just a manually-triggered one) -- one
+	// reload implementation per domain, triggered two ways, never two
+	// implementations.
+	watchedPolicyReload, watchedRBACReload, watchedBudgetReload := policyReload, rbacReload, budgetReload
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
 	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
@@ -960,6 +971,9 @@ func runServe(logger *slog.Logger, args []string) {
 				reloadBuffer.Add(result)
 			},
 		}
+		watchedPolicyReload = reloadCoordinator.Reloaders["policy"]
+		watchedRBACReload = reloadCoordinator.Reloaders["rbac"]
+		watchedBudgetReload = reloadCoordinator.Reloaders["budget"]
 
 		// reloadAuth gates POST /dashboard/api/reload/{domain} the same way
 		// unblockAuthorizer just above gates DELETE
@@ -1186,6 +1200,8 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
+	configWatchStop := maybeStartConfigFileWatcher(logger, featureFlags, *configPath, cfg, watchedPolicyReload, watchedRBACReload, watchedBudgetReload)
+
 	// Startup security posture: the proxy fails closed on policy, but by
 	// default identity is trusted from the X-Wardline-Identity header
 	// (spoofable) and the dashboard's read views are unauthenticated. Warn
@@ -1292,6 +1308,9 @@ func runServe(logger *slog.Logger, args []string) {
 			if federationGCStop != nil {
 				close(federationGCStop)
 			}
+			if configWatchStop != nil {
+				close(configWatchStop)
+			}
 			os.Exit(1)
 		}
 	case <-ctx.Done():
@@ -1383,6 +1402,9 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	if federationGCStop != nil {
 		close(federationGCStop)
+	}
+	if configWatchStop != nil {
+		close(configWatchStop)
 	}
 	if grpcUpstreamConn != nil {
 		if err := grpcUpstreamConn.Close(); err != nil {
@@ -2485,6 +2507,43 @@ func maybeStartRetention(logger *slog.Logger, featureFlags flags.Provider, cfg *
 	stop := make(chan struct{})
 	go startRetentionJob(logger, purgers, interval, stop)
 	logger.Info("log retention enabled", "check_interval", interval, "purgers", len(purgers))
+	return stop
+}
+
+// maybeStartConfigFileWatcher starts the config_file_watch fsnotify
+// watcher (internal/platform/reload.WatchFiles) when that flag is on,
+// returning its stop channel (nil when the flag is off). Watches
+// configPath (policy/budget/rbac settings embedded directly in the main
+// config file all live here) plus cfg.PolicyFile and
+// cfg.RBAC.ConfigFile (each a separate file the main config only
+// NAMES) -- editing any of the three now applies automatically, closing
+// the gap documented on web-dashboard.md's "Known limitations": no
+// filesystem watcher, an operator had to POST
+// /dashboard/api/reload/{domain} or restart. rbacReload is a genuine
+// no-op when rbac itself is off (see newRBACReloadFn), so watching
+// cfg.RBAC.ConfigFile even when rbacEnabled is false is harmless, not
+// wrong -- simpler than threading that flag through here to skip it.
+func maybeStartConfigFileWatcher(logger *slog.Logger, featureFlags flags.Provider, configPath string, cfg *config.Config, policyReload, rbacReload, budgetReload func() error) chan struct{} {
+	if !featureFlags.Enabled("config_file_watch") {
+		return nil
+	}
+	targets := []reload.WatchTarget{
+		{Path: configPath, Name: "policy", Fn: policyReload},
+		{Path: configPath, Name: "rbac", Fn: rbacReload},
+		{Path: configPath, Name: "budget", Fn: budgetReload},
+	}
+	if cfg.PolicyFile != "" && cfg.PolicyFile != configPath {
+		targets = append(targets, reload.WatchTarget{Path: cfg.PolicyFile, Name: "policy", Fn: policyReload})
+	}
+	if cfg.RBAC.ConfigFile != "" && cfg.RBAC.ConfigFile != configPath {
+		targets = append(targets, reload.WatchTarget{Path: cfg.RBAC.ConfigFile, Name: "rbac", Fn: rbacReload})
+	}
+	stop := make(chan struct{})
+	if err := reload.WatchFiles(logger, targets, stop); err != nil {
+		logger.Error("failed to start config file watcher", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("config file watcher enabled", "paths", len(targets))
 	return stop
 }
 
