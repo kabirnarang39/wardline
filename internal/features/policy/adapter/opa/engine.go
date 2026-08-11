@@ -90,16 +90,17 @@ func LoadRegoFile(path string) (*OPAEngine, error) {
 // happens only at this adapter's translation boundary; the domain model
 // (policydomain.Context) keeps Params as json.RawMessage throughout.
 type contextInput struct {
-	Identity      string `json:"identity"`
-	Tool          string `json:"tool"`
-	Method        string `json:"method"`
-	Params        any    `json:"params,omitempty"`
-	Timestamp     string `json:"timestamp"`
-	RemoteAddr    string `json:"remote_addr"`
-	UserAgent     string `json:"user_agent"`
-	Tenant        string `json:"tenant"`
-	Tainted       bool   `json:"tainted"`
-	JobOverBudget bool   `json:"job_over_budget"`
+	Identity       string `json:"identity"`
+	Tool           string `json:"tool"`
+	Method         string `json:"method"`
+	Params         any    `json:"params,omitempty"`
+	Timestamp      string `json:"timestamp"`
+	RemoteAddr     string `json:"remote_addr"`
+	UserAgent      string `json:"user_agent"`
+	Tenant         string `json:"tenant"`
+	Tainted        bool   `json:"tainted"`
+	JobOverBudget  bool   `json:"job_over_budget"`
+	CostOverBudget bool   `json:"cost_over_budget"`
 }
 
 // Evaluate runs the prepared query against pc and extracts an allow/deny
@@ -174,15 +175,16 @@ func buildInput(pc domain.Context) (contextInput, error) {
 		}
 	}
 	return contextInput{
-		Identity:      pc.Identity,
-		Tool:          pc.Tool,
-		Method:        pc.Method,
-		Params:        params,
-		Timestamp:     pc.Timestamp.UTC().Format(time.RFC3339),
-		RemoteAddr:    pc.RemoteAddr,
-		UserAgent:     pc.UserAgent,
-		Tenant:        pc.Tenant,
-		Tainted:       pc.Tainted,
-		JobOverBudget: pc.JobOverBudget,
+		Identity:       pc.Identity,
+		Tool:           pc.Tool,
+		Method:         pc.Method,
+		Params:         params,
+		Timestamp:      pc.Timestamp.UTC().Format(time.RFC3339),
+		RemoteAddr:     pc.RemoteAddr,
+		UserAgent:      pc.UserAgent,
+		Tenant:         pc.Tenant,
+		Tainted:        pc.Tainted,
+		JobOverBudget:  pc.JobOverBudget,
+		CostOverBudget: pc.CostOverBudget,
 	}, nil
 }
