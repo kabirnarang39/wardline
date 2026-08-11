@@ -429,14 +429,17 @@ number look good:
   Wardline instances, never raw per-identity call history, so it was
   never going to close this. `tenant_anomaly` (see "Adversarial
   scenarios") closes the specific gap those two leave: a coordinated
-  spike spread across many identities *in the same tenant, on the same
-  instance* — confirmed via a real 20-identity test that individually
-  evades every per-identity heuristic while scoring z=17.86 in
-  aggregate. What's still open: identities spread across *different*
-  tenants (by design — see `tenant_anomaly`'s own scoping), a sybil
-  attack spread across *different Wardline instances*, and
-  `tenant_anomaly` only ever logs, it does not auto-block (there is no
-  single identity to block for a tenant-level signal).
+  spike spread across many identities *in the same tenant* — confirmed
+  via a real 20-identity test that individually evades every
+  per-identity heuristic while scoring z=17.86 in aggregate. With
+  `postgres_storage` also on, this now holds whether that traffic lands
+  on one replica or is split across many by a load balancer — verified
+  against a real Postgres instance with two real `Detector`s, each
+  seeing only half the spike, catching it via their shared merged total
+  (see the HA note below). What's still open: identities spread across
+  *different* tenants (by design — see `tenant_anomaly`'s own scoping),
+  and `tenant_anomaly` only ever logs, it does not auto-block (there is
+  no single identity to block for a tenant-level signal).
 - Baseline state (rate/novel-tool/`ml_score` history) resets on
   restart, in-memory only — UNLESS `features.postgres_storage` is also
   on: baselines then persist to a shared Postgres table and reload at
@@ -463,11 +466,26 @@ number look good:
   checkpointing entirely ever fall past that cutoff. The one residual
   limitation is that there's no schema-migration mechanism for the
   persisted JSON shape if it ever needs to change.
-- `tenant_anomaly`'s aggregate baseline (unlike everything above) is
-  **in-memory only, with no Postgres persistence yet** — it resets on
-  restart even when `postgres_storage` is on, and does not share state
-  across HA replicas at all. `drift_detection`'s own CUSUM accumulators,
-  by contrast, are part of `identityState` and already follow the same
+- `tenant_anomaly` is now HA-safe when `postgres_storage` is also on: each
+  replica upserts its own just-finished window's local total into a
+  shared `tenant_window_totals` row (one atomic `INSERT ... ON CONFLICT
+  DO UPDATE ... RETURNING` round trip, keyed on `(tenant, window_start)`)
+  and every replica scores and folds the *merged, cross-replica* total
+  into its baseline — never its own local-only delta — so a coordinated
+  spike split across replicas by a load balancer is caught by the same
+  z-score logic that already catches it split across identities on one
+  instance. Verified against a real Postgres instance with two real
+  `Detector`s: neither replica's own local half of a split spike alone
+  crossed the threshold, only the merged total did. The per-tenant
+  running baseline itself (mean/variance) still persists per-instance
+  only, in a separate `tenant_baselines` table keyed `(instance_id,
+  tenant)` — deliberately not shared row-for-row the way the window
+  totals are, since every replica converges to the same baseline by
+  folding the same merged total, not by reading each other's baseline
+  state directly. Without `postgres_storage` on, `tenant_anomaly` falls
+  back to today's in-memory, per-replica-only behavior (a startup log
+  line says so explicitly). `drift_detection`'s own CUSUM accumulators
+  are part of `identityState` and already follow the same
   Postgres-backed persistence as the rest of `ml_score`'s baseline.
 - Currently-blocked identities are surfaced both as the `GET
   /dashboard/api/anomalies/blocked` JSON API and, when `web_ui` is on, a

@@ -229,9 +229,12 @@ policy-pack marketplace, HA deployment.
   gap no per-identity heuristic (including drift_detection) can close
   by construction: many identities each individually staying under
   their own threshold. Detection-only (logs, never auto-blocks — there
-  is no single identity to block for a tenant-level signal). In-memory
-  only this cycle, no Postgres/HA persistence yet. See [Anomaly
-  Detection](/features/anomaly-detection/)'s "Adversarial scenarios".
+  is no single identity to block for a tenant-level signal). HA-safe
+  with `features.postgres_storage` on — window totals merge atomically
+  across replicas, verified against a real Postgres instance with two
+  real detectors each seeing only half a coordinated spike. See
+  [Anomaly Detection](/features/anomaly-detection/)'s "Adversarial
+  scenarios".
 
 ## Future directions (not committed)
 
