@@ -39,6 +39,28 @@ type baselineStore interface {
 	SaveAll(snapshots map[string]IdentityStateSnapshot, deletedKeys []string) error
 }
 
+// tenantWindowStore is the narrow interface PostgresTenantWindowStore
+// satisfies -- an atomic add-and-read for one tenant's current window
+// total, genuinely shared across replicas. nil-able: when nil,
+// checkTenantDrift scores only this replica's own local total (today's
+// behavior, unchanged).
+type tenantWindowStore interface {
+	AddAndGet(tenantName string, windowStart time.Time, delta int) (int, error)
+}
+
+// tenantBaselineStoreIface is the narrow interface
+// PostgresTenantBaselineStore satisfies -- per-instance restart
+// persistence for tenant baselines, deliberately NOT the same sharing
+// model as tenantWindowStore: every replica converges to the same
+// baseline by folding the same cross-replica-*merged* total (see
+// checkTenantDrift), not by reading each other's baseline rows. Named
+// with an Iface suffix only to avoid colliding with the
+// tenantBaselineStore field name Detector needs below.
+type tenantBaselineStoreIface interface {
+	LoadAll() (map[string]OnlineStatSnapshot, error)
+	SaveAll(baselines map[string]OnlineStatSnapshot) error
+}
+
 // Detector implements audit/domain.LiveSink: every published audit entry
 // is run through all enabled heuristics. Publish must never block or
 // error outward -- the same contract every other LiveSink already
@@ -66,6 +88,12 @@ type Detector struct {
 	// is no identity component), lazily initialized on first use. See
 	// checkTenantDrift/tenant_detector.go.
 	tenantState map[string]*tenantWindowState
+
+	// tenantWindowStorePg/tenantBaselineStorePg are nil-able -- see
+	// their interface types' doc comments for what each does and does
+	// NOT share across replicas.
+	tenantWindowStorePg   tenantWindowStore
+	tenantBaselineStorePg tenantBaselineStoreIface
 }
 
 func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore) *Detector {
@@ -100,6 +128,49 @@ func (d *Detector) LoadBaselines() error {
 	defer d.mu.Unlock()
 	for key, snap := range snapshots {
 		d.state[key] = snap.toIdentityState()
+	}
+	return nil
+}
+
+// NewDetectorWithTenantStores is NewDetector plus the two optional
+// Postgres-backed tenant_anomaly stores (see their interface types'
+// doc comments above). NewDetector itself stays untouched -- every
+// existing call site (production and test) that doesn't need
+// HA-shared tenant state keeps working exactly as before; only
+// main.go's postgres_storage + tenant_anomaly.enabled branch needs
+// this one.
+func NewDetectorWithTenantStores(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore, tenantWindows tenantWindowStore, tenantBaselines tenantBaselineStoreIface) *Detector {
+	d := NewDetector(cfg, writer, buffer, blocker, onError, now, store)
+	d.tenantWindowStorePg = tenantWindows
+	d.tenantBaselineStorePg = tenantBaselines
+	return d
+}
+
+// LoadTenantBaselines populates each tenant's rateStat from
+// tenantBaselineStorePg, if any -- a no-op returning nil when nil.
+// Mirrors LoadBaselines' exact calling convention: called once,
+// synchronously, by the composition root immediately after
+// NewDetectorWithTenantStores and before StartGC begins.
+func (d *Detector) LoadTenantBaselines() error {
+	if d.tenantBaselineStorePg == nil {
+		return nil
+	}
+	snapshots, err := d.tenantBaselineStorePg.LoadAll()
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.tenantState == nil {
+		d.tenantState = make(map[string]*tenantWindowState)
+	}
+	for tenantName, snap := range snapshots {
+		ts, ok := d.tenantState[tenantName]
+		if !ok {
+			ts = &tenantWindowState{}
+			d.tenantState[tenantName] = ts
+		}
+		ts.rateStat = onlineStat{mean: snap.Mean, m2: snap.M2, count: snap.Count}
 	}
 	return nil
 }

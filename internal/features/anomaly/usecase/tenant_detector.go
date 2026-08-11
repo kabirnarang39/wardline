@@ -40,29 +40,67 @@ func (d *Detector) checkTenantDrift(e auditdomain.Entry) *domain.Anomaly {
 	if d.tenantState == nil {
 		d.tenantState = make(map[string]*tenantWindowState)
 	}
+	window := time.Duration(d.cfg.WindowSeconds) * time.Second
+	now := d.now()
 	ts, ok := d.tenantState[e.Tenant]
 	if !ok {
-		ts = &tenantWindowState{windowStart: d.now()}
+		// Truncate, not now() directly: every replica must agree on the
+		// same window boundaries for the same real-world time period,
+		// regardless of when each individually first saw this tenant's
+		// traffic -- otherwise two replicas' windows never align and a
+		// Postgres-backed cross-replica merge (tenantWindowStorePg
+		// below) would silently merge nothing, each replica writing to
+		// a different (tenant, window_start) row for what should be the
+		// same window. See docs/superpowers/specs/2026-08-12-tenant-
+		// anomaly-ha-design.md.
+		ts = &tenantWindowState{windowStart: now.Truncate(window)}
 		d.tenantState[e.Tenant] = ts
 	}
-	ts.lastSeen = d.now()
+	ts.lastSeen = now
 
-	now := d.now()
-	window := time.Duration(d.cfg.WindowSeconds) * time.Second
 	var anomaly *domain.Anomaly
 	if now.Sub(ts.windowStart) >= window {
-		total := ts.cur
-		ts.prev, ts.cur = total, 0
-		ts.windowStart = now
+		finishedWindowStart := ts.windowStart
+		localTotal := ts.cur
+		ts.prev, ts.cur = localTotal, 0
+		ts.windowStart = now.Truncate(window)
 		ts.flagged = false
 
-		if total >= d.cfg.TenantAnomaly.MinCalls {
+		// mergedTotal is what gets scored AND folded into the baseline
+		// -- NEVER localTotal directly once tenantWindowStorePg is
+		// configured. This is the correctness property the whole HA
+		// design depends on: every replica must fold the SAME
+		// cross-replica value into its own baseline, or baselines
+		// silently diverge from what they're being compared against
+		// (a baseline built from one replica's own slice of traffic
+		// compared against a fully-merged current total would make
+		// every window look inflated, regardless of real attack
+		// activity). Do not "simplify" this by folding localTotal --
+		// see the design spec's "key correctness property" section.
+		mergedTotal := localTotal
+		if d.tenantWindowStorePg != nil {
+			merged, err := d.tenantWindowStorePg.AddAndGet(e.Tenant, finishedWindowStart, localTotal)
+			if err != nil {
+				if d.onError != nil {
+					d.onError(fmt.Errorf("tenant_anomaly: failed to merge cross-replica window total, scoring this replica's own local total only this window: %w", err))
+				}
+				// Fail open on the scoring side too: fall back to
+				// localTotal (mergedTotal already holds it) rather than
+				// skipping this window's scoring entirely, matching
+				// this codebase's established "degrade, don't go dark"
+				// posture for a Postgres query failure.
+			} else {
+				mergedTotal = merged
+			}
+		}
+
+		if mergedTotal >= d.cfg.TenantAnomaly.MinCalls {
 			// AggregateZScore, not zCount -- see its own doc comment for
 			// why zCount's relative floor is wrong at this scale.
-			z := ts.rateStat.AggregateZScore(float64(total))
+			z := ts.rateStat.AggregateZScore(float64(mergedTotal))
 			anomalous := z > d.cfg.TenantAnomaly.RateMultiplier
 			if !anomalous {
-				ts.rateStat.Update(float64(total))
+				ts.rateStat.Update(float64(mergedTotal))
 			} else {
 				score := z
 				anomaly = &domain.Anomaly{
@@ -71,7 +109,7 @@ func (d *Detector) checkTenantDrift(e auditdomain.Entry) *domain.Anomaly {
 					Kind:      domain.KindTenantDrift,
 					Detail: fmt.Sprintf(
 						"tenant-aggregate call volume %d this window scored z=%.2f against its own baseline (threshold %.2f) -- a coordinated shift across identities in this tenant, invisible to any single per-identity heuristic",
-						total, z, d.cfg.TenantAnomaly.RateMultiplier),
+						mergedTotal, z, d.cfg.TenantAnomaly.RateMultiplier),
 					Score: &score,
 				}
 			}
