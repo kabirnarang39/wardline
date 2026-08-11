@@ -107,40 +107,23 @@ type PostgresBaselineStore struct {
 	instanceID string
 }
 
-// NewPostgresBaselineStore opens a connection pool to dsn, creates the
-// anomaly_baselines table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first LoadAll/SaveAll call. logger is
-// used to surface a corrupt row skipped by LoadAll -- may be nil (see
-// LoadAll). instanceID identifies this replica (see
-// cmd/wardline/main.go's deriveInstanceID) and scopes every row this
-// store reads or writes -- callers must pass the same stable value
-// across a process's whole lifetime.
-func NewPostgresBaselineStore(dsn string, instanceID string, logger *slog.Logger) (*PostgresBaselineStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresBaselineStore creates the anomaly_baselines table on db if
+// it doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, not on the first LoadAll/SaveAll call. logger is used to surface
+// a corrupt row skipped by LoadAll -- may be nil (see LoadAll).
+// instanceID identifies this replica (see cmd/wardline/main.go's
+// deriveInstanceID) and scopes every row this store reads or writes --
+// callers must pass the same stable value across a process's whole
+// lifetime.
+func NewPostgresBaselineStore(db *sql.DB, instanceID string, logger *slog.Logger) (*PostgresBaselineStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), baselineStoreTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createBaselinesTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create anomaly_baselines table: %w", err)
 	}
 	if _, err := db.ExecContext(createCtx, createBaselinesUpdatedAtIndexSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create anomaly_baselines updated_at index: %w", err)
 	}
 
@@ -322,10 +305,4 @@ func (s *PostgresBaselineStore) PruneStale(olderThan time.Duration) (int64, erro
 		return 0, fmt.Errorf("count pruned baselines: %w", err)
 	}
 	return n, nil
-}
-
-// Close releases the underlying connection pool, draining in-flight
-// connections. Called during Wardline's graceful shutdown.
-func (s *PostgresBaselineStore) Close() error {
-	return s.db.Close()
 }

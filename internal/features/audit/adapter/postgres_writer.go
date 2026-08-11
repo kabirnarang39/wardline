@@ -12,12 +12,12 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
-// writeTimeout bounds every Postgres operation (the startup Ping and every
-// per-request INSERT) so a blackholed connection (firewall drop, NAT
-// idle-timeout, failover) degrades to a bounded error instead of hanging
-// the calling goroutine forever — with SetMaxOpenConns(10), an unbounded
-// hang here would eventually block every request the proxy serves, not
-// just fail one audit write.
+// writeTimeout bounds every Postgres operation this adapter performs (the
+// startup table/index creation and every per-request INSERT) so a
+// blackholed connection (firewall drop, NAT idle-timeout, failover)
+// degrades to a bounded error instead of hanging the calling goroutine
+// forever — an unbounded hang here would eventually block every request
+// the proxy serves, not just fail one audit write.
 const writeTimeout = 5 * time.Second
 
 // createTableSQL is run once, idempotently, by NewPostgresWriter. One
@@ -75,56 +75,33 @@ type PostgresWriter struct {
 	db *sql.DB
 }
 
-// NewPostgresWriter opens a connection pool to dsn, creates the
-// audit_entries table if it doesn't already exist, and pings the
-// connection — a bad DSN or unreachable database fails here, at
-// construction time, not on the first proxied request.
-func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), writeTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	// Conservative fixed defaults for a single-table audit sink, not
-	// tuned for high throughput — the design doc's "Explicitly out of
-	// scope" section defers exposing pool-tuning knobs in config this
-	// cycle, so these bounds aren't operator-overridable yet.
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresWriter creates the audit_entries table on db if it doesn't
+// already exist — db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) — a bad db fails here, at construction
+// time, not on the first proxied request.
+func NewPostgresWriter(db *sql.DB) (*PostgresWriter, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create audit_entries table: %w", err)
 	}
 
 	indexCtx, indexCancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer indexCancel()
 	if _, err := db.ExecContext(indexCtx, createTimestampIndexSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create audit_entries timestamp index: %w", err)
 	}
 
 	tenantColCtx, tenantColCancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer tenantColCancel()
 	if _, err := db.ExecContext(tenantColCtx, addTenantColumnSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("add audit_entries tenant column: %w", err)
 	}
 
 	tenantIdxCtx, tenantIdxCancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer tenantIdxCancel()
 	if _, err := db.ExecContext(tenantIdxCtx, createTenantIndexSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create audit_entries tenant index: %w", err)
 	}
 
@@ -140,12 +117,6 @@ func (w *PostgresWriter) Write(e domain.Entry) error {
 		return fmt.Errorf("insert audit entry: %w", err)
 	}
 	return nil
-}
-
-// Close releases the underlying connection pool, draining in-flight
-// connections. Called during Wardline's graceful shutdown.
-func (w *PostgresWriter) Close() error {
-	return w.db.Close()
 }
 
 // queryTimeout bounds Query, and is deliberately much larger than

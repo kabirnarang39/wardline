@@ -11,7 +11,21 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/scim/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
+
+// openTestPool opens a pool the same way cmd/wardline/main.go does (via
+// pgpool.Open, shared across every Postgres-backed feature in production)
+// -- test callers get the identical Open+Ping+pool-config path real
+// traffic goes through, not a bespoke test-only shortcut.
+func openTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTestPool: %v", err)
+	}
+	return db
+}
 
 // testSchema isolates this package's Postgres tests from every other
 // package's real-Postgres tests (audit/adapter, credential/adapter,
@@ -69,18 +83,20 @@ func TestPostgresBindingStore_PersistsAcrossInstances(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store1, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db1 := openTestPool(t, dsn)
+	defer func() { _ = db1.Close() }()
+	store1, err := adapter.NewPostgresBindingStore(db1, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore (store1): %v", err)
 	}
-	defer func() { _ = store1.Close() }()
 	store1.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"alice"})
 
-	store2, err := adapter.NewPostgresBindingStore(dsn, nil) // simulates a second replica reading the same table
+	db2 := openTestPool(t, dsn) // simulates a second replica reading the same table
+	defer func() { _ = db2.Close() }()
+	store2, err := adapter.NewPostgresBindingStore(db2, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore (store2): %v", err)
 	}
-	defer func() { _ = store2.Close() }()
 
 	_, scoped := store2.Bindings("alice")
 	if len(scoped) != 1 || scoped[0].RoleName != "admin" {
@@ -92,11 +108,12 @@ func TestPostgresBindingStore_GlobalGroupYieldsClusterBinding(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	store, err := adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	store.SetGroupMembers("wardline:role-superadmin", []string{"bob"})
 
@@ -113,11 +130,12 @@ func TestPostgresBindingStore_SetGroupMembersIgnoresUnrecognizedGroupName(t *tes
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	store, err := adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	store.SetGroupMembers("Engineering", []string{"carol"}) // not a Wardline-recognized group name
 
@@ -131,11 +149,12 @@ func TestPostgresBindingStore_RemoveGroupRevokesMembership(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	store, err := adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	store.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"alice"})
 	store.RemoveGroup("wardline:tenant-acme:role-admin")
@@ -150,11 +169,12 @@ func TestPostgresBindingStore_SetGroupMembersReplacesWholesale(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	store, err := adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	store.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"alice", "bob"})
 	store.SetGroupMembers("wardline:tenant-acme:role-admin", []string{"bob"}) // alice dropped
@@ -173,23 +193,16 @@ func TestPostgresBindingStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := testDSN(t)
 	dropSCIMBindingsTable(t, dsn)
 
-	store1, err := adapter.NewPostgresBindingStore(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	_, err := adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresBindingStore: %v", err)
 	}
-	defer func() { _ = store1.Close() }()
 
-	store2, err := adapter.NewPostgresBindingStore(dsn, nil)
+	_, err = adapter.NewPostgresBindingStore(db, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresBindingStore (should be idempotent): %v", err)
-	}
-	defer func() { _ = store2.Close() }()
-}
-
-func TestNewPostgresBindingStore_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresBindingStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", nil)
-	if err == nil {
-		t.Fatal("expected an error constructing a binding store against an unreachable database")
 	}
 }
 
@@ -205,11 +218,12 @@ func TestPostgresBindingStore_SetGroupMembersAgainstClosedPoolIsLogged(t *testin
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	store, err := adapter.NewPostgresBindingStore(dsn, logger)
+	db := openTestPool(t, dsn)
+	store, err := adapter.NewPostgresBindingStore(db, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresBindingStore: %v", err)
 	}
-	if err := store.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 

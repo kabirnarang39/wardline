@@ -78,6 +78,7 @@ import (
 	taintusecase "github.com/kabirnarang39/wardline/internal/features/taint/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
@@ -197,7 +198,28 @@ func runServe(logger *slog.Logger, args []string) {
 	jobBudgetEnabled := featureFlags.Enabled("job_budget")
 	jobCostBudgetEnabled := featureFlags.Enabled("job_cost_budget")
 
-	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
+	// pgPool is the ONE connection pool shared by every Postgres-backed
+	// feature below (audit, credential revocation/refresh, budget,
+	// job/cost budget, SCIM, anomaly baselines/blocks/tenant aggregates)
+	// instead of each one opening its own -- see internal/platform/pgpool
+	// and docs-site/content/features/budget-enforcement.md's former
+	// "Known limitations" entry on this. cfg.validate() already requires
+	// cfg.Audit.PostgresDSN to be set whenever postgres_storage is true,
+	// so the only failure mode here is a genuinely bad/unreachable DSN --
+	// fail fast, at startup, same posture every individual adapter used
+	// to have on its own.
+	var pgPool *sql.DB
+	if postgresStorageEnabled {
+		pool, err := pgpool.Open(cfg.Audit.PostgresDSN, cfg.Audit.PostgresMaxOpenConns)
+		if err != nil {
+			logger.Error("failed to open shared postgres connection pool", "error", err)
+			os.Exit(1)
+		}
+		pgPool = pool
+		logger.Info("postgres connection pool opened (shared across every postgres-backed feature)", "max_open_conns", cfg.Audit.PostgresMaxOpenConns)
+	}
+
+	writer := buildAuditSink(logger, featureFlags, cfg.Audit, pgPool)
 
 	// retentionStop/scheduledExportStop are independent of
 	// anomalyDetectionEnabled -- retention purges the audit log even when
@@ -217,25 +239,17 @@ func runServe(logger *slog.Logger, args []string) {
 	// blocker is the auto-block surface passed to the detector, proxy, and
 	// dashboard -- either the in-memory *BlockChecker (with its own GC
 	// ticker) or the Postgres-backed *PostgresBlockStore (shared across HA
-	// replicas, self-reaping in SQL). blockStoreCloser drains the Postgres
-	// pool on shutdown, nil for the in-memory case.
+	// replicas, self-reaping in SQL, backed by pgPool -- shutdown closes
+	// pgPool once, not this store individually).
 	var blocker anomalydomain.Blocker
-	var blockStoreCloser io.Closer
 	var autoBlockGCStop chan struct{}
-	var anomalyBaselineStoreCloser io.Closer
-	var tenantWindowStoreCloser io.Closer
-	var tenantBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
-		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled)
+		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled, pgPool)
 		anomalyDetector = as.detector
 		anomalyBuffer = as.buffer
 		blocker = as.blocker
 		anomalyGCStop = as.gcStop
 		autoBlockGCStop = as.autoBlockGCStop
-		blockStoreCloser = as.blockStoreCloser
-		anomalyBaselineStoreCloser = as.baselineCloser
-		tenantWindowStoreCloser = as.tenantWindowCloser
-		tenantBaselineStoreCloser = as.tenantBaselineCloser
 	}
 
 	// federation requires anomaly_detection (enforced by config.validate()),
@@ -386,7 +400,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if jobBudgetEnabled {
 		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob, SessionWindowSeconds: cfg.JobBudget.SessionWindowSeconds}
 		if postgresStorageEnabled {
-			pm, err := jobbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			pm, err := jobbudgetadapter.NewPostgresMeter(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres job-budget meter", "error", err)
 				os.Exit(1)
@@ -418,7 +432,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var costBudgetMeter costbudgetdomain.Meter
 	if jobCostBudgetEnabled {
 		if postgresStorageEnabled {
-			cm, err := costbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			cm, err := costbudgetadapter.NewPostgresMeter(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres cost-budget meter", "error", err)
 				os.Exit(1)
@@ -478,9 +492,8 @@ func runServe(logger *slog.Logger, args []string) {
 	// enabled. The Checker no-ops on the flag regardless of which Limiter
 	// backs it, so InMemoryLimiter is the harmless choice when off.
 	var limiter budgetdomain.Limiter
-	var budgetLimiterCloser io.Closer
 	if postgresStorageEnabled && budgetEnforcementEnabled {
-		pl, err := budgetadapter.NewPostgresLimiter(cfg.Audit.PostgresDSN, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
+		pl, err := budgetadapter.NewPostgresLimiter(pgPool, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
 		if err != nil {
 			logger.Error("failed to initialize postgres budget limiter", "error", err)
 			os.Exit(1)
@@ -492,7 +505,6 @@ func runServe(logger *slog.Logger, args []string) {
 			pl.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
 		}
 		limiter = pl
-		budgetLimiterCloser = pl
 		logger.Info("budget enforcement backed by postgres (shared across replicas)")
 	} else {
 		il := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
@@ -591,18 +603,14 @@ func runServe(logger *slog.Logger, args []string) {
 	// reference the exact same shape.
 	var scimBindingStore scimDynamicBindingSource
 	var scimHandler http.Handler
-	var bindingStoreCloser io.Closer
 	if scimEnabled {
 		if cfg.Scim.PersistPostgres {
-			pbs, err := scimadapter.NewPostgresBindingStore(cfg.Audit.PostgresDSN, logger)
+			pbs, err := scimadapter.NewPostgresBindingStore(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize scim postgres binding store", "error", err)
 				os.Exit(1)
 			}
 			scimBindingStore = pbs
-			// Registered as a closer so its connection pool is released on
-			// exit -- mirrors oidcCloser below (M2).
-			bindingStoreCloser = pbs
 			logger.Info("scim-provisioned bindings backed by postgres (shared across replicas)")
 		} else {
 			scimBindingStore = scimusecase.NewBindingStore()
@@ -658,8 +666,6 @@ func runServe(logger *slog.Logger, args []string) {
 
 	var credentialHandler *credentialadapter.Handler
 	var jwksHandler *credentialadapter.JWKSHandler
-	var revokerCloser io.Closer
-	var refreshStoreCloser io.Closer
 	var oidcCloser io.Closer
 	var mtlsHeader string
 	if credentialIssuanceEnabled {
@@ -722,20 +728,18 @@ func runServe(logger *slog.Logger, args []string) {
 		var revoker credentialdomain.Revoker
 		var refreshStore credentialdomain.RefreshStore
 		if postgresStorageEnabled {
-			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN, logger)
+			pr, err := credentialadapter.NewPostgresRevoker(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres revoker", "error", err)
 				os.Exit(1)
 			}
 			revoker = pr
-			revokerCloser = pr
-			prs, err := credentialadapter.NewPostgresRefreshStore(cfg.Audit.PostgresDSN)
+			prs, err := credentialadapter.NewPostgresRefreshStore(pgPool)
 			if err != nil {
 				logger.Error("failed to initialize postgres refresh store", "error", err)
 				os.Exit(1)
 			}
 			refreshStore = prs
-			refreshStoreCloser = prs
 			logger.Info("credential revocation and refresh tokens backed by postgres (shared across replicas)")
 		} else {
 			revoker = credentialadapter.NewRevocationList()
@@ -1240,54 +1244,20 @@ func runServe(logger *slog.Logger, args []string) {
 				logger.Error("tracing shutdown failed", "error", err)
 			}
 			tracingCancel()
-			if auditCloser != nil {
-				if err := auditCloser.Close(); err != nil {
-					logger.Error("audit writer shutdown failed", "error", err)
-				}
-			}
-			if revokerCloser != nil {
-				if err := revokerCloser.Close(); err != nil {
-					logger.Error("revoker shutdown failed", "error", err)
-				}
-			}
-			if refreshStoreCloser != nil {
-				if err := refreshStoreCloser.Close(); err != nil {
-					logger.Error("refresh store shutdown failed", "error", err)
-				}
-			}
-			if budgetLimiterCloser != nil {
-				if err := budgetLimiterCloser.Close(); err != nil {
-					logger.Error("budget limiter shutdown failed", "error", err)
-				}
-			}
-			if anomalyBaselineStoreCloser != nil {
-				if err := anomalyBaselineStoreCloser.Close(); err != nil {
-					logger.Error("anomaly baseline store shutdown failed", "error", err)
-				}
-			}
-			if tenantWindowStoreCloser != nil {
-				if err := tenantWindowStoreCloser.Close(); err != nil {
-					logger.Error("tenant anomaly window store shutdown failed", "error", err)
-				}
-			}
-			if tenantBaselineStoreCloser != nil {
-				if err := tenantBaselineStoreCloser.Close(); err != nil {
-					logger.Error("tenant anomaly baseline store shutdown failed", "error", err)
-				}
-			}
-			if blockStoreCloser != nil {
-				if err := blockStoreCloser.Close(); err != nil {
-					logger.Error("anomaly block store shutdown failed", "error", err)
+			// pgPool is the ONE pool behind audit, credential revocation/
+			// refresh, budget, job/cost budget, SCIM, and anomaly
+			// baselines/blocks/tenant aggregates (whichever of those are
+			// on) -- closing it once here replaces the eight-plus
+			// individual per-feature closer calls this used to be, one
+			// per Postgres-backed adapter's own now-removed Close method.
+			if pgPool != nil {
+				if err := pgPool.Close(); err != nil {
+					logger.Error("shared postgres pool shutdown failed", "error", err)
 				}
 			}
 			if oidcCloser != nil {
 				if err := oidcCloser.Close(); err != nil {
 					logger.Error("oidc bootstrapper shutdown failed", "error", err)
-				}
-			}
-			if bindingStoreCloser != nil {
-				if err := bindingStoreCloser.Close(); err != nil {
-					logger.Error("scim binding store shutdown failed", "error", err)
 				}
 			}
 			if healthDB != nil {
@@ -1368,39 +1338,18 @@ func runServe(logger *slog.Logger, args []string) {
 	if err := tracingProvider.Shutdown(tracingShutdownCtx); err != nil {
 		logger.Error("tracing shutdown failed", "error", err)
 	}
-	if auditCloser != nil {
-		if err := auditCloser.Close(); err != nil {
-			logger.Error("audit writer shutdown failed", "error", err)
-		}
-	}
-	if revokerCloser != nil {
-		if err := revokerCloser.Close(); err != nil {
-			logger.Error("revoker shutdown failed", "error", err)
-		}
-	}
-	if refreshStoreCloser != nil {
-		if err := refreshStoreCloser.Close(); err != nil {
-			logger.Error("refresh store shutdown failed", "error", err)
-		}
-	}
-	if budgetLimiterCloser != nil {
-		if err := budgetLimiterCloser.Close(); err != nil {
-			logger.Error("budget limiter shutdown failed", "error", err)
-		}
-	}
-	if anomalyBaselineStoreCloser != nil {
-		if err := anomalyBaselineStoreCloser.Close(); err != nil {
-			logger.Error("anomaly baseline store shutdown failed", "error", err)
+	// pgPool is the ONE pool behind audit, credential revocation/refresh,
+	// budget, job/cost budget, SCIM, and anomaly baselines/blocks/tenant
+	// aggregates (whichever of those are on) -- closing it once here
+	// replaces the individual per-feature closer calls this used to be.
+	if pgPool != nil {
+		if err := pgPool.Close(); err != nil {
+			logger.Error("shared postgres pool shutdown failed", "error", err)
 		}
 	}
 	if oidcCloser != nil {
 		if err := oidcCloser.Close(); err != nil {
 			logger.Error("oidc bootstrapper shutdown failed", "error", err)
-		}
-	}
-	if bindingStoreCloser != nil {
-		if err := bindingStoreCloser.Close(); err != nil {
-			logger.Error("scim binding store shutdown failed", "error", err)
 		}
 	}
 	if healthDB != nil {
@@ -2255,11 +2204,11 @@ func readRedactedIdentities(path string) ([]compliancedomain.RedactedIdentity, e
 // buildAndWriteEvidenceBundle's caller still needs those for
 // WriteBundle, while the dashboard querier only needs the Manifest.
 func queryComplianceManifest(logger *slog.Logger, cfg *config.Config, featureFlags flags.Provider, from, to time.Time) (compliancedomain.Manifest, []auditdomain.Entry, []anomalydomain.Anomaly, error) {
-	auditReader, jsonlReader, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
+	auditReader, jsonlReader, closer, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
 	if err != nil {
 		return compliancedomain.Manifest{}, nil, nil, fmt.Errorf("set up audit reader: %w", err)
 	}
-	if closer, ok := auditReader.(io.Closer); ok {
+	if closer != nil {
 		defer func() { _ = closer.Close() }()
 	}
 
@@ -2567,25 +2516,21 @@ func maybeStartScheduledExport(logger *slog.Logger, featureFlags flags.Provider,
 // nil when their sub-feature is off (no auto-block, no postgres), which the
 // caller's later wiring and shutdown already nil-check exactly as before.
 type anomalyStack struct {
-	detector         *anomalyusecase.Detector
-	buffer           *anomalyusecase.AlertBuffer
-	blocker          anomalydomain.Blocker
-	gcStop           chan struct{}
-	autoBlockGCStop  chan struct{}
-	blockStoreCloser io.Closer
-	baselineCloser   io.Closer
-	// tenantWindowCloser/tenantBaselineCloser drain
-	// PostgresTenantWindowStore/PostgresTenantBaselineStore on shutdown,
-	// nil when tenant_anomaly isn't both enabled and postgres_storage-backed.
-	tenantWindowCloser   io.Closer
-	tenantBaselineCloser io.Closer
+	detector        *anomalyusecase.Detector
+	buffer          *anomalyusecase.AlertBuffer
+	blocker         anomalydomain.Blocker
+	gcStop          chan struct{}
+	autoBlockGCStop chan struct{}
 }
 
 // buildAnomalyStack constructs the detector, alert buffer, auto-block
-// surface, baseline store, and their GC tickers/closers from config. Fatal
-// (os.Exit) on any store-open failure — the same fail-fast the inline
-// composition-root code had. Call only when the anomaly_detection flag is on.
-func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageEnabled bool) anomalyStack {
+// surface, and baseline store from config. Every Postgres-backed store
+// here (block/baseline/tenant-window/tenant-baseline) uses pgPool, the
+// ONE pool runServe opens once and closes once -- none of them owns or
+// closes a connection of its own anymore. Fatal (os.Exit) on any
+// store-open failure — the same fail-fast the inline composition-root
+// code had. Call only when the anomaly_detection flag is on.
+func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageEnabled bool, pgPool *sql.DB) anomalyStack {
 	var s anomalyStack
 
 	anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
@@ -2627,13 +2572,12 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 			// is visible to every replica on its next Check. Self-reaps
 			// expired rows in SQL, so no separate GC ticker is started
 			// (the in-memory StartBlockGC below is only for the map).
-			pbs, err := anomalyadapter.NewPostgresBlockStore(cfg.Audit.PostgresDSN, blockDuration, logger)
+			pbs, err := anomalyadapter.NewPostgresBlockStore(pgPool, blockDuration, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres block store", "error", err)
 				os.Exit(1)
 			}
 			s.blocker = pbs
-			s.blockStoreCloser = pbs
 			logger.Info("auto-block enabled (shared via postgres)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
 		} else {
 			bc := anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
@@ -2679,36 +2623,33 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		// otherwise give the same replica two different instance IDs
 		// across its two Postgres-backed stores.
 		anomalyInstanceID := deriveInstanceID(logger, "")
-		bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+		bs, err := anomalyadapter.NewPostgresBaselineStore(pgPool, anomalyInstanceID, logger)
 		if err != nil {
 			logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
 			os.Exit(1)
 		}
 		baselineStore = bs
-		s.baselineCloser = bs
 		logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
 
 		// tenant_anomaly's own two Postgres-backed stores, gated on both
 		// postgres_storage AND tenant_anomaly.enabled -- without the
 		// second check, an operator running postgres_storage for every
 		// other feature but not using tenant_anomaly would still get its
-		// two tables touched and two more connection pools opened.
+		// two tables touched for a feature they never enabled.
 		if cfg.Anomaly.TenantAnomaly.Enabled {
-			tws, err := anomalyadapter.NewPostgresTenantWindowStore(cfg.Audit.PostgresDSN, logger)
+			tws, err := anomalyadapter.NewPostgresTenantWindowStore(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres tenant window store", "error", err)
 				os.Exit(1)
 			}
 			tenantWindowStorePg = tws
-			s.tenantWindowCloser = tws
 
-			tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+			tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(pgPool, anomalyInstanceID, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres tenant baseline store", "error", err)
 				os.Exit(1)
 			}
 			tenantBaselineStorePg = tbs
-			s.tenantBaselineCloser = tbs
 			logger.Info("tenant_anomaly aggregate state backed by postgres (shared across replicas)")
 		}
 	} else {
@@ -2859,7 +2800,15 @@ func startScheduledExportJob(logger *slog.Logger, cfg *config.Config, featureFla
 	}
 }
 
-func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig) (auditdomain.Writer, io.Closer) {
+// pgPool is the ONE shared connection pool opened once in runServe (see
+// pgpool.Open there) when postgres_storage is on, nil otherwise -- every
+// Postgres-backed adapter this function (and its siblings below) builds
+// uses it instead of opening its own pool. Its lifecycle belongs to
+// runServe, not to any adapter this function returns -- the io.Closer
+// this function used to return for the postgres case is gone along with
+// PostgresWriter's own Close method; runServe closes pgPool once, after
+// every feature built from it has stopped.
+func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig, pgPool *sql.DB) auditdomain.Writer {
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 
 	if cfg.Output != "" && postgresStorageEnabled {
@@ -2872,15 +2821,15 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	}
 
 	if postgresStorageEnabled {
-		pw, err := auditadapter.NewPostgresWriter(cfg.PostgresDSN)
+		pw, err := auditadapter.NewPostgresWriter(pgPool)
 		if err != nil {
 			logger.Error("failed to initialize postgres audit writer", "error", err)
 			os.Exit(1)
 		}
-		return pw, pw
+		return pw
 	}
 
-	return buildAuditWriter(logger, cfg.Output), nil
+	return buildAuditWriter(logger, cfg.Output)
 }
 
 // deriveInstanceID returns override if non-empty (an operator-supplied

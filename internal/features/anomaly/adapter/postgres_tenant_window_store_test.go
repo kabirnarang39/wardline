@@ -10,6 +10,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 const tenantAnomalyTestSchema = "wardline_test_tenant_anomaly"
@@ -39,6 +40,19 @@ func tenantAnomalyTestDSN(t *testing.T) string {
 	return dsn + sep + "search_path=" + tenantAnomalyTestSchema
 }
 
+// openTenantWindowTestPool opens a pool the same way cmd/wardline/main.go
+// does (via pgpool.Open, shared across every Postgres-backed feature in
+// production) -- test callers get the identical Open+Ping+pool-config path
+// real traffic goes through, not a bespoke test-only shortcut.
+func openTenantWindowTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTenantWindowTestPool: %v", err)
+	}
+	return db
+}
+
 func dropTenantWindowTable(t *testing.T, dsn string) {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
@@ -54,16 +68,20 @@ func dropTenantWindowTable(t *testing.T, dsn string) {
 func TestPostgresTenantWindowStore_AddAndGet_MergesAcrossInstances(t *testing.T) {
 	dsn := tenantAnomalyTestDSN(t)
 	dropTenantWindowTable(t, dsn)
-	s1, err := adapter.NewPostgresTenantWindowStore(dsn, nil)
+
+	db1 := openTenantWindowTestPool(t, dsn)
+	defer func() { _ = db1.Close() }()
+	s1, err := adapter.NewPostgresTenantWindowStore(db1, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresTenantWindowStore (store 1): %v", err)
 	}
-	defer func() { _ = s1.Close() }()
-	s2, err := adapter.NewPostgresTenantWindowStore(dsn, nil)
+
+	db2 := openTenantWindowTestPool(t, dsn)
+	defer func() { _ = db2.Close() }()
+	s2, err := adapter.NewPostgresTenantWindowStore(db2, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresTenantWindowStore (store 2): %v", err)
 	}
-	defer func() { _ = s2.Close() }()
 
 	windowStart := time.Now().Truncate(time.Minute)
 	tenant := "cross-instance-test-tenant"
@@ -97,19 +115,16 @@ func TestPostgresTenantWindowStore_AddAndGet_MergesAcrossInstances(t *testing.T)
 	}
 }
 
-func TestPostgresTenantWindowStore_FailsFastOnBadDSN(t *testing.T) {
-	_, err := adapter.NewPostgresTenantWindowStore("postgres://bad:bad@localhost:1/nonexistent", nil)
-	if err == nil {
-		t.Fatal("expected NewPostgresTenantWindowStore to fail on an unreachable DSN, not silently succeed")
-	}
-}
-
 func TestPostgresTenantWindowStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := tenantAnomalyTestDSN(t)
-	if _, err := adapter.NewPostgresTenantWindowStore(dsn, nil); err != nil {
+
+	db := openTenantWindowTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+
+	if _, err := adapter.NewPostgresTenantWindowStore(db, nil); err != nil {
 		t.Fatalf("first NewPostgresTenantWindowStore: %v", err)
 	}
-	if _, err := adapter.NewPostgresTenantWindowStore(dsn, nil); err != nil {
+	if _, err := adapter.NewPostgresTenantWindowStore(db, nil); err != nil {
 		t.Fatalf("second NewPostgresTenantWindowStore (CREATE TABLE IF NOT EXISTS should be a no-op): %v", err)
 	}
 }

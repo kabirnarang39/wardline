@@ -69,42 +69,26 @@ SELECT expires_at FROM revoked_identities WHERE identity = ANY($1) ORDER BY expi
 // Revoke/IsRevoked call reaches the same shared database every replica
 // connects to, so a revocation made through one replica is honored by
 // every other replica on its very next check -- unlike RevocationList,
-// whose map is scoped to a single process. Mirrors
-// audit/adapter.PostgresWriter's connection-pool and idempotent-table
-// pattern exactly.
+// whose map is scoped to a single process. db is the ONE pool shared by
+// every Postgres-backed feature (see internal/platform/pgpool) -- this
+// adapter no longer opens or owns its own connection pool.
 type PostgresRevoker struct {
 	db     *sql.DB
 	now    func() time.Time
 	logger *slog.Logger
 }
 
-// NewPostgresRevoker opens a connection pool to dsn, creates the
-// revoked_identities table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first revocation check. logger is used
-// to surface IsRevoked query failures that would otherwise be
-// indistinguishable from a genuine "not revoked" result (see IsRevoked).
-func NewPostgresRevoker(dsn string, logger *slog.Logger) (*PostgresRevoker, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), revokerTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresRevoker creates the revoked_identities table on db if it
+// doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, not on the first revocation check. logger is used to surface
+// IsRevoked query failures that would otherwise be indistinguishable
+// from a genuine "not revoked" result (see IsRevoked).
+func NewPostgresRevoker(db *sql.DB, logger *slog.Logger) (*PostgresRevoker, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createRevokedIdentitiesTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create revoked_identities table: %w", err)
 	}
 
@@ -160,10 +144,4 @@ func (r *PostgresRevoker) IsRevoked(tenantName, identity string) bool {
 		return false
 	}
 	return r.now().Before(expiresAt)
-}
-
-// Close releases the underlying connection pool, draining in-flight
-// connections. Called during Wardline's graceful shutdown.
-func (r *PostgresRevoker) Close() error {
-	return r.db.Close()
 }
