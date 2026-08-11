@@ -186,6 +186,17 @@ policy-pack marketplace, HA deployment.
   token/cost — a token/cost `Meter` is a possible future adapter behind
   the same interface. In-memory and Postgres-backed (`postgres_storage`)
   meters both ship. See [Per-Job Budget Ceiling](/features/job-budget/).
+- **Per-job cost/token budget** — the token/cost `Meter` adapter named
+  above, shipped: a second, independent ceiling alongside per-job budget's
+  call count, keyed the same `(tenant, identity, session)` way but summing
+  each tool's declared cost (`tool_costs`/`default_cost`) instead of
+  counting calls. Same shape as per-job budget — zero-config hard proxy
+  gate (429, decision `cost_budget_exceeded`), optional
+  `input.cost_over_budget` policy exposure, and the same grant-override
+  carve-out an approved retry gets. Declared cost only, not response-parsed
+  usage or real-money billing. In-memory and Postgres-backed
+  (`postgres_storage`) meters both ship. See [Per-Job Cost/Token
+  Budget](/features/cost-budget/).
 
 ## Future directions (not committed)
 
