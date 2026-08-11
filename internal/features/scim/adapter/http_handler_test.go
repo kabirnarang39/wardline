@@ -209,32 +209,108 @@ func TestHandler_ListUsers_NoFilterReturnsFullList(t *testing.T) {
 	}
 }
 
-// TestHandler_ListUsers_UnsupportedFilterExpression_Returns400 is the
-// scope boundary: any filter expression beyond the narrow `eq` case
-// (a different operator, a different attribute, "and"/"or") must be
-// rejected with 400, not silently answered with the unfiltered list --
-// a client that sent a filter it expected honored getting the wrong
-// list back is a worse silent-failure mode than a clear rejection.
-func TestHandler_ListUsers_UnsupportedFilterExpression_Returns400(t *testing.T) {
+// TestHandler_ListUsers_GeneralFilterGrammar covers what used to be the
+// narrow `<attr> eq "<value>"`-only heuristic's scope boundary --
+// "co", "and", and a filter naming an attribute the User schema doesn't
+// have are now all correctly handled by the real SCIM filter grammar
+// (filter.go), not rejected: "co"/"and" evaluate correctly, and an
+// absent attribute simply never matches (an empty result list, exactly
+// what a real SCIM server does for a schema-valid-but-unset attribute),
+// not a 400.
+func TestHandler_ListUsers_GeneralFilterGrammar(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"bob","active":false}`, "secret-token")
+
+	cases := []struct {
+		filter    string
+		wantNames []string
+	}{
+		{`userName co "ali"`, []string{"alice"}},
+		{`userName eq "alice" and active eq true`, []string{"alice"}},
+		{`userName eq "alice" or userName eq "bob"`, []string{"alice", "bob"}},
+		{`active eq false`, []string{"bob"}},
+		{`not (active eq true)`, []string{"bob"}},
+		{`userName sw "al"`, []string{"alice"}},
+		{`userName pr`, []string{"alice", "bob"}},
+		// displayName doesn't exist on User -- never matches, not a 400
+		// (filtering on a schema-valid-but-absent attribute is not an
+		// error per RFC 7644).
+		{`displayName eq "alice"`, nil},
+		// A well-formed filter that's simply never true for any real
+		// resource (one userName can't equal two different values at
+		// once) -- correctly parsed and evaluated, empty result, not a
+		// parse error.
+		{`userName eq "alice" and userName eq "bob"`, nil},
+	}
+	for _, c := range cases {
+		path := "/scim/v2/Users?filter=" + url.QueryEscape(c.filter)
+		rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+		if rec.Code != http.StatusOK {
+			t.Errorf("filter %q: got %d, want 200, body %s", c.filter, rec.Code, rec.Body.String())
+			continue
+		}
+		var out []struct {
+			UserName string `json:"userName"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Errorf("filter %q: invalid JSON response: %v", c.filter, err)
+			continue
+		}
+		gotNames := make([]string, len(out))
+		for i, u := range out {
+			gotNames[i] = u.UserName
+		}
+		if !sameElements(gotNames, c.wantNames) {
+			t.Errorf("filter %q: got %v, want %v", c.filter, gotNames, c.wantNames)
+		}
+	}
+}
+
+// sameElements reports whether got and want contain the same strings,
+// order-independent -- filter.go's "or" branch order isn't guaranteed
+// to match ListUsers' own iteration order.
+func sameElements(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	counts := make(map[string]int, len(want))
+	for _, w := range want {
+		counts[w]++
+	}
+	for _, g := range got {
+		counts[g]--
+		if counts[g] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TestHandler_ListUsers_MalformedFilterExpression_Returns400 is the
+// real scope boundary now: syntax the SCIM filter grammar itself
+// rejects (unterminated string, unknown operator, missing operand) --
+// not "and"/"or"/other-attribute filters, which the grammar now
+// genuinely supports (see TestHandler_ListUsers_GeneralFilterGrammar).
+func TestHandler_ListUsers_MalformedFilterExpression_Returns400(t *testing.T) {
 	svc := usecase.NewProvisioningService()
 	h := newTestHandler(svc)
 
 	doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
 
 	cases := []string{
-		`userName co "ali"`,
-		`userName eq "alice" and active eq true`,
-		`displayName eq "alice"`,
-		// Regression: this also starts with `userName eq "` and ends with
-		// `"`, so a naive prefix/suffix check alone wrongly accepts it
-		// (extracting the garbage value `alice" and userName eq "bob`).
-		`userName eq "alice" and userName eq "bob"`,
-		// M1 regression: exactly the prefix, with no closing quote of its
-		// own -- the same trailing quote satisfies both HasPrefix and
-		// HasSuffix, so a naive check alone wrongly accepts this as an
-		// empty-value filter (200 + empty list) instead of rejecting an
-		// unterminated one (400).
+		// Unterminated string literal.
 		`userName eq "`,
+		// Unknown/unsupported operator.
+		`userName xyz "alice"`,
+		// Missing comparison value.
+		`userName eq`,
+		// A logical operator with no left-hand operand.
+		`and userName eq "alice"`,
+		// Unbalanced parenthesis.
+		`(userName eq "alice"`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Users?filter=" + url.QueryEscape(filter)
@@ -567,24 +643,62 @@ func TestHandler_ListGroups_NoFilterReturnsFullList(t *testing.T) {
 	}
 }
 
-// TestHandler_ListGroups_UnsupportedFilterExpression_Returns400 mirrors
-// TestHandler_ListUsers_UnsupportedFilterExpression_Returns400 for Groups.
-func TestHandler_ListGroups_UnsupportedFilterExpression_Returns400(t *testing.T) {
+// TestHandler_ListGroups_GeneralFilterGrammar mirrors
+// TestHandler_ListUsers_GeneralFilterGrammar for Groups.
+func TestHandler_ListGroups_GeneralFilterGrammar(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newGroupTestHandler(svc, usecase.NewBindingStore())
+
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
+	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-admin"}`, "secret-token")
+
+	cases := []struct {
+		filter    string
+		wantNames []string
+	}{
+		{`displayName co "viewer"`, []string{"wardline:role-viewer"}},
+		{`displayName eq "wardline:role-viewer" or displayName eq "wardline:role-admin"`, []string{"wardline:role-viewer", "wardline:role-admin"}},
+		// userName doesn't exist on Group -- never matches, not a 400.
+		{`userName eq "wardline:role-viewer"`, nil},
+		{`displayName eq "wardline:role-viewer" and displayName eq "wardline:role-admin"`, nil},
+	}
+	for _, c := range cases {
+		path := "/scim/v2/Groups?filter=" + url.QueryEscape(c.filter)
+		rec := doRequest(h, http.MethodGet, path, "", "secret-token")
+		if rec.Code != http.StatusOK {
+			t.Errorf("filter %q: got %d, want 200, body %s", c.filter, rec.Code, rec.Body.String())
+			continue
+		}
+		var out []struct {
+			DisplayName string `json:"displayName"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Errorf("filter %q: invalid JSON response: %v", c.filter, err)
+			continue
+		}
+		gotNames := make([]string, len(out))
+		for i, g := range out {
+			gotNames[i] = g.DisplayName
+		}
+		if !sameElements(gotNames, c.wantNames) {
+			t.Errorf("filter %q: got %v, want %v", c.filter, gotNames, c.wantNames)
+		}
+	}
+}
+
+// TestHandler_ListGroups_MalformedFilterExpression_Returns400 mirrors
+// TestHandler_ListUsers_MalformedFilterExpression_Returns400 for Groups.
+func TestHandler_ListGroups_MalformedFilterExpression_Returns400(t *testing.T) {
 	svc := usecase.NewProvisioningService()
 	h := newGroupTestHandler(svc, usecase.NewBindingStore())
 
 	doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
 
 	cases := []string{
-		`displayName co "viewer"`,
-		`displayName eq "wardline:role-viewer" and active eq true`,
-		`userName eq "wardline:role-viewer"`,
-		// Regression: Groups equivalent of the Users
-		// eq-followed-by-another-eq-clause repro above.
-		`displayName eq "wardline:role-viewer" and displayName eq "wardline:role-admin"`,
-		// M1 regression: Groups equivalent of the Users unterminated-filter
-		// repro above.
 		`displayName eq "`,
+		`displayName xyz "viewer"`,
+		`displayName eq`,
+		`and displayName eq "viewer"`,
 	}
 	for _, filter := range cases {
 		path := "/scim/v2/Groups?filter=" + url.QueryEscape(filter)
