@@ -39,8 +39,21 @@ func tenantAnomalyTestDSN(t *testing.T) string {
 	return dsn + sep + "search_path=" + tenantAnomalyTestSchema
 }
 
+func dropTenantWindowTable(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open for cleanup: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`DROP TABLE IF EXISTS tenant_window_totals`); err != nil {
+		t.Fatalf("drop table for cleanup: %v", err)
+	}
+}
+
 func TestPostgresTenantWindowStore_AddAndGet_MergesAcrossInstances(t *testing.T) {
 	dsn := tenantAnomalyTestDSN(t)
+	dropTenantWindowTable(t, dsn)
 	s1, err := adapter.NewPostgresTenantWindowStore(dsn, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresTenantWindowStore (store 1): %v", err)
