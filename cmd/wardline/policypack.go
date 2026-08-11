@@ -32,11 +32,11 @@ const placeholderIdentityPrefix = "REPLACE_WITH_"
 // for why this -- not a network-fetched registry -- is this cycle's
 // "marketplace expansion."
 func buildPackCatalog(logger *slog.Logger, packsDir string) policypackusecase.PackSource {
-	embedded := policypackusecase.NewCatalog(policypackadapter.Packs())
+	embedded := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	if packsDir == "" {
 		return embedded
 	}
-	external := policypackusecase.NewCatalog(os.DirFS(packsDir))
+	external := policypackusecase.NewCatalog(os.DirFS(packsDir), policypackadapter.YAMLManifestDecoder{})
 	return policypackusecase.NewMultiCatalog(logger, embedded, external)
 }
 

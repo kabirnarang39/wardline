@@ -31,7 +31,7 @@ func (errorFS) Open(name string) (fs.File, error) {
 }
 
 func TestRunPolicyPackList_PrintsAllFourPacks(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	var out bytes.Buffer
 	ok := runPolicyPackListTo(&out, discardLogger(), catalog)
 
@@ -46,7 +46,7 @@ func TestRunPolicyPackList_PrintsAllFourPacks(t *testing.T) {
 }
 
 func TestRunPolicyPackList_CatalogErrors_ReturnsFalseWithoutExiting(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(errorFS{})
+	catalog := policypackusecase.NewCatalog(errorFS{}, policypackadapter.YAMLManifestDecoder{})
 	var out bytes.Buffer
 	ok := runPolicyPackListTo(&out, discardLogger(), catalog)
 
@@ -114,7 +114,7 @@ func TestReorderFlagsFirst(t *testing.T) {
 }
 
 func TestRunPolicyPackShow_KnownName_PrintsManifestAndSource(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	var out bytes.Buffer
 	ok := runPolicyPackShowTo(&out, discardLogger(), catalog, "deny-all-baseline")
 
@@ -127,7 +127,7 @@ func TestRunPolicyPackShow_KnownName_PrintsManifestAndSource(t *testing.T) {
 }
 
 func TestRunPolicyPackShow_UnknownName_Fails(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	var out bytes.Buffer
 	ok := runPolicyPackShowTo(&out, discardLogger(), catalog, "does-not-exist")
 
@@ -137,7 +137,7 @@ func TestRunPolicyPackShow_UnknownName_Fails(t *testing.T) {
 }
 
 func TestRunPolicyPackInstall_WritesFile(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	var out bytes.Buffer
 
@@ -155,7 +155,7 @@ func TestRunPolicyPackInstall_WritesFile(t *testing.T) {
 }
 
 func TestRunPolicyPackInstall_TemplatePack_WarnsAboutPlaceholderIdentities(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	var out bytes.Buffer
 
 	if !runPolicyPackInstallTo(&out, discardLogger(), catalog, "single-identity-full-access", filepath.Join(t.TempDir(), "policy.yaml")) {
@@ -182,7 +182,7 @@ func TestRunPolicyPackInstall_PrintedSnippetIsValidTopLevelWardlineYAML(t *testi
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, "policy.yaml")
 	var out bytes.Buffer
-	if !runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs()), "deny-all-baseline", policyPath) {
+	if !runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{}), "deny-all-baseline", policyPath) {
 		t.Fatal("expected install to succeed")
 	}
 
@@ -227,7 +227,7 @@ func TestRunPolicyPackInstall_RefusesToFollowADanglingSymlink(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	if runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs()), "deny-all-baseline", outputPath) {
+	if runPolicyPackInstallTo(&out, discardLogger(), policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{}), "deny-all-baseline", outputPath) {
 		t.Fatal("expected install to refuse a path that is a dangling symlink")
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -236,7 +236,7 @@ func TestRunPolicyPackInstall_RefusesToFollowADanglingSymlink(t *testing.T) {
 }
 
 func TestRunPolicyPackInstall_RefusesToOverwriteExistingFile(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	if err := os.WriteFile(outputPath, []byte("pre-existing content"), 0600); err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestRunPolicyPackInstall_RefusesToOverwriteExistingFile(t *testing.T) {
 }
 
 func TestRunPolicyPackInstall_UnknownName_Fails(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	var out bytes.Buffer
 
@@ -280,7 +280,7 @@ func capturingLogger() (*slog.Logger, *bytes.Buffer) {
 }
 
 func TestRunPolicyPackCompose_TwoDisjointYAMLPacks_ConcatenatesRules(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	var out bytes.Buffer
 
@@ -304,7 +304,7 @@ func TestRunPolicyPackCompose_TwoDisjointYAMLPacks_ConcatenatesRules(t *testing.
 }
 
 func TestRunPolicyPackCompose_DuplicateRuleKey_WarnsButSucceeds(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	logger, logBuf := capturingLogger()
 	var out bytes.Buffer
@@ -324,7 +324,7 @@ func TestRunPolicyPackCompose_DuplicateRuleKey_WarnsButSucceeds(t *testing.T) {
 }
 
 func TestRunPolicyPackCompose_NonYAMLPack_RefusesAndWritesNothing(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	logger, logBuf := capturingLogger()
 	var out bytes.Buffer
@@ -342,7 +342,7 @@ func TestRunPolicyPackCompose_NonYAMLPack_RefusesAndWritesNothing(t *testing.T) 
 }
 
 func TestRunPolicyPackCompose_UnknownName_Fails(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	var out bytes.Buffer
 
@@ -353,7 +353,7 @@ func TestRunPolicyPackCompose_UnknownName_Fails(t *testing.T) {
 }
 
 func TestRunPolicyPackCompose_RefusesToOverwriteExistingFile(t *testing.T) {
-	catalog := policypackusecase.NewCatalog(policypackadapter.Packs())
+	catalog := policypackusecase.NewCatalog(policypackadapter.Packs(), policypackadapter.YAMLManifestDecoder{})
 	outputPath := filepath.Join(t.TempDir(), "policy.yaml")
 	if err := os.WriteFile(outputPath, []byte("pre-existing"), 0600); err != nil {
 		t.Fatal(err)

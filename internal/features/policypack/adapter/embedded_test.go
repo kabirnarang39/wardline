@@ -34,7 +34,7 @@ var expectedPackNames = []string{
 }
 
 func TestPacks_EmbeddedCatalogHasExactlyTheExpectedPacks(t *testing.T) {
-	catalog := usecase.NewCatalog(adapter.Packs())
+	catalog := usecase.NewCatalog(adapter.Packs(), adapter.YAMLManifestDecoder{})
 
 	packs, err := catalog.List()
 	if err != nil {
@@ -57,7 +57,7 @@ func TestPacks_EmbeddedCatalogHasExactlyTheExpectedPacks(t *testing.T) {
 // opa.NewOPAEngine for opa, cedar.NewCedarEngine for cedar), not just a
 // generic syntax check, against every shipped pack's policy file.
 func TestPacks_EveryShippedPolicyFileParsesWithItsRealBackendLoader(t *testing.T) {
-	catalog := usecase.NewCatalog(adapter.Packs())
+	catalog := usecase.NewCatalog(adapter.Packs(), adapter.YAMLManifestDecoder{})
 	packs, err := catalog.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -108,7 +108,7 @@ func TestPacks_EveryShippedPolicyFileParsesWithItsRealBackendLoader(t *testing.T
 // (the viewer block, which comes first) rather than silently granting
 // full access via the admin wildcard.
 func TestPacks_AdminViewerSplit_SameIdentityForBothRolesFailsClosed(t *testing.T) {
-	catalog := usecase.NewCatalog(adapter.Packs())
+	catalog := usecase.NewCatalog(adapter.Packs(), adapter.YAMLManifestDecoder{})
 	_, policySource, err := catalog.Get("admin-viewer-split")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -143,7 +143,7 @@ func TestPacks_AdminViewerSplit_SameIdentityForBothRolesFailsClosed(t *testing.T
 // this test proves that guard actually works, not just that it's
 // present in the source.
 func TestPacks_AdminViewerSplitOPA_SameIdentityForBothRolesFailsClosed(t *testing.T) {
-	catalog := usecase.NewCatalog(adapter.Packs())
+	catalog := usecase.NewCatalog(adapter.Packs(), adapter.YAMLManifestDecoder{})
 	_, policySource, err := catalog.Get("admin-viewer-split-opa")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -170,7 +170,7 @@ func TestPacks_AdminViewerSplitOPA_SameIdentityForBothRolesFailsClosed(t *testin
 // own "when { principal != viewer }" guard to fail closed on a
 // collision.
 func TestPacks_AdminViewerSplitCedar_SameIdentityForBothRolesFailsClosed(t *testing.T) {
-	catalog := usecase.NewCatalog(adapter.Packs())
+	catalog := usecase.NewCatalog(adapter.Packs(), adapter.YAMLManifestDecoder{})
 	_, policySource, err := catalog.Get("admin-viewer-split-cedar")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
