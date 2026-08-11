@@ -25,8 +25,15 @@ Serves `POST`/`GET /scim/v2/Users` and `GET`/`DELETE`/`PATCH
 supports exactly one operation: `{"Operations": [{"op": "replace",
 "path": "active", "value": true|false}]}`), plus the same verb set for
 `/scim/v2/Groups` (PATCH supports `{"Operations": [{"op":
-"add"|"remove", "path": "members", "value": [...]}]}`). Every request
-needs `Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
+"add"|"remove", "path": "members", "value": [...]}]}`), `POST
+/scim/v2/Bulk` (RFC 7644 §3.7 — batches Create/PATCH/Delete operations
+against `/Users`/`/Groups` in one request, each dispatched through the
+exact same handler logic the individual endpoints use), and the
+discovery triad every real SCIM client probes before provisioning
+anything: `GET /scim/v2/ServiceProviderConfig`, `GET
+/scim/v2/ResourceTypes`(`/{id}`), `GET /scim/v2/Schemas`(`/{id}`) — each
+describing what this server actually supports, not a boilerplate
+template. Every request needs `Authorization: Bearer <token>` matching `scim.bearer_token_env`'s
 value, compared in constant time: a wrong or missing token gets `401`;
 an unknown user/group ID on `GET`/`DELETE`/`PATCH` gets `404`; a
 malformed PATCH body — including one missing the `Operations` wrapper or
@@ -48,26 +55,26 @@ same bindings.
 
 ## Known limitations
 
-- **Not full SCIM 2.0 compliance.** No bulk operations, no
-  `/ServiceProviderConfig`/`/Schemas`/`/ResourceTypes` discovery
-  endpoints, and only the narrow `?filter=` case real SCIM clients
-  (Okta, Azure AD) actually send when checking whether a user/group
-  already exists before creating one: `?filter=userName eq "..."` on
-  `GET /scim/v2/Users`, `?filter=displayName eq "..."` on `GET
-  /scim/v2/Groups`. No general filter grammar — no `and`/`or`, no
-  other operators (`ne`, `co`, `sw`, ...), no other fields; any filter
-  expression outside this shape is rejected with 400 rather than
-  silently answered with the unfiltered list. No filter at all still
-  returns the full list, unchanged. Only the PATCH operations named
-  above are recognized; every other operation or path is silently
-  ignored, not rejected.
-- The `and`/`or`-combinator rejection above is a substring heuristic,
-  not a grammar parse: a legitimate `userName`/`displayName` value that
-  genuinely contains the space-padded substring `" and "` or `" or "`
-  (e.g. `"Sam and Dave Fan Club"`) is incorrectly rejected with 400,
-  since the filter parser can't distinguish that from an actual SCIM
-  `and`/`or` combinator without a real grammar tokenizer — deliberately
-  out of scope for the narrow eq-only support above.
+- **`?filter=` now parses a real SCIM filter grammar** (RFC 7644
+  §3.4.2.2 — tokenizer + recursive-descent parser + AST evaluator, not
+  a pattern-matched special case): every comparison operator (`eq`,
+  `ne`, `co`, `sw`, `ew`, `gt`, `lt`, `ge`, `le`, `pr`), `and`/`or`/`not`
+  with parentheses, against any attribute the resource actually has
+  (`userName`/`active` on Users, `displayName` on Groups). A filter
+  naming an attribute the resource type doesn't have simply never
+  matches (an empty list), not a 400 — filtering on a schema-valid but
+  absent attribute isn't a syntax error. Only genuinely malformed syntax
+  (unterminated string, unknown operator, unbalanced parens) gets 400.
+  Only the PATCH operations documented above are recognized; every
+  other operation or path is silently ignored, not rejected.
+- **Bulk operations execute independently — no cross-operation `bulkId`
+  substitution** (RFC 7644 §3.7.2's `"bulkId:<id>"` reference syntax,
+  letting a later operation in the same batch reference an earlier
+  operation's not-yet-known resource ID). This is the shape real SCIM
+  clients actually generate for bulk User/Group provisioning
+  (independent Create operations against a stable target); a client
+  that needs to reference a just-created resource's ID within the same
+  batch must split it across two Bulk requests instead.
 - **A global SCIM group (`wardline:role-<role>`, no tenant segment)
   grants across every tenant's same-named identity, not just one.**
   SCIM `Group` members are bare `userName`s with no tenant segment, and
