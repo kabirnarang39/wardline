@@ -29,7 +29,8 @@ policy-pack marketplace, HA deployment.
   dashboard are all tenant-aware, not just RBAC's own authorization
   check. See [SSO](/features/sso/), [SCIM](/features/scim/), and
   [RBAC](/features/rbac/)'s known limitations for what's still out of
-  scope (OIDC discovery, full SCIM 2.0 compliance).
+  scope (full SCIM 2.0 compliance; OIDC discovery itself shipped
+  since — see SSO's own doc).
 - **Auto-generated sandbox policy** — `wardline infer-policy` reads the
   audit trail over an operator-chosen range and writes a starter
   `policy.yaml` allow-listing exactly the `(tenant, identity, tool)`
