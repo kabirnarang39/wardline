@@ -1,0 +1,116 @@
+version: 3
+workdir: .
+
+# CLAUDE.md's dependency rule, made dynamic: components are glob-matched
+# against every feature under internal/features/*, so a new feature folder
+# is covered the moment it exists -- no enumeration, no per-feature edit
+# required.
+#
+# Scope split with .golangci.yml's depguard rule (still present, narrower
+# than before): go-arch-lint's "vendor" concept is hardcoded to mean
+# non-stdlib -- anyVendorDeps: false here cannot block a specific stdlib
+# package (net/http is stdlib and passes regardless of this file).
+# CLAUDE.md names net/http explicitly as a domain/usecase violation even
+# though it's stdlib ("no I/O" is stricter than "no imports outside
+# stdlib"), so that specific, small denylist stays in depguard, which
+# treats every import path uniformly. This file owns the layer graph
+# (who may depend on whom) and non-stdlib vendor restriction; depguard
+# owns the "even though it's stdlib, still I/O" exception list.
+
+exclude:
+  - .git
+  - docs-site
+  - site
+  - charts
+
+excludeFiles:
+  - ".*_test\\.go$"
+
+allow:
+  depOnAnyVendor: false
+  # deepScan traces constructor-injection call graphs, not just import
+  # statements -- it flags cmd/wardline's composition-root wiring (adapter
+  # instances passed into usecase constructors, which cmd/adapter are
+  # already explicitly allowed to do) as a violation, because it attributes
+  # the call to the injected value's own component rather than the file
+  # that actually does the wiring. Pure noise for this codebase's pattern;
+  # the import-edge check below (Base: component imports) is what actually
+  # enforces CLAUDE.md's dependency rule and needs no such tracing.
+  deepScan: false
+
+components:
+  domain:
+    in:
+      - internal/features/*/domain
+
+  usecase:
+    in:
+      - internal/features/*/usecase
+
+  adapter:
+    in:
+      - internal/features/*/adapter
+      - internal/features/*/adapter/**
+
+  platform:
+    in:
+      - internal/platform/*
+
+  cmd:
+    in:
+      - cmd/**
+
+commonComponents:
+  # platform/ is deliberately cross-feature shared code (config, flags,
+  # tracing, tenant, ...) per CLAUDE.md -- every layer may depend on it.
+  - platform
+
+deps:
+  # domain: entities + interfaces only. No I/O, no frameworks, no imports
+  # outside stdlib -- anyVendorDeps: false enforces the "no imports outside
+  # stdlib" half; mayDependOn covers the "sibling domains + platform" half.
+  domain:
+    mayDependOn:
+      - domain
+    anyVendorDeps: false
+
+  # usecase: business logic. Depends on domain interfaces (its own or
+  # another feature's) and may compose another feature's usecase --  never
+  # an adapter. anyVendorDeps: false keeps it free of concrete parsing/
+  # framework libraries (a YAML lib, an OPA/Cedar SDK, net/http) -- those
+  # belong in adapter, wired in behind a domain interface.
+  usecase:
+    mayDependOn:
+      - domain
+      - usecase
+    anyVendorDeps: false
+
+  # adapter: translates between usecase and the outside world. Implements
+  # domain interfaces, may call into usecase (an HTTP handler invoking a
+  # usecase method) and other adapters (e.g. postgres-backed state reusing
+  # a sibling feature's adapter), and is where every concrete third-party
+  # SDK (OPA, Cedar, pgx, jwx, yaml.v3, grpc, otel) is allowed to live.
+  adapter:
+    mayDependOn:
+      - domain
+      - usecase
+      - adapter
+    anyVendorDeps: true
+
+  # platform: config loading, tracing setup, flag evaluation -- per
+  # CLAUDE.md this is cross-feature shared *infrastructure*, not a pure
+  # layer, so (unlike domain/usecase) it's allowed the vendor SDKs that
+  # job requires (yaml.v3 for config, OpenTelemetry for tracing).
+  platform:
+    anyVendorDeps: true
+
+  # cmd/wardline is the composition root (CLAUDE.md): the only place
+  # allowed to wire every layer together and reach for any third-party
+  # dependency directly (flag parsing, os, etc.).
+  cmd:
+    mayDependOn:
+      - domain
+      - usecase
+      - adapter
+      - cmd
+    anyVendorDeps: true

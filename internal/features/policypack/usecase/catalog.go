@@ -6,18 +6,8 @@ import (
 	"path"
 	"sort"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/kabirnarang39/wardline/internal/features/policypack/domain"
 )
-
-type packYAML struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Backend     string `yaml:"backend"`
-	PolicyFile  string `yaml:"policy_file"`
-	Version     string `yaml:"version"`
-}
 
 // defaultPackVersion is what an absent pack.yaml "version:" key means --
 // every pack written before that field existed.
@@ -28,11 +18,16 @@ const defaultPackVersion = "1"
 // The directory name must equal the pack's own "name" field -- Get looks
 // up a pack by treating the requested name as the directory to open.
 type Catalog struct {
-	fsys fs.FS
+	fsys    fs.FS
+	decoder domain.ManifestDecoder
 }
 
-func NewCatalog(fsys fs.FS) *Catalog {
-	return &Catalog{fsys: fsys}
+// NewCatalog builds a Catalog over fsys, decoding each pack.yaml manifest
+// with decoder -- injected rather than hardcoded so this package never
+// imports a concrete parsing library itself (see domain.ManifestDecoder).
+// Production callers pass adapter.YAMLManifestDecoder{}.
+func NewCatalog(fsys fs.FS, decoder domain.ManifestDecoder) *Catalog {
+	return &Catalog{fsys: fsys, decoder: decoder}
 }
 
 // List returns every pack found in fsys, sorted by name.
@@ -104,8 +99,8 @@ func (c *Catalog) loadPack(dirName string) (domain.Pack, []byte, error) {
 	if err != nil {
 		return domain.Pack{}, nil, fmt.Errorf("unknown policy pack %q", dirName)
 	}
-	var raw packYAML
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	raw, err := c.decoder.Decode(data)
+	if err != nil {
 		return domain.Pack{}, nil, fmt.Errorf("parse pack manifest %s: %w", manifestPath, err)
 	}
 	policyPath := path.Join(dirName, raw.PolicyFile)

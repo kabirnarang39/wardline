@@ -41,3 +41,16 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+
+  arch-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install go-arch-lint
+        run: go install github.com/fe3dback/go-arch-lint@v1.17.0
+      - name: Check architecture (CLAUDE.md's dependency rule)
+        run: go-arch-lint check --arch-file .go-arch-lint.yml
