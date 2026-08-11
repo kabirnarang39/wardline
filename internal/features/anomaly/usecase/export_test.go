@@ -31,3 +31,17 @@ func ChurnWindowCurForTest(d *Detector, tenantName string) int {
 	}
 	return cs.cur
 }
+
+// ChurnCUSUMForTest exposes churnState's running CUSUM accumulator for
+// one tenant -- same test-only-accessor convention as
+// ChurnWindowCurForTest above.
+func ChurnCUSUMForTest(d *Detector, tenantName string) float64 {
+	if d.churnState == nil {
+		return 0
+	}
+	cs, ok := d.churnState[tenantName]
+	if !ok {
+		return 0
+	}
+	return cs.churnCUSUM
+}

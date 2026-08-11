@@ -2608,6 +2608,8 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	var baselineStore *anomalyadapter.PostgresBaselineStore
 	var tenantWindowStorePg *anomalyadapter.PostgresTenantWindowStore
 	var tenantBaselineStorePg *anomalyadapter.PostgresTenantBaselineStore
+	var churnWindowStorePg *anomalyadapter.PostgresChurnWindowStore
+	var churnBaselineStorePg *anomalyadapter.PostgresChurnBaselineStore
 	if postgresStorageEnabled {
 		// Reuses deriveInstanceID -- the same hostname-based (random-
 		// suffix-on-failure) identity federation already derives for its
@@ -2652,10 +2654,33 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 			tenantBaselineStorePg = tbs
 			logger.Info("tenant_anomaly aggregate state backed by postgres (shared across replicas)")
 		}
+
+		// identity_churn's own two Postgres-backed stores, gated on both
+		// postgres_storage AND identity_churn.enabled -- same reasoning
+		// as tenant_anomaly's pair just above.
+		if cfg.Anomaly.IdentityChurn.Enabled {
+			cws, err := anomalyadapter.NewPostgresChurnWindowStore(pgPool, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres identity_churn window store", "error", err)
+				os.Exit(1)
+			}
+			churnWindowStorePg = cws
+
+			cbs, err := anomalyadapter.NewPostgresChurnBaselineStore(pgPool, anomalyInstanceID, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres identity_churn baseline store", "error", err)
+				os.Exit(1)
+			}
+			churnBaselineStorePg = cbs
+			logger.Info("identity_churn aggregate state backed by postgres (shared across replicas)")
+		}
 	} else {
 		logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
 		if cfg.Anomaly.TenantAnomaly.Enabled {
 			logger.Warn("tenant_anomaly is in-process only; a coordinated attack split across replicas by a load balancer may evade detection -- enable features.postgres_storage to share aggregate state across the fleet")
+		}
+		if cfg.Anomaly.IdentityChurn.Enabled {
+			logger.Warn("identity_churn is in-process only; a coordinated disposable-identity rotation split across replicas by a load balancer may evade detection -- enable features.postgres_storage to share aggregate state across the fleet")
 		}
 	}
 
@@ -2687,6 +2712,21 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	default:
 		s.detector = anomalyusecase.NewDetectorWithTenantStores(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, nil, nil, nil)
 	}
+	// WithChurnStores composes independently of whichever
+	// NewDetectorWithTenantStores branch just ran above -- see its own
+	// doc comment for why this is a setter, not a fourth combinatorial
+	// constructor. Only called when churnWindowStorePg is actually
+	// non-nil: passing a nil *PostgresChurnWindowStore straight through
+	// as the churnWindowStore interface parameter would produce a
+	// non-nil interface wrapping a nil pointer (the exact typed-nil
+	// hazard the switch above already dodges for the tenant pair),
+	// breaking Detector's own "!= nil" checks. Leaving both fields at
+	// their zero value (nil interfaces) when identity_churn is off, or
+	// postgres_storage is off, reproduces today's in-memory-only
+	// behavior exactly.
+	if churnWindowStorePg != nil {
+		s.detector = s.detector.WithChurnStores(churnWindowStorePg, churnBaselineStorePg)
+	}
 
 	if err := s.detector.LoadBaselines(); err != nil {
 		logger.Error("failed to load persisted anomaly baselines", "error", err)
@@ -2694,6 +2734,10 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	}
 	if err := s.detector.LoadTenantBaselines(); err != nil {
 		logger.Error("failed to load persisted tenant anomaly baselines", "error", err)
+		os.Exit(1)
+	}
+	if err := s.detector.LoadChurnBaselines(); err != nil {
+		logger.Error("failed to load persisted identity_churn baselines", "error", err)
 		os.Exit(1)
 	}
 
@@ -2924,6 +2968,9 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig, driftJitterSecret []byte) 
 			Enabled:          cfg.IdentityChurn.Enabled,
 			RateMultiplier:   cfg.IdentityChurn.RateMultiplier,
 			MinNewIdentities: cfg.IdentityChurn.MinNewIdentities,
+			CUSUMEnabled:     cfg.IdentityChurn.CUSUMEnabled,
+			K:                cfg.IdentityChurn.K,
+			H:                cfg.IdentityChurn.H,
 		},
 	}
 }
