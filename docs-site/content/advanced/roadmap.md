@@ -186,17 +186,28 @@ policy-pack marketplace, HA deployment.
   token/cost — a token/cost `Meter` is a possible future adapter behind
   the same interface. In-memory and Postgres-backed (`postgres_storage`)
   meters both ship. See [Per-Job Budget Ceiling](/features/job-budget/).
-- **Per-job cost/token budget** — the token/cost `Meter` adapter named
-  above, shipped: a second, independent ceiling alongside per-job budget's
-  call count, keyed the same `(tenant, identity, session)` way but summing
-  each tool's declared cost (`tool_costs`/`default_cost`) instead of
-  counting calls. Same shape as per-job budget — zero-config hard proxy
-  gate (429, decision `cost_budget_exceeded`), optional
-  `input.cost_over_budget` policy exposure, and the same grant-override
-  carve-out an approved retry gets. Declared cost only, not response-parsed
-  usage or real-money billing. In-memory and Postgres-backed
-  (`postgres_storage`) meters both ship. See [Per-Job Cost/Token
-  Budget](/features/cost-budget/).
+
+## v2.2 (shipped)
+
+- **Per-job cost/token budget** — the token/cost `Meter` adapter named in
+  per-job budget's own entry above, shipped: a second, independent ceiling
+  alongside per-job budget's call count, keyed the same
+  `(tenant, identity, session)` way but summing each tool's declared cost
+  (`tool_costs`/`default_cost`) instead of counting calls. Same shape as
+  per-job budget — zero-config hard proxy gate (429, decision
+  `cost_budget_exceeded`), optional `input.cost_over_budget` policy
+  exposure, and the same grant-override carve-out an approved retry gets.
+  Declared cost only, not response-parsed usage or real-money billing.
+  In-memory and Postgres-backed (`postgres_storage`) meters both ship. See
+  [Per-Job Cost/Token Budget](/features/cost-budget/).
+- **Session TTL fallback made real for job-budget and cost-budget** — both
+  features' docs always claimed a job key falls back to a per-identity
+  sliding TTL window when no `X-Wardline-Session` header is sent; the code
+  didn't apply it (only taint tracking did), so a header-less caller's
+  budget key never rotated. Each feature now has its own
+  `session_window_seconds` (defaults to 300, matching taint's own
+  default) and applies the same fallback taint tracking uses — working
+  independently of `taint_tracking` being on.
 
 ## Future directions (not committed)
 
