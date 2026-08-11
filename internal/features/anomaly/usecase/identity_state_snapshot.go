@@ -24,6 +24,12 @@ type IdentityStateSnapshot struct {
 	LastSeen          time.Time              `json:"last_seen"`
 	MLStats           MLFeatureStateSnapshot `json:"ml_stats"`
 	LastCallAt        time.Time              `json:"last_call_at"`
+	// DriftCUSUM/DriftDiversityCUSUM mirror identityState.driftCUSUM/
+	// driftDiversityCUSUM -- omitted (zero value) for every snapshot
+	// written before drift_detection existed, which correctly
+	// deserializes back to a fresh CUSUM, not an error.
+	DriftCUSUM          float64 `json:"drift_cusum"`
+	DriftDiversityCUSUM float64 `json:"drift_diversity_cusum"`
 }
 
 // WindowCountsSnapshot mirrors windowCounts (identity_state.go).
@@ -142,14 +148,16 @@ func snapshotIdentityState(st *identityState) IdentityStateSnapshot {
 		}
 	}
 	return IdentityStateSnapshot{
-		Tools:             stringSetToSlice(st.tools),
-		WindowStart:       st.windowStart,
-		Cur:               snapshotWindowCounts(st.cur),
-		Prev:              snapshotWindowCounts(st.prev),
-		FlaggedThisWindow: flagged,
-		LastSeen:          st.lastSeen,
-		MLStats:           snapshotMLFeatureState(st.mlStats),
-		LastCallAt:        st.lastCallAt,
+		Tools:               stringSetToSlice(st.tools),
+		WindowStart:         st.windowStart,
+		Cur:                 snapshotWindowCounts(st.cur),
+		Prev:                snapshotWindowCounts(st.prev),
+		FlaggedThisWindow:   flagged,
+		LastSeen:            st.lastSeen,
+		MLStats:             snapshotMLFeatureState(st.mlStats),
+		LastCallAt:          st.lastCallAt,
+		DriftCUSUM:          st.driftCUSUM,
+		DriftDiversityCUSUM: st.driftDiversityCUSUM,
 	}
 }
 
@@ -165,13 +173,15 @@ func (s IdentityStateSnapshot) toIdentityState() *identityState {
 		}
 	}
 	return &identityState{
-		tools:             sliceToStringSet(s.Tools),
-		windowStart:       s.WindowStart,
-		cur:               s.Cur.toWindowCounts(),
-		prev:              s.Prev.toWindowCounts(),
-		flaggedThisWindow: flagged,
-		lastSeen:          s.LastSeen,
-		mlStats:           s.MLStats.toMLFeatureState(),
-		lastCallAt:        s.LastCallAt,
+		tools:               sliceToStringSet(s.Tools),
+		windowStart:         s.WindowStart,
+		cur:                 s.Cur.toWindowCounts(),
+		prev:                s.Prev.toWindowCounts(),
+		flaggedThisWindow:   flagged,
+		lastSeen:            s.LastSeen,
+		mlStats:             s.MLStats.toMLFeatureState(),
+		lastCallAt:          s.LastCallAt,
+		driftCUSUM:          s.DriftCUSUM,
+		driftDiversityCUSUM: s.DriftDiversityCUSUM,
 	}
 }

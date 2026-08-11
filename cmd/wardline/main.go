@@ -223,6 +223,8 @@ func runServe(logger *slog.Logger, args []string) {
 	var blockStoreCloser io.Closer
 	var autoBlockGCStop chan struct{}
 	var anomalyBaselineStoreCloser io.Closer
+	var tenantWindowStoreCloser io.Closer
+	var tenantBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
 		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled)
 		anomalyDetector = as.detector
@@ -232,6 +234,8 @@ func runServe(logger *slog.Logger, args []string) {
 		autoBlockGCStop = as.autoBlockGCStop
 		blockStoreCloser = as.blockStoreCloser
 		anomalyBaselineStoreCloser = as.baselineCloser
+		tenantWindowStoreCloser = as.tenantWindowCloser
+		tenantBaselineStoreCloser = as.tenantBaselineCloser
 	}
 
 	// federation requires anomaly_detection (enforced by config.validate()),
@@ -1259,6 +1263,16 @@ func runServe(logger *slog.Logger, args []string) {
 			if anomalyBaselineStoreCloser != nil {
 				if err := anomalyBaselineStoreCloser.Close(); err != nil {
 					logger.Error("anomaly baseline store shutdown failed", "error", err)
+				}
+			}
+			if tenantWindowStoreCloser != nil {
+				if err := tenantWindowStoreCloser.Close(); err != nil {
+					logger.Error("tenant anomaly window store shutdown failed", "error", err)
+				}
+			}
+			if tenantBaselineStoreCloser != nil {
+				if err := tenantBaselineStoreCloser.Close(); err != nil {
+					logger.Error("tenant anomaly baseline store shutdown failed", "error", err)
 				}
 			}
 			if blockStoreCloser != nil {
@@ -2560,6 +2574,11 @@ type anomalyStack struct {
 	autoBlockGCStop  chan struct{}
 	blockStoreCloser io.Closer
 	baselineCloser   io.Closer
+	// tenantWindowCloser/tenantBaselineCloser drain
+	// PostgresTenantWindowStore/PostgresTenantBaselineStore on shutdown,
+	// nil when tenant_anomaly isn't both enabled and postgres_storage-backed.
+	tenantWindowCloser   io.Closer
+	tenantBaselineCloser io.Closer
 }
 
 // buildAnomalyStack constructs the detector, alert buffer, auto-block
@@ -2579,7 +2598,21 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		bufferCapacity = ringBufferCapacity
 	}
 	s.buffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
-	heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
+
+	// Opaque HMAC key material, not PEM -- read raw, matching how
+	// federation.SharedSecretFile is read (see federationadapter usage
+	// above in this file). Only read when jitter is actually configured,
+	// so a deployment that never sets h_jitter_fraction has no new file
+	// dependency at all.
+	var driftJitterSecret []byte
+	if cfg.Anomaly.Drift.HJitterFraction > 0 {
+		driftJitterSecret, err = os.ReadFile(cfg.Anomaly.Drift.JitterSecretFile)
+		if err != nil {
+			logger.Error("failed to read drift_detection jitter secret file", "error", err)
+			os.Exit(1)
+		}
+	}
+	heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly, driftJitterSecret)
 
 	// Always positive: config.validate() defaults gc_interval_seconds
 	// when anomaly_detection is on. A second fallback here is what let an
@@ -2629,6 +2662,8 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	// touched and a connection pool opened for a feature they never
 	// enabled.
 	var baselineStore *anomalyadapter.PostgresBaselineStore
+	var tenantWindowStorePg *anomalyadapter.PostgresTenantWindowStore
+	var tenantBaselineStorePg *anomalyadapter.PostgresTenantBaselineStore
 	if postgresStorageEnabled {
 		// Reuses deriveInstanceID -- the same hostname-based (random-
 		// suffix-on-failure) identity federation already derives for its
@@ -2638,7 +2673,11 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		// and regardless of federationEnabled): the baseline store's
 		// instance ID must answer "what stably identifies this replica"
 		// even when federation is off, so this feature isn't coupled to
-		// that one.
+		// that one. Computed once and shared with tenantBaselineStorePg
+		// below -- deriveInstanceID falls back to a random suffix if
+		// hostname lookup fails, so calling it a second time could
+		// otherwise give the same replica two different instance IDs
+		// across its two Postgres-backed stores.
 		anomalyInstanceID := deriveInstanceID(logger, "")
 		bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
 		if err != nil {
@@ -2648,8 +2687,35 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		baselineStore = bs
 		s.baselineCloser = bs
 		logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
+
+		// tenant_anomaly's own two Postgres-backed stores, gated on both
+		// postgres_storage AND tenant_anomaly.enabled -- without the
+		// second check, an operator running postgres_storage for every
+		// other feature but not using tenant_anomaly would still get its
+		// two tables touched and two more connection pools opened.
+		if cfg.Anomaly.TenantAnomaly.Enabled {
+			tws, err := anomalyadapter.NewPostgresTenantWindowStore(cfg.Audit.PostgresDSN, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres tenant window store", "error", err)
+				os.Exit(1)
+			}
+			tenantWindowStorePg = tws
+			s.tenantWindowCloser = tws
+
+			tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres tenant baseline store", "error", err)
+				os.Exit(1)
+			}
+			tenantBaselineStorePg = tbs
+			s.tenantBaselineCloser = tbs
+			logger.Info("tenant_anomaly aggregate state backed by postgres (shared across replicas)")
+		}
 	} else {
 		logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
+		if cfg.Anomaly.TenantAnomaly.Enabled {
+			logger.Warn("tenant_anomaly is in-process only; a coordinated attack split across replicas by a load balancer may evade detection -- enable features.postgres_storage to share aggregate state across the fleet")
+		}
 	}
 
 	// blocker is an interface-typed field (anomalydomain.Blocker),
@@ -2659,17 +2725,34 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	// dodge: assigning a nil *BlockChecker into an interface produces a
 	// non-nil interface wrapping a nil pointer, but an unassigned
 	// anomalydomain.Blocker is a genuine nil interface Detector's own
-	// guard sees correctly. baselineStore is still a concrete pointer
-	// (its adapter type isn't behind a shared interface), so it keeps its
-	// explicit nil branch.
-	if baselineStore != nil {
-		s.detector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, baselineStore)
-	} else {
-		s.detector = anomalyusecase.NewDetector(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, nil)
+	// guard sees correctly. baselineStore/tenantWindowStorePg/
+	// tenantBaselineStorePg are still concrete pointers (their adapter
+	// types aren't behind a shared interface -- and the interfaces
+	// NewDetectorWithTenantStores' parameters are typed as are
+	// unexported to the usecase package, so main.go can't even name
+	// them to declare an intermediate variable), so each keeps its own
+	// explicit nil branch: passing a nil concrete pointer directly as
+	// an interface-typed argument produces a non-nil interface wrapping
+	// a nil pointer, breaking every "!= nil" check inside Detector.
+	// Only 3 combinations are actually reachable, not 4: the tenant
+	// pair is constructed only inside the postgresStorageEnabled branch
+	// that already guarantees baselineStore is non-nil, so "tenant pair
+	// set but baselineStore nil" never happens.
+	switch {
+	case tenantWindowStorePg != nil:
+		s.detector = anomalyusecase.NewDetectorWithTenantStores(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, baselineStore, tenantWindowStorePg, tenantBaselineStorePg)
+	case baselineStore != nil:
+		s.detector = anomalyusecase.NewDetectorWithTenantStores(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, baselineStore, nil, nil)
+	default:
+		s.detector = anomalyusecase.NewDetectorWithTenantStores(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, nil, nil, nil)
 	}
 
 	if err := s.detector.LoadBaselines(); err != nil {
 		logger.Error("failed to load persisted anomaly baselines", "error", err)
+		os.Exit(1)
+	}
+	if err := s.detector.LoadTenantBaselines(); err != nil {
+		logger.Error("failed to load persisted tenant anomaly baselines", "error", err)
 		os.Exit(1)
 	}
 
@@ -2850,8 +2933,12 @@ func deriveInstanceIDFrom(logger *slog.Logger, override string, hostname func() 
 // anomalyHeuristicConfig translates the operator-facing AnomalyConfig
 // into anomaly/domain.HeuristicConfig, the shape Detector actually
 // consumes -- kept as a pure translation with no I/O so it's trivial to
-// eyeball against the config struct it's built from.
-func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicConfig {
+// eyeball against the config struct it's built from. driftJitterSecret
+// is the one exception to "no I/O inputs": already-read file bytes, not
+// a path, so this function itself still performs no I/O -- the read
+// happens once in buildAnomalyStack (matching where every other secret
+// file in this composition root is read).
+func anomalyHeuristicConfig(cfg config.AnomalyConfig, driftJitterSecret []byte) anomalydomain.HeuristicConfig {
 	return anomalydomain.HeuristicConfig{
 		WindowSeconds:        cfg.WindowSeconds,
 		RateSpikeEnabled:     cfg.RateSpike.Enabled,
@@ -2870,6 +2957,24 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 			Enabled:              cfg.AutoBlock.Enabled,
 			ScoreThreshold:       cfg.AutoBlock.ScoreThreshold,
 			BlockDurationSeconds: cfg.AutoBlock.BlockDurationSeconds,
+		},
+		Drift: anomalydomain.DriftConfig{
+			Enabled:         cfg.Drift.Enabled,
+			K:               cfg.Drift.K,
+			H:               cfg.Drift.H,
+			MinCalls:        cfg.Drift.MinCalls,
+			HJitterFraction: cfg.Drift.HJitterFraction,
+			JitterSecret:    driftJitterSecret,
+		},
+		TenantAnomaly: anomalydomain.TenantAnomalyConfig{
+			Enabled:        cfg.TenantAnomaly.Enabled,
+			RateMultiplier: cfg.TenantAnomaly.RateMultiplier,
+			MinCalls:       cfg.TenantAnomaly.MinCalls,
+		},
+		IdentityChurn: anomalydomain.IdentityChurnConfig{
+			Enabled:          cfg.IdentityChurn.Enabled,
+			RateMultiplier:   cfg.IdentityChurn.RateMultiplier,
+			MinNewIdentities: cfg.IdentityChurn.MinNewIdentities,
 		},
 	}
 }

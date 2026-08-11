@@ -105,3 +105,44 @@ func TestDetector_AutoBlock_LowAndSlowEvades(t *testing.T) {
 		}
 	}
 }
+
+// TestDetector_AutoBlock_DriftDetectionCatchesLowAndSlow is
+// TestDetector_AutoBlock_LowAndSlowEvades' direct counterpart with
+// drift_detection (CUSUM) turned on: the exact same identity, baseline,
+// and ramp that evades ml_score/auto_block alone is caught well before
+// this test's own ramp even finishes -- see domain.DriftConfig's doc
+// comment for why a per-window z-score test and a cumulative-sum test
+// close different gaps rather than one superseding the other.
+func TestDetector_AutoBlock_DriftDetectionCatchesLowAndSlow(t *testing.T) {
+	cfg := evasionConfig()
+	cfg.Drift = domain.DriftConfig{Enabled: true, K: 0.5, H: 5.0, MinCalls: 5}
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	blocker := usecase.NewBlockChecker(cfg.AutoBlock, clock.now)
+	d := usecase.NewDetector(cfg, &recordingWriter{}, nil, blocker, nil, clock.now, nil)
+
+	// Identical baseline and ramp to TestDetector_AutoBlock_LowAndSlowEvades.
+	calls := 30
+	for w := 0; w < 20; w++ {
+		for c := 0; c < calls; c++ {
+			d.Publish(auditdomain.Entry{Identity: "creeper", Tool: "read_file", Decision: "allow"})
+		}
+		clock.t = clock.t.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+	}
+
+	blocked := false
+	for w := 0; w < 40; w++ {
+		calls += 3
+		for c := 0; c < calls; c++ {
+			d.Publish(auditdomain.Entry{Identity: "creeper", Tool: "read_file", Decision: "allow"})
+		}
+		clock.t = clock.t.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+
+		if v := blocker.Check("creeper", "", clock.t); !v.Allowed {
+			blocked = true
+			break
+		}
+	}
+	if !blocked {
+		t.Fatal("expected drift_detection to auto-block the same low-and-slow ramp that evades ml_score/auto_block alone, within 40 windows")
+	}
+}

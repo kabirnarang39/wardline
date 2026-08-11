@@ -123,3 +123,49 @@ func TestGC_StoreWithoutPruneSupportIsSkippedCleanly(t *testing.T) {
 		t.Fatalf("expected SaveAll still called once on a non-pruner store, got %d", store.saveCalls)
 	}
 }
+
+type fakeTenantBaselineSaver struct {
+	saved map[string]OnlineStatSnapshot
+}
+
+func (f *fakeTenantBaselineSaver) LoadAll() (map[string]OnlineStatSnapshot, error) {
+	return nil, nil
+}
+func (f *fakeTenantBaselineSaver) SaveAll(baselines map[string]OnlineStatSnapshot) error {
+	f.saved = baselines
+	return nil
+}
+
+func TestGC_CheckpointsTenantBaselines(t *testing.T) {
+	saver := &fakeTenantBaselineSaver{}
+	d := &Detector{
+		state:                 make(map[string]*identityState),
+		tenantState:           make(map[string]*tenantWindowState),
+		tenantBaselineStorePg: saver,
+	}
+	d.tenantState["acme"] = &tenantWindowState{
+		lastSeen: time.Now(),
+		rateStat: onlineStat{mean: 500, m2: 900, count: 12},
+	}
+
+	d.gc(time.Now(), time.Minute)
+
+	got, ok := saver.saved["acme"]
+	if !ok {
+		t.Fatal("expected gc to checkpoint tenant \"acme\"'s baseline, got nothing saved")
+	}
+	if got.Mean != 500 || got.M2 != 900 || got.Count != 12 {
+		t.Errorf("expected checkpointed baseline to match tenantState's rateStat exactly, got %+v", got)
+	}
+}
+
+func TestGC_TenantBaselineSaveSkippedWhenStoreNil(t *testing.T) {
+	// No tenantBaselineStorePg set -- gc must not panic or attempt any
+	// save, matching every other nil-store branch in this function.
+	d := &Detector{
+		state:       make(map[string]*identityState),
+		tenantState: make(map[string]*tenantWindowState),
+	}
+	d.tenantState["acme"] = &tenantWindowState{lastSeen: time.Now()}
+	d.gc(time.Now(), time.Minute) // must not panic
+}
