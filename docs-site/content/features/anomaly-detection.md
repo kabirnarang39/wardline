@@ -324,6 +324,36 @@ that ceiling** for the shipped example config. This is the honest,
 measured answer to "how much room does an attacker who's read the
 source have" — not a guess.
 
+**Why this ceiling can't be engineered away, and what actually closes
+it.** This isn't a Wardline-specific gap waiting on more engineering —
+it's the defining property of the allowance `k` in *any* CUSUM/EWMA-
+style sequential detector (Page's original 1954 formulation; see
+Lucas & Crosier's ARL analysis for the formal treatment): `k` sets the
+boundary between "ordinary noise, ignore it" and "sustained shift,
+accumulate toward an alarm," and a deviation that never exceeds `k` is
+*by construction* the one class of shift the statistic cannot
+distinguish from noise in bounded time. Driving `k` toward zero to
+close this doesn't fix it — it just turns the detector into a
+per-window test with no memory, alarming on ordinary noise and
+collapsing the false-positive budget every heuristic in this package is
+held to. This is the same Neyman-Pearson sensitivity/false-alarm
+tradeoff underlying every real anomaly/intrusion-detection system, not
+a defect unique to this implementation.
+
+What actually closes the operating room a mimicry attacker has is
+exactly what this package already ships, not a hypothetical future
+statistic: `h_jitter_fraction` (raises the cost of an attack calibrated
+to the *public default* `k`/`h`, measured above); `tenant_anomaly` and
+`identity_churn` (a sustained 1.15× shift held by one identity forever
+is invisible to per-identity CUSUM, but an attacker running it across
+*many* identities to make it worthwhile is exactly what those two
+heuristics are built to catch — see their own sections above); and,
+underneath all of it, explicit policy and budget limits, which bound
+absolute behavior regardless of what any statistical detector does or
+doesn't catch — the recommendation this doc has given from the start,
+not a fallback added to paper over this ceiling. Defense in depth, not
+one detector expected to close every gap alone.
+
 *Mitigation: `h_jitter_fraction`.* Perturbing each identity's own `h` by
 ±20% (`h_jitter_fraction: 0.2`, keyed by a per-deployment secret — see
 "Drift detection" above) genuinely changes this outcome, re-measured at
