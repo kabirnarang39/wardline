@@ -43,6 +43,8 @@ func BenchmarkDetector_Publish(b *testing.B) {
 	withJitter.Drift.JitterSecret = []byte("benchmark-only-secret-do-not-use-in-prod")
 	withTenant := withJitter
 	withTenant.TenantAnomaly = domain.TenantAnomalyConfig{Enabled: true, RateMultiplier: 5.0, MinCalls: 10}
+	withChurn := withTenant
+	withChurn.IdentityChurn = domain.IdentityChurnConfig{Enabled: true, RateMultiplier: 3.0, MinNewIdentities: 5}
 
 	cases := []struct {
 		name string
@@ -52,6 +54,7 @@ func BenchmarkDetector_Publish(b *testing.B) {
 		{"with_drift_detection", withDrift},
 		{"with_drift_and_h_jitter", withJitter},
 		{"with_drift_jitter_and_tenant_anomaly", withTenant},
+		{"with_drift_jitter_tenant_and_identity_churn", withChurn},
 	}
 
 	for _, tc := range cases {

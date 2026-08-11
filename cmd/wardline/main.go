@@ -2971,6 +2971,11 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig, driftJitterSecret []byte) 
 			RateMultiplier: cfg.TenantAnomaly.RateMultiplier,
 			MinCalls:       cfg.TenantAnomaly.MinCalls,
 		},
+		IdentityChurn: anomalydomain.IdentityChurnConfig{
+			Enabled:          cfg.IdentityChurn.Enabled,
+			RateMultiplier:   cfg.IdentityChurn.RateMultiplier,
+			MinNewIdentities: cfg.IdentityChurn.MinNewIdentities,
+		},
 	}
 }
 

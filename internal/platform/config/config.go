@@ -280,6 +280,14 @@ type TenantAnomalyConfig struct {
 	MinCalls       int     `yaml:"min_calls"`
 }
 
+// IdentityChurnConfig configures identity-churn detection -- see
+// anomaly/domain.IdentityChurnConfig's doc comment.
+type IdentityChurnConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	RateMultiplier   float64 `yaml:"rate_multiplier"`
+	MinNewIdentities int     `yaml:"min_new_identities"`
+}
+
 // AnomalyConfig configures anomaly detection. Only validated (and only
 // meaningful) when the anomaly_detection feature flag is on.
 type AnomalyConfig struct {
@@ -294,6 +302,7 @@ type AnomalyConfig struct {
 	AutoBlock         AutoBlockConfig     `yaml:"auto_block"`
 	Drift             DriftConfig         `yaml:"drift_detection"`
 	TenantAnomaly     TenantAnomalyConfig `yaml:"tenant_anomaly"`
+	IdentityChurn     IdentityChurnConfig `yaml:"identity_churn"`
 
 	// RetentionDays mirrors AuditConfig.RetentionDays -- see its doc
 	// comment. This is the anomaly LOG's own retention (the JSONL/
@@ -688,6 +697,20 @@ func (c *Config) validate() error {
 			}
 			if c.Anomaly.TenantAnomaly.MinCalls <= 0 {
 				problems = append(problems, "anomaly.tenant_anomaly.min_calls must be > 0 when anomaly.tenant_anomaly.enabled is true")
+			}
+		}
+		if c.Anomaly.IdentityChurn.Enabled {
+			// No dependency on any other heuristic being enabled --
+			// same standalone reasoning as tenant_anomaly above:
+			// identity_churn keeps its own self-contained aggregate
+			// baseline, and an operator who only cares about disposable-
+			// identity rotation bursts doesn't need to also run
+			// per-identity heuristics for this to be meaningful.
+			if c.Anomaly.IdentityChurn.RateMultiplier <= 0 {
+				problems = append(problems, "anomaly.identity_churn.rate_multiplier must be > 0 when anomaly.identity_churn.enabled is true")
+			}
+			if c.Anomaly.IdentityChurn.MinNewIdentities <= 0 {
+				problems = append(problems, "anomaly.identity_churn.min_new_identities must be > 0 when anomaly.identity_churn.enabled is true")
 			}
 		}
 		if c.Anomaly.GCIntervalSeconds <= 0 {

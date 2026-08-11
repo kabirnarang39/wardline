@@ -102,13 +102,45 @@ type DriftConfig struct {
 // close by construction (see TestAdversarialBenchmark_DistributedSybil).
 // Detection-only: there is no single identity to auto-block for a
 // tenant-level signal, so this only ever logs, the same posture
-// deny_rate_spike already has. In-memory only for this cycle -- unlike
-// identityState, tenant aggregate baselines do not yet persist to
-// Postgres.
+// deny_rate_spike already has. HA-safe when features.postgres_storage is
+// also on: window totals merge atomically across replicas via
+// PostgresTenantWindowStore (see NewDetectorWithTenantStores); falls
+// back to per-replica, in-memory-only aggregation otherwise.
 type TenantAnomalyConfig struct {
 	Enabled        bool
 	RateMultiplier float64
 	MinCalls       int
+}
+
+// IdentityChurnConfig configures identity-churn detection: a baseline
+// over the COUNT of never-before-seen identities appearing within a
+// tenant, per window -- a different signal from TenantAnomalyConfig's
+// call-volume sum. Exists to close a gap no per-identity heuristic can
+// close by construction, the same way TenantAnomalyConfig does for call
+// volume: any per-identity defense that derives a value from the
+// identity itself (rate_spike's own baseline, novel_tool's per-identity
+// tool set, and especially DriftConfig.HJitterFraction's per-identity
+// jitter) is a coin flip an attacker who can mint disposable identities
+// gets to keep re-rolling, discarding whichever identity got caught and
+// trying a fresh one -- see docs/superpowers/specs/2026-08-12-identity-
+// churn-design.md for the full research and why a per-identity fix
+// (e.g. gating jitter on identity tenure) cannot close this by
+// construction: zCount already returns 0 before an identity clears
+// minSamplesForZScore windows of history, so any tenure gate has
+// nothing left to gate by the time the exploit becomes live. The
+// production-grade answer, matching real fraud/bot-mitigation practice
+// (new-account-velocity and session-churn-rate signals), is to detect
+// the rotation itself, aggregated above the identity level.
+//
+// Detection-only, same reasoning as TenantAnomalyConfig: there is no
+// single identity to auto-block for a churn signal (the whole point is
+// that no single identity's behavior is what's anomalous). In-memory
+// only this cycle -- see the design doc's "scope" section for why HA
+// sharing is a deliberately deferred follow-up, not an oversight.
+type IdentityChurnConfig struct {
+	Enabled          bool
+	RateMultiplier   float64
+	MinNewIdentities int
 }
 
 // HeuristicConfig configures all anomaly-detection heuristics. Each
@@ -136,4 +168,5 @@ type HeuristicConfig struct {
 	AutoBlock     AutoBlockConfig
 	Drift         DriftConfig
 	TenantAnomaly TenantAnomalyConfig
+	IdentityChurn IdentityChurnConfig
 }

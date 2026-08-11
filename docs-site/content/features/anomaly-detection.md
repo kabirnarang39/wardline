@@ -350,6 +350,40 @@ Moving Target Defenses for Adversarial Attacks in ML-Based Malware
 Detection," 2023). Advertised honestly as "raises the bar for a
 source-derived attack," not "solved."
 
+**`h_jitter_fraction`'s own vulnerability — and why it can't be
+patched away in isolation.** Jitter is a per-identity coin flip: an
+attacker who can mint disposable identities doesn't need to win it on
+any specific identity, only *once*, then keeps whichever identity's
+draw was favorable and discards the rest. With even a handful of
+throwaway identities, the odds of finding at least one favorable draw
+climb fast. This is true of *any* threshold discoverable only by trial
+against cheap disposable identities — not a flaw in the jitter formula
+itself, and not fixable by tuning it (a tenure-based gate was
+considered and rejected: `zCount` already returns `0` before an
+identity clears `minSamplesForZScore`'s 8-window floor, so by the time
+jitter is live at all, an attacker willing to pay that setup cost per
+identity was always going to pay it).
+
+*Mitigation: `identity_churn`.* The actual fix, matching real
+fraud/bot-mitigation practice (new-account-velocity and session-churn
+signals in production fraud scoring and bot management), is the same
+resolution `tenant_anomaly` reached for coordinated call volume: no
+per-identity mechanism can close a disposable-identity gap by
+construction, so detect the *rotation itself*, aggregated above the
+identity level. `identity_churn` baselines the count of
+never-before-seen identities appearing in a tenant per window; a burst
+far above that tenant's normal new-identity rate is the fingerprint of
+an attacker discarding caught identities and retrying fresh ones —
+regardless of which per-identity heuristic they were trying to roll
+against. Measured directly: 30 throwaway identities appearing in a
+single window, each making an entirely ordinary number of calls (no
+per-identity heuristic has any baseline yet to compare a brand-new
+identity's first window against) — **0/30 individually caught by any
+per-identity heuristic, `identity_churn` flagged the window** (see
+`TestAdversarialBenchmark_DisposableIdentityRotation`). Detection-only,
+same "no single identity to block" reasoning as `tenant_anomaly`, and
+in-memory only this cycle — see [Known limitations](#known-limitations).
+
 **Burst-pause duty cycling.** Does alternating a high-volume window with
 a quiet one defeat detection by exploiting CUSUM's own reset-on-decline
 behavior? Tested at 3×, 5×, and 10× baseline bursts, each followed by one
@@ -440,6 +474,21 @@ number look good:
   *different* tenants (by design — see `tenant_anomaly`'s own scoping),
   and `tenant_anomaly` only ever logs, it does not auto-block (there is
   no single identity to block for a tenant-level signal).
+- `identity_churn` is in-memory only, per-replica, this cycle — no
+  Postgres/HA persistence or cross-replica merge yet (same trajectory
+  `tenant_anomaly` itself took: shipped in-memory first, closed HA as
+  its own follow-up once the in-memory version was proven correct).
+  Under HA with `postgres_storage` off, a rotation attack split across
+  replicas by a load balancer dilutes each replica's own view of the
+  churn burst, the same gap `tenant_anomaly` had before its own HA
+  extension. A slow trickle of new identities — one every many windows,
+  deliberately spread below any per-window churn threshold — also
+  evades a plain per-window count, the same shape a slow call-volume
+  ramp evaded `tenant_anomaly` before `drift_detection`'s CUSUM
+  extension; a future CUSUM-over-churn-count extension would close it
+  using the same mechanics already built for `call_rate`/
+  `tool_diversity`, not new machinery — not built this cycle to keep
+  scope bounded.
 - Baseline state (rate/novel-tool/`ml_score` history) resets on
   restart, in-memory only — UNLESS `features.postgres_storage` is also
   on: baselines then persist to a shared Postgres table and reload at

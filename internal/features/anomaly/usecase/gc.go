@@ -57,6 +57,17 @@ func (d *Detector) gc(now time.Time, interval time.Duration) {
 			delete(d.tenantState, key)
 		}
 	}
+	// Same 2x-interval idle-eviction reasoning as tenantState above,
+	// applied to identity_churn's own (separate) per-tenant map: a
+	// tenant with no new identities in that long simply reappears as a
+	// fresh baseline on its next one. No Postgres persistence to worry
+	// about cleaning up here at all -- identity_churn has none this
+	// cycle (see its own design doc's "scope" section).
+	for key, cs := range d.churnState {
+		if cs.lastSeen.Before(cutoff) {
+			delete(d.churnState, key)
+		}
+	}
 	var deletedKeys []string
 	for key, st := range d.state {
 		if st.lastSeen.Before(cutoff) {

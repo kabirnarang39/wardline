@@ -235,6 +235,18 @@ policy-pack marketplace, HA deployment.
   real detectors each seeing only half a coordinated spike. See
   [Anomaly Detection](/features/anomaly-detection/)'s "Adversarial
   scenarios".
+- **Identity-churn detection** — a new heuristic baselining the count
+  of never-before-seen identities appearing in a tenant per window,
+  closing the gap no per-identity mechanism can close by construction
+  (including `drift_detection`'s own `h_jitter_fraction`): an attacker
+  minting disposable identities to re-roll for a favorable per-identity
+  jitter draw, discarding whichever gets caught. Detection-only, same
+  "no single identity to block" reasoning as tenant-aggregate detection.
+  Measured directly: 30 throwaway identities in one window, 0/30
+  individually caught by any per-identity heuristic, flagged by this
+  one. In-memory only this cycle — see [Anomaly
+  Detection](/features/anomaly-detection/)'s "Adversarial scenarios" and
+  "Known limitations".
 
 ## Future directions (not committed)
 

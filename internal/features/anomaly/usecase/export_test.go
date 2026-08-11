@@ -17,3 +17,17 @@ func TenantWindowStartForTest(d *Detector, tenantName string) time.Time {
 	}
 	return ts.windowStart
 }
+
+// ChurnWindowCurForTest exposes churnState's in-progress window count
+// for one tenant -- same test-only-accessor convention as
+// TenantWindowStartForTest above.
+func ChurnWindowCurForTest(d *Detector, tenantName string) int {
+	if d.churnState == nil {
+		return 0
+	}
+	cs, ok := d.churnState[tenantName]
+	if !ok {
+		return 0
+	}
+	return cs.cur
+}

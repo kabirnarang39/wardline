@@ -106,6 +106,13 @@ features: {}
 #                             # never auto-blocks (there is no single identity to block for a tenant-level signal)
 #     rate_multiplier: 5.0    # z-score threshold for the tenant's aggregate per-window call volume
 #     min_calls: 10
+#   identity_churn:
+#     enabled: true              # detects a burst of never-before-seen identities in one tenant -- the fingerprint
+#                                 # of an attacker discarding identities caught by per-identity heuristics (including
+#                                 # h_jitter_fraction's own per-identity jitter) and retrying fresh ones. Logs only,
+#                                 # same "no single identity to block" reasoning as tenant_anomaly.
+#     rate_multiplier: 3.0       # z-score threshold for the tenant's aggregate new-identity count per window
+#     min_new_identities: 5      # windows with fewer new identities than this are neither scored nor folded into the baseline
 # taint:
 #   untrusted_sources:            # tool names whose invocation taints the calling session
 #     - web_fetch

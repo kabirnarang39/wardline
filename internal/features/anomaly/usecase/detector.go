@@ -89,6 +89,13 @@ type Detector struct {
 	// checkTenantDrift/tenant_detector.go.
 	tenantState map[string]*tenantWindowState
 
+	// churnState is IdentityChurn's aggregate-per-tenant new-identity-
+	// count baseline -- deliberately its own map, not folded into
+	// tenantState (see churnWindowState's own doc comment for why).
+	// Lazily initialized on first use. See
+	// checkIdentityChurn/identity_churn_detector.go.
+	churnState map[string]*churnWindowState
+
 	// tenantWindowStorePg/tenantBaselineStorePg are nil-able -- see
 	// their interface types' doc comments for what each does and does
 	// NOT share across replicas.
@@ -238,6 +245,12 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	now := d.now()
 	key := tenantIdentityKey(e.Tenant, e.Identity)
 	st, ok := d.state[key]
+	// isNewIdentity must be read from the same lookup recordAndCheck
+	// already does above -- a second, later check against d.state would
+	// always see !ok == false (this call's own st = &identityState{...}
+	// just below made it exist), so "new" has to be captured here, at
+	// this exact point, or it can never be true again.
+	isNewIdentity := !ok
 	if !ok {
 		st = &identityState{tools: make(map[string]struct{}), windowStart: now}
 		d.state[key] = st
@@ -320,6 +333,15 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	// comment.
 	if d.cfg.TenantAnomaly.Enabled {
 		if a := d.checkTenantDrift(e); a != nil {
+			toEmit = append(toEmit, *a)
+		}
+	}
+	// Same "own tenant-scoped window, independent of any identity's
+	// window" reasoning as tenant_anomaly above -- but only accumulated
+	// on a genuine first sighting, never every call, since the whole
+	// signal is "how many NEW identities," not "how much traffic."
+	if d.cfg.IdentityChurn.Enabled && isNewIdentity {
+		if a := d.checkIdentityChurn(e.Tenant, now); a != nil {
 			toEmit = append(toEmit, *a)
 		}
 	}

@@ -431,3 +431,90 @@ func TestAdversarialBenchmark_GrowingNovelToolRamp(t *testing.T) {
 			maxWindows, newToolsThisWindow, len(writer.anomalies))
 	}
 }
+
+// TestAdversarialBenchmark_DisposableIdentityRotation is
+// identity_churn's actual point, proven directly against the exploit
+// docs/superpowers/specs/2026-08-12-identity-churn-design.md documents:
+// h_jitter_fraction perturbs H per identity, so an attacker who can
+// mint disposable identities gets an independent coin flip on every
+// fresh one -- with enough throwaway identities, at least one almost
+// certainly draws a favorable (high) effective H. Here, 30 throwaway
+// identities appear in a single window, each making an entirely
+// unremarkable number of calls (indistinguishable from ordinary
+// traffic on its own -- no per-identity heuristic has any baseline yet
+// to compare a brand-new identity's first window against, see
+// checkRateSpike's own st.prev.total == 0 guard). No single one of them
+// is caught by any per-identity heuristic that window. Only the
+// tenant-scoped identity_churn signal, watching new-identity COUNT
+// rather than any one identity's behavior, sees the burst.
+func TestAdversarialBenchmark_DisposableIdentityRotation(t *testing.T) {
+	cfg := shippedExampleCfgWithDrift()
+	cfg.Drift.HJitterFraction = 0.2
+	cfg.Drift.JitterSecret = []byte("adversarial-benchmark-secret-not-for-prod")
+	cfg.IdentityChurn = domain.IdentityChurnConfig{Enabled: true, RateMultiplier: 3.0, MinNewIdentities: 1}
+	const tenant = "rotation-tenant"
+	const baseline = 30
+
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writer := &recordingWriter{}
+	blocker := usecase.NewBlockChecker(cfg.AutoBlock, clock.now)
+	d := usecase.NewDetector(cfg, writer, nil, blocker, nil, clock.now, nil)
+	rng := rand.New(rand.NewSource(20260812))
+
+	// 20 warmup windows: 5 long-lived "regular" identities generate
+	// ordinary traffic every window (building normal per-identity
+	// baselines, same as any other test's warmup), plus exactly 2
+	// genuinely new identities appear each window -- a small, steady
+	// organic churn rate (new sessions/users showing up normally) for
+	// identity_churn's own baseline to converge on, past
+	// minSamplesForZScore's 8-window floor.
+	newIdx := 0
+	for w := 0; w < 20; w++ {
+		for r := 0; r < 5; r++ {
+			identity := fmt.Sprintf("regular-%d", r)
+			for c := 0; c < baseline; c++ {
+				d.Publish(auditdomain.Entry{Identity: identity, Tenant: tenant, Tool: benchTools[rng.Intn(len(benchTools))], Decision: "allow"})
+			}
+		}
+		for c := 0; c < 2; c++ {
+			d.Publish(auditdomain.Entry{Identity: fmt.Sprintf("organic-%d", newIdx), Tenant: tenant, Tool: benchTools[rng.Intn(len(benchTools))], Decision: "allow"})
+			newIdx++
+		}
+		clock.t = clock.t.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+	}
+
+	// Attack window: 30 throwaway identities appear at once, each
+	// making an ordinary ~baseline number of calls -- an attacker
+	// minting disposable identities to fish for a favorable h_jitter
+	// draw for whichever one they keep. None individually stands out.
+	for i := 0; i < 30; i++ {
+		identity := fmt.Sprintf("throwaway-%d", i)
+		for c := 0; c < baseline; c++ {
+			d.Publish(auditdomain.Entry{Identity: identity, Tenant: tenant, Tool: benchTools[rng.Intn(len(benchTools))], Decision: "allow"})
+		}
+	}
+	clock.t = clock.t.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+	d.Publish(auditdomain.Entry{Identity: "probe", Tenant: tenant, Tool: "__probe__", Decision: "allow"})
+
+	churnFlagged := false
+	for _, a := range writer.anomalies {
+		if a.Kind == domain.KindIdentityChurn {
+			churnFlagged = true
+		}
+	}
+	blockedThrowaways := 0
+	for i := 0; i < 30; i++ {
+		identity := fmt.Sprintf("throwaway-%d", i)
+		if v := blocker.Check(identity, tenant, clock.t); !v.Allowed {
+			blockedThrowaways++
+		}
+	}
+	t.Logf("disposable-identity rotation: identity_churn flagged=%v, %d/30 throwaway identities individually auto-blocked that same window",
+		churnFlagged, blockedThrowaways)
+	if !churnFlagged {
+		t.Fatal("expected identity_churn to flag the 30-throwaway-identity burst -- this is the actual defense against h_jitter_fraction's own documented rotation vulnerability, no per-identity heuristic can see this pattern by construction")
+	}
+	if blockedThrowaways > 0 {
+		t.Errorf("expected zero of the 30 throwaway identities to be individually auto-blocked in their own first window (proving the burst is genuinely invisible to per-identity heuristics, which is exactly why identity_churn has to exist) -- got %d blocked", blockedThrowaways)
+	}
+}
