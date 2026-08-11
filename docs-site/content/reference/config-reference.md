@@ -24,7 +24,8 @@ this shape (`internal/platform/config/config.go`).
 | Field | Type | Purpose |
 |---|---|---|
 | `output` | string | `stdout` or a file path. |
-| `postgres_dsn` | string | Only used when `features.postgres_storage` is true. |
+| `postgres_dsn` | string | Only used when `features.postgres_storage` is true. Shared by every Postgres-backed feature (audit, credential revocation/refresh, budget, job/cost budget, SCIM, anomaly baselines/blocks/tenant aggregates) — not audit-specific despite living here. |
+| `postgres_max_open_conns` | int | Size of the ONE connection pool shared by every Postgres-backed feature (see `postgres_dsn` above). Default 25 when unset/zero. See [Budget Enforcement](/features/budget-enforcement/)'s "Known limitations" for the fail-open behavior under sustained load beyond this. |
 | `retention_days` | int | Age past which audit entries are purged by the retention job. Only meaningful when `features.log_retention` is true; see [`retention`](#retention). |
 
 ## `budget`

@@ -51,31 +51,16 @@ type PostgresTenantWindowStore struct {
 	logger *slog.Logger
 }
 
-// NewPostgresTenantWindowStore opens a connection pool to dsn, creates
-// tenant_window_totals if it doesn't exist, and pings the connection --
-// a bad DSN fails here, at construction, not on the first AddAndGet
-// call, matching every other Postgres-backed adapter's own precedent.
-func NewPostgresTenantWindowStore(dsn string, logger *slog.Logger) (*PostgresTenantWindowStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), tenantWindowStoreTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresTenantWindowStore creates tenant_window_totals on db if it
+// doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, not on the first AddAndGet call, matching every other
+// Postgres-backed adapter's own precedent.
+func NewPostgresTenantWindowStore(db *sql.DB, logger *slog.Logger) (*PostgresTenantWindowStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), tenantWindowStoreTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createTenantWindowTotalsTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create tenant_window_totals table: %w", err)
 	}
 
@@ -96,9 +81,4 @@ func (s *PostgresTenantWindowStore) AddAndGet(tenantName string, windowStart tim
 		return 0, fmt.Errorf("add and get tenant window total: %w", err)
 	}
 	return total, nil
-}
-
-// Close releases the underlying connection pool.
-func (s *PostgresTenantWindowStore) Close() error {
-	return s.db.Close()
 }

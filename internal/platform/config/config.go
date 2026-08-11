@@ -18,6 +18,18 @@ type AuditConfig struct {
 	Output      string `yaml:"output"`       // "stdout" or a file path
 	PostgresDSN string `yaml:"postgres_dsn"` // only used when features.postgres_storage is true
 
+	// PostgresMaxOpenConns sizes the ONE connection pool shared by every
+	// Postgres-backed feature (audit, revocation, refresh tokens, budget,
+	// job/cost budget, SCIM, anomaly baselines/blocks) -- see
+	// internal/platform/pgpool. Defaults to 25 when unset/zero: replacing
+	// each feature's own independent 10-connection pool with a single
+	// shared one already cuts total connections roughly in half for a
+	// deployment running every Postgres-backed feature, and a shared pool
+	// applies backpressure across every feature coherently rather than
+	// one feature's pool starving while another's sits idle. Tune this
+	// against your Postgres's own max_connections and replica count.
+	PostgresMaxOpenConns int `yaml:"postgres_max_open_conns"`
+
 	// RetentionDays, when > 0, is how many days of audit history
 	// features.log_retention's periodic job keeps before purging older
 	// entries -- 0 (the default) means keep forever, preserving every
@@ -490,6 +502,11 @@ func (c *Config) validate() error {
 	if c.Features["postgres_storage"] {
 		if c.Audit.PostgresDSN == "" {
 			problems = append(problems, "audit.postgres_dsn must not be empty when features.postgres_storage is true")
+		}
+		if c.Audit.PostgresMaxOpenConns == 0 {
+			c.Audit.PostgresMaxOpenConns = 25
+		} else if c.Audit.PostgresMaxOpenConns < 0 {
+			problems = append(problems, "audit.postgres_max_open_conns must be >= 0")
 		}
 	} else if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty (or set features.postgres_storage: true and audit.postgres_dsn instead)")

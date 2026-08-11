@@ -14,6 +14,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/credential/domain"
 	"github.com/kabirnarang39/wardline/internal/features/credential/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 const refreshTestSchema = "wardline_test_credential_refresh"
@@ -39,6 +40,19 @@ func refreshTestDSN(t *testing.T) string {
 	return dsn + sep + "search_path=" + refreshTestSchema
 }
 
+// openRefreshTestPool opens a pool the same way cmd/wardline/main.go does
+// (via pgpool.Open, shared across every Postgres-backed feature in
+// production) -- test callers get the identical Open+Ping+pool-config
+// path real traffic goes through, not a bespoke test-only shortcut.
+func openRefreshTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openRefreshTestPool: %v", err)
+	}
+	return db
+}
+
 func dropRefreshTokensTable(t *testing.T, dsn string) {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
@@ -55,11 +69,12 @@ func TestPostgresRefreshStore_IssueThenRedeemRoundTrips(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -77,11 +92,12 @@ func TestPostgresRefreshStore_ReplayingAConsumedTokenIsReuse(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -102,11 +118,12 @@ func TestPostgresRefreshStore_ReuseRevokesTheWholeFamily(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("old-tok", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue old-tok: %v", err)
@@ -136,11 +153,12 @@ func TestPostgresRefreshStore_RedeemUnknownTokenFails(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if _, _, _, err := s.Redeem("never-issued"); !errors.Is(err, domain.ErrRefreshTokenInvalid) {
 		t.Errorf("expected ErrRefreshTokenInvalid for a never-issued token, got %v", err)
@@ -151,11 +169,12 @@ func TestPostgresRefreshStore_RedeemExpiredTokenFails(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -169,11 +188,12 @@ func TestPostgresRefreshStore_RevokeAllForIdentityInvalidatesItsTokens(t *testin
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue tok-1: %v", err)
@@ -198,11 +218,12 @@ func TestPostgresRefreshStore_WildcardRevokeAffectsEveryTenant(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	if err := s.Issue("tok-acme", "bob", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -227,47 +248,40 @@ func TestPostgresRefreshStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	s1, err := adapter.NewPostgresRefreshStore(dsn)
-	if err != nil {
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	if _, err := adapter.NewPostgresRefreshStore(db); err != nil {
 		t.Fatalf("first NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = s1.Close() }()
 
-	s2, err := adapter.NewPostgresRefreshStore(dsn)
-	if err != nil {
+	if _, err := adapter.NewPostgresRefreshStore(db); err != nil {
 		t.Fatalf("second NewPostgresRefreshStore (should be idempotent): %v", err)
-	}
-	defer func() { _ = s2.Close() }()
-}
-
-func TestNewPostgresRefreshStore_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresRefreshStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable")
-	if err == nil {
-		t.Fatal("expected an error constructing a store against an unreachable database")
 	}
 }
 
 // TestPostgresRefreshStore_CrossInstanceRedeemPropagates is the actual HA
-// scenario: two separate *PostgresRefreshStore instances (simulating two
-// replicas) against the same DSN -- a token issued through one is
-// redeemable through the other, and a replay through the first is detected
-// as reuse cross-instance too (the SELECT ... FOR UPDATE state transition
-// is visible across replicas).
+// scenario: two separate *PostgresRefreshStore instances, each with its
+// own connection pool (simulating two replicas) against the same DSN -- a
+// token issued through one is redeemable through the other, and a replay
+// through the first is detected as reuse cross-instance too (the SELECT
+// ... FOR UPDATE state transition is visible across replicas).
 func TestPostgresRefreshStore_CrossInstanceRedeemPropagates(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	replicaA, err := adapter.NewPostgresRefreshStore(dsn)
+	dbA := openRefreshTestPool(t, dsn)
+	defer func() { _ = dbA.Close() }()
+	replicaA, err := adapter.NewPostgresRefreshStore(dbA)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	defer func() { _ = replicaA.Close() }()
 
-	replicaB, err := adapter.NewPostgresRefreshStore(dsn)
+	dbB := openRefreshTestPool(t, dsn)
+	defer func() { _ = dbB.Close() }()
+	replicaB, err := adapter.NewPostgresRefreshStore(dbB)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
-	defer func() { _ = replicaB.Close() }()
 
 	if err := replicaA.Issue("tok-1", "agent-abc123", "acme", "fam-1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -300,11 +314,12 @@ func TestRefreshTokensSurviveNothingAfterWildcardRevoke_EndToEnd(t *testing.T) {
 	dsn := refreshTestDSN(t)
 	dropRefreshTokensTable(t, dsn)
 
-	store, err := adapter.NewPostgresRefreshStore(dsn)
+	db := openRefreshTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	store, err := adapter.NewPostgresRefreshStore(db)
 	if err != nil {
 		t.Fatalf("NewPostgresRefreshStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	credsPath := filepath.Join(t.TempDir(), "credentials.yaml")
 	if err := os.WriteFile(credsPath, []byte("identities:\n  - name: agent-abc123\n    secret: s3cret\n    tenant: acme\n"), 0o600); err != nil {

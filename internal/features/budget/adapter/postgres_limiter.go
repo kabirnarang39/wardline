@@ -135,34 +135,18 @@ type PostgresLimiter struct {
 	toolLimits   map[string]tenantLimit
 }
 
-// NewPostgresLimiter opens a connection pool to dsn, creates the
-// budget_buckets table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first Allow call. logger is used to
-// surface Allow query failures that would otherwise be indistinguishable
-// from the ordinary "within budget" result -- may be nil (Allow must not
-// panic on a nil logger; see the "no logger" test).
-func NewPostgresLimiter(dsn string, requestsPerWindow int, window time.Duration, logger *slog.Logger) (*PostgresLimiter, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), budgetLimiterTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresLimiter creates the budget_buckets table on db if it doesn't
+// already exist. db is expected already open and pinged (see pgpool.Open,
+// called once in cmd/wardline/main.go and shared across every
+// Postgres-backed feature) -- a bad db fails here, at construction time,
+// not on the first Allow call. logger is used to surface Allow query
+// failures that would otherwise be indistinguishable from the ordinary
+// "within budget" result -- may be nil (Allow must not panic on a nil
+// logger; see the "no logger" test).
+func NewPostgresLimiter(db *sql.DB, requestsPerWindow int, window time.Duration, logger *slog.Logger) (*PostgresLimiter, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), budgetLimiterTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createBudgetBucketsTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create budget_buckets table: %w", err)
 	}
 
@@ -413,12 +397,6 @@ func (l *PostgresLimiter) reapExpired(window time.Duration, now time.Time) {
 	if _, err := l.db.ExecContext(ctx, reapExpiredBucketsSQL, int64(window/time.Microsecond), now); err != nil && l.logger != nil {
 		l.logger.Warn("budget bucket sweep failed; expired rows will be retried on the next sweep", "error", err)
 	}
-}
-
-// Close releases the underlying connection pool, draining in-flight
-// connections. Called during Wardline's graceful shutdown.
-func (l *PostgresLimiter) Close() error {
-	return l.db.Close()
 }
 
 var _ domain.Limiter = (*PostgresLimiter)(nil)

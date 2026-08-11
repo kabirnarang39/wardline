@@ -52,31 +52,15 @@ type PostgresTenantBaselineStore struct {
 	logger     *slog.Logger
 }
 
-// NewPostgresTenantBaselineStore opens a connection pool to dsn,
-// creates tenant_baselines if it doesn't exist, and pings the
-// connection -- a bad DSN fails here, at construction, matching every
-// other Postgres-backed adapter's own precedent.
-func NewPostgresTenantBaselineStore(dsn, instanceID string, logger *slog.Logger) (*PostgresTenantBaselineStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), tenantBaselineStoreTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresTenantBaselineStore creates tenant_baselines on db if it
+// doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, matching every other Postgres-backed adapter's own precedent.
+func NewPostgresTenantBaselineStore(db *sql.DB, instanceID string, logger *slog.Logger) (*PostgresTenantBaselineStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), tenantBaselineStoreTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createTenantBaselinesTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create tenant_baselines table: %w", err)
 	}
 
@@ -141,9 +125,4 @@ func (s *PostgresTenantBaselineStore) SaveAll(baselines map[string]anomalyusecas
 		return fmt.Errorf("commit tenant baseline save transaction: %w", err)
 	}
 	return nil
-}
-
-// Close releases the underlying connection pool.
-func (s *PostgresTenantBaselineStore) Close() error {
-	return s.db.Close()
 }

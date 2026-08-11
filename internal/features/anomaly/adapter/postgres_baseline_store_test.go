@@ -14,9 +14,25 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 const baselineTestSchema = "wardline_test_anomaly_baseline"
+
+// openBaselineTestPool opens a pool the same way cmd/wardline/main.go does
+// (via pgpool.Open, shared across every Postgres-backed feature in
+// production) -- test callers get the identical Open+Ping+pool-config path
+// real traffic goes through, not a bespoke test-only shortcut. Named
+// distinctly from other postgres_*_test.go files' pool helpers in this
+// package to avoid collisions.
+func openBaselineTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openBaselineTestPool: %v", err)
+	}
+	return db
+}
 
 // testInstanceID is the fixed instance ID passed to NewPostgresBaselineStore
 // by every test in this file that doesn't specifically need a different
@@ -76,11 +92,12 @@ func TestPostgresBaselineStore_SaveThenLoadRoundTrips(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	snap := sampleSnapshot()
 	key := "4:acme:alice"
@@ -111,11 +128,12 @@ func TestPostgresBaselineStore_SaveAllOverwritesExistingKey(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	key := "5:acme2:alice"
 	first := sampleSnapshot()
@@ -145,11 +163,12 @@ func TestPostgresBaselineStore_LoadAllSkipsCorruptRowsAndLogsWarn(t *testing.T) 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, logger)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	goodKey := "4:acme:bob"
 	if err := s.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{goodKey: sampleSnapshot()}, nil); err != nil {
@@ -190,16 +209,18 @@ func TestPostgresBaselineStore_PruneStaleRemovesOnlyAbandonedRowsAcrossInstances
 
 	// Instance A (soon to be "abandoned") and instance B (still live), each
 	// saving one row under its own instance ID.
-	sA, err := adapter.NewPostgresBaselineStore(dsn, "instance-A", nil)
+	dbA := openBaselineTestPool(t, dsn)
+	defer func() { _ = dbA.Close() }()
+	sA, err := adapter.NewPostgresBaselineStore(dbA, "instance-A", nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore A: %v", err)
 	}
-	defer func() { _ = sA.Close() }()
-	sB, err := adapter.NewPostgresBaselineStore(dsn, "instance-B", nil)
+	dbB := openBaselineTestPool(t, dsn)
+	defer func() { _ = dbB.Close() }()
+	sB, err := adapter.NewPostgresBaselineStore(dbB, "instance-B", nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore B: %v", err)
 	}
-	defer func() { _ = sB.Close() }()
 
 	if err := sA.SaveAll(map[string]anomalyusecase.IdentityStateSnapshot{"4:acme:alice": sampleSnapshot()}, nil); err != nil {
 		t.Fatalf("SaveAll A: %v", err)
@@ -256,11 +277,12 @@ func TestPostgresBaselineStore_LoadAllOnEmptyTableReturnsEmptyMap(t *testing.T) 
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	loaded, err := s.LoadAll()
 	if err != nil {
@@ -275,23 +297,16 @@ func TestPostgresBaselineStore_TableCreationIsIdempotent(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s1, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	_, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s1.Close() }()
 
-	s2, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	_, err = adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresBaselineStore (should be idempotent): %v", err)
-	}
-	defer func() { _ = s2.Close() }()
-}
-
-func TestNewPostgresBaselineStore_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresBaselineStore("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", testInstanceID, nil)
-	if err == nil {
-		t.Fatal("expected an error constructing a store against an unreachable database")
 	}
 }
 
@@ -304,17 +319,19 @@ func TestPostgresBaselineStore_CrossReplicaIsolation(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s1, err := adapter.NewPostgresBaselineStore(dsn, "replica-1", nil)
+	db1 := openBaselineTestPool(t, dsn)
+	defer func() { _ = db1.Close() }()
+	s1, err := adapter.NewPostgresBaselineStore(db1, "replica-1", nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore (replica-1): %v", err)
 	}
-	defer func() { _ = s1.Close() }()
 
-	s2, err := adapter.NewPostgresBaselineStore(dsn, "replica-2", nil)
+	db2 := openBaselineTestPool(t, dsn)
+	defer func() { _ = db2.Close() }()
+	s2, err := adapter.NewPostgresBaselineStore(db2, "replica-2", nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore (replica-2): %v", err)
 	}
-	defer func() { _ = s2.Close() }()
 
 	key := "4:acme:alice"
 	snap1 := sampleSnapshot()
@@ -354,11 +371,12 @@ func TestPostgresBaselineStore_SaveAllDeletesEvictedRows(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	keepKey := "4:acme:alice"
 	evictKey := "4:acme:bob"
@@ -401,11 +419,12 @@ func TestPostgresBaselineStore_SaveAllBatchesLargeMaps(t *testing.T) {
 	dsn := baselineTestDSN(t)
 	dropBaselinesTable(t, dsn)
 
-	s, err := adapter.NewPostgresBaselineStore(dsn, testInstanceID, nil)
+	db := openBaselineTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBaselineStore(db, testInstanceID, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresBaselineStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	const n = 1200
 	snapshots := make(map[string]anomalyusecase.IdentityStateSnapshot, n)

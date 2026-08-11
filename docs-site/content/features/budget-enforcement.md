@@ -83,18 +83,21 @@ the query-level failures that cause this.
   as a per-identity quota, so size `budget.tenants`/`budget.tools`
   overrides for the bucket's aggregate traffic, not per-identity
   traffic.
-- **Postgres-backed budget checks compete for connections with every
-  other Postgres-backed feature.** Each tier is its own round trip, so a
-  single request can cost up to three (tool, tenant, identity) when both
-  override kinds are configured. Every Postgres-backed feature — audit,
-  revocation, refresh tokens, SCIM, anomaly baselines, and the limiter —
-  manages its own independent connection pool rather than sharing one, so
-  a replica with `postgres_storage` on can hold tens of connections
-  against a database whose default `max_connections` is often 100. Under
-  sustained load beyond the available connections, a budget check blocks
-  waiting for a connection, hits its 5-second timeout, and **fails open**
-  (see the fail-open behavior above) rather than enforcing the limit —
-  meaning the harder the load spike, the more likely enforcement is
-  skipped. Size your pools and `max_connections` for the number of
-  replicas × Postgres-backed features you actually run; a single shared
-  pool across features is a candidate for a future cycle.
+- **Postgres-backed budget checks share ONE connection pool with every
+  other Postgres-backed feature, sized by `audit.postgres_max_open_conns`
+  (default 25).** Audit, credential revocation/refresh, SCIM, anomaly
+  baselines/blocks/tenant aggregates, and the limiter all draw from this
+  one pool (opened once in `cmd/wardline/main.go`, see
+  `internal/platform/pgpool`) instead of each opening its own — a
+  deployment running every Postgres-backed feature now holds at most
+  `postgres_max_open_conns` connections per replica, not a per-feature
+  multiple of it. Each budget tier (tool, tenant, identity) is still its
+  own round trip, so a single request can still draw up to three
+  connections from the shared pool when both override kinds are
+  configured. Under sustained load beyond the pool's size, a budget check
+  still blocks waiting for a connection, hits its 5-second timeout, and
+  **fails open** (see the fail-open behavior above) rather than enforcing
+  the limit — that residual is inherent to any bounded connection pool
+  under unbounded load, not specific to this feature. Size
+  `audit.postgres_max_open_conns` and your Postgres's own
+  `max_connections` for the number of replicas you actually run.

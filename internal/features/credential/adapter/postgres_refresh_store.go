@@ -102,36 +102,20 @@ type PostgresRefreshStore struct {
 	db *sql.DB
 }
 
-// NewPostgresRefreshStore opens a connection pool to dsn, creates the
-// refresh_tokens table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first Issue/Redeem call.
-func NewPostgresRefreshStore(dsn string) (*PostgresRefreshStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), revokerTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresRefreshStore creates the refresh_tokens table on db (and
+// runs its migrations) if it doesn't already exist. db is expected
+// already open and pinged (see pgpool.Open, called once in
+// cmd/wardline/main.go and shared across every Postgres-backed feature)
+// -- a bad db fails here, at construction time, not on the first
+// Issue/Redeem call.
+func NewPostgresRefreshStore(db *sql.DB) (*PostgresRefreshStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), revokerTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createRefreshTokensTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create refresh_tokens table: %w", err)
 	}
 	for _, stmt := range []string{alterRefreshTokensAddFamilySQL, alterRefreshTokensAddConsumedSQL, createRefreshTokensFamilyIndexSQL} {
 		if _, err := db.ExecContext(createCtx, stmt); err != nil {
-			_ = db.Close()
 			return nil, fmt.Errorf("migrate refresh_tokens table: %w", err)
 		}
 	}
@@ -233,10 +217,6 @@ func (s *PostgresRefreshStore) RevokeAllForIdentity(tenantName, identity string)
 		return fmt.Errorf("revoke refresh tokens for %q (tenant %q): %w", identity, tenantName, err)
 	}
 	return nil
-}
-
-func (s *PostgresRefreshStore) Close() error {
-	return s.db.Close()
 }
 
 var _ domain.RefreshStore = (*PostgresRefreshStore)(nil)

@@ -12,8 +12,22 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
+
+// openTestPool opens a pool the same way cmd/wardline/main.go does (via
+// pgpool.Open, shared across every Postgres-backed feature in production)
+// -- test callers get the identical Open+Ping+pool-config path real
+// traffic goes through, not a bespoke test-only shortcut.
+func openTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTestPool: %v", err)
+	}
+	return db
+}
 
 // testSchema isolates this package's Postgres tests from every other
 // package's (internal/features/credential/adapter and cmd/wardline both
@@ -76,11 +90,12 @@ func TestPostgresWriter_CreatesTableAndWrites(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	entry := domain.Entry{
@@ -96,15 +111,15 @@ func TestPostgresWriter_CreatesTableAndWrites(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	verifyDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open for verification: %v", err)
 	}
-	defer func() { _ = db.Close() }()
+	defer func() { _ = verifyDB.Close() }()
 
 	var identity, tool, decision, traceID string
 	var latencyMS int64
-	row := db.QueryRow(`SELECT identity, tool, decision, latency_ms, trace_id FROM audit_entries LIMIT 1`)
+	row := verifyDB.QueryRow(`SELECT identity, tool, decision, latency_ms, trace_id FROM audit_entries LIMIT 1`)
 	if err := row.Scan(&identity, &tool, &decision, &latencyMS, &traceID); err != nil {
 		t.Fatalf("verify insert: %v", err)
 	}
@@ -117,25 +132,18 @@ func TestPostgresWriter_TableCreationIsIdempotent(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w1, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	_, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("first NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w1.Close() }()
 
 	// Simulates a second Wardline instance starting against the same
 	// already-initialized database — must not error.
-	w2, err := adapter.NewPostgresWriter(dsn)
+	_, err = adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("second NewPostgresWriter (should be idempotent): %v", err)
-	}
-	defer func() { _ = w2.Close() }()
-}
-
-func TestNewPostgresWriter_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresWriter("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable")
-	if err == nil {
-		t.Fatal("expected an error constructing a writer against an unreachable database")
 	}
 }
 
@@ -143,11 +151,12 @@ func TestPostgresWriter_WriteOnClosedConnectionReturnsError(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	if err := w.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -161,11 +170,12 @@ func TestPostgresWriter_QueryReturnsEntriesInRangeOrderedByTimestamp(t *testing.
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	entries := []domain.Entry{
 		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Identity: "at-from", Tool: "read_file", Decision: "allow", LatencyMS: 1},
@@ -200,11 +210,12 @@ func TestPostgresWriter_PurgeDeletesOnlyEntriesOlderThanCutoff(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	entries := []domain.Entry{
 		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Identity: "old", Tool: "read_file", Decision: "allow"},
@@ -239,11 +250,12 @@ func TestPostgresWriter_PurgeNothingToDeleteReturnsZero(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	deleted, err := w.Purge(context.Background(), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -265,11 +277,11 @@ func TestPostgresWriter_MissingTenantDefaultsOnRead(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	db, err := sql.Open("pgx", dsn)
+	seedDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open to seed legacy schema: %v", err)
 	}
-	if _, err := db.Exec(`
+	if _, err := seedDB.Exec(`
 CREATE TABLE audit_entries (
 	id BIGSERIAL PRIMARY KEY,
 	timestamp TIMESTAMPTZ NOT NULL,
@@ -283,21 +295,22 @@ CREATE TABLE audit_entries (
 		t.Fatalf("create pre-Task-20 schema: %v", err)
 	}
 	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(
+	if _, err := seedDB.Exec(
 		`INSERT INTO audit_entries (timestamp, identity, tool, decision, latency_ms) VALUES ($1, $2, $3, $4, $5)`,
 		ts, "legacy-agent", "read_file", "allow", 5,
 	); err != nil {
 		t.Fatalf("seed legacy row: %v", err)
 	}
-	if err := db.Close(); err != nil {
+	if err := seedDB.Close(); err != nil {
 		t.Fatalf("close seeding connection: %v", err)
 	}
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter (must migrate the pre-existing table): %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	got, err := w.Query(context.Background(), ts.Add(-time.Hour), ts.Add(time.Hour))
 	if err != nil {
@@ -312,11 +325,12 @@ func TestPostgresWriter_QueryEmptyRangeReturnsNoRows(t *testing.T) {
 	dsn := testDSN(t)
 	dropTable(t, dsn)
 
-	w, err := adapter.NewPostgresWriter(dsn)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	w, err := adapter.NewPostgresWriter(db)
 	if err != nil {
 		t.Fatalf("NewPostgresWriter: %v", err)
 	}
-	defer func() { _ = w.Close() }()
 
 	got, err := w.Query(context.Background(), time.Now(), time.Now().Add(time.Hour))
 	if err != nil {

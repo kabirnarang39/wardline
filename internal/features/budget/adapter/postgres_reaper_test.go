@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 // reaperTestSchema is the same schema postgres_limiter_test.go uses --
@@ -60,11 +62,15 @@ func TestPostgresLimiter_ReapsExpiredRowsOnSweep(t *testing.T) {
 
 	// requestsPerWindow is far above the call counts below so no call is
 	// ever denied — this test is about row lifetime, not admission.
-	l, err := NewPostgresLimiter(dsn, 100000, time.Second, nil)
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("pgpool.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	l, err := NewPostgresLimiter(db, 100000, time.Second, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	countRows := func() int {
 		var n int

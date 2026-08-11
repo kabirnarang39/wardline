@@ -11,9 +11,23 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 const blockTestSchema = "wardline_test_anomaly_block"
+
+// openBlockTestPool opens a pool the same way cmd/wardline/main.go does
+// (via pgpool.Open, shared across every Postgres-backed feature in
+// production) -- test callers get the identical Open+Ping+pool-config path
+// real traffic goes through, not a bespoke test-only shortcut.
+func openBlockTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openBlockTestPool: %v", err)
+	}
+	return db
+}
 
 func blockTestDSN(t *testing.T) string {
 	t.Helper()
@@ -56,11 +70,12 @@ func TestPostgresBlockStore_BlockThenCheckRoundTrips(t *testing.T) {
 	dsn := blockTestDSN(t)
 	dropBlockedTable(t, dsn)
 
-	s, err := adapter.NewPostgresBlockStore(dsn, time.Hour, blockTestLogger())
+	db := openBlockTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBlockStore(db, time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("NewPostgresBlockStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	s.Block("agent-abc123", "acme", "ml_score anomaly")
 	verdict := s.Check("agent-abc123", "acme", time.Now())
@@ -87,11 +102,12 @@ func TestPostgresBlockStore_ExpiredBlockReadsAsUnblocked(t *testing.T) {
 
 	// A negative duration makes every block already-expired the instant
 	// it's written, without a real sleep.
-	s, err := adapter.NewPostgresBlockStore(dsn, -time.Hour, blockTestLogger())
+	db := openBlockTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBlockStore(db, -time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("NewPostgresBlockStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	s.Block("agent-abc123", "acme", "expired immediately")
 	if v := s.Check("agent-abc123", "acme", time.Now()); !v.Allowed {
@@ -107,16 +123,18 @@ func TestPostgresBlockStore_CrossReplica(t *testing.T) {
 	dsn := blockTestDSN(t)
 	dropBlockedTable(t, dsn)
 
-	replicaA, err := adapter.NewPostgresBlockStore(dsn, time.Hour, blockTestLogger())
+	dbA := openBlockTestPool(t, dsn)
+	defer func() { _ = dbA.Close() }()
+	replicaA, err := adapter.NewPostgresBlockStore(dbA, time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	defer func() { _ = replicaA.Close() }()
-	replicaB, err := adapter.NewPostgresBlockStore(dsn, time.Hour, blockTestLogger())
+	dbB := openBlockTestPool(t, dsn)
+	defer func() { _ = dbB.Close() }()
+	replicaB, err := adapter.NewPostgresBlockStore(dbB, time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
-	defer func() { _ = replicaB.Close() }()
 
 	replicaA.Block("agent-abc123", "acme", "blocked on replica A")
 	if v := replicaB.Check("agent-abc123", "acme", time.Now()); v.Allowed {
@@ -128,11 +146,12 @@ func TestPostgresBlockStore_UnblockRemovesActiveBlock(t *testing.T) {
 	dsn := blockTestDSN(t)
 	dropBlockedTable(t, dsn)
 
-	s, err := adapter.NewPostgresBlockStore(dsn, time.Hour, blockTestLogger())
+	db := openBlockTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBlockStore(db, time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("NewPostgresBlockStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	s.Block("agent-abc123", "acme", "reason")
 	if !s.Unblock("agent-abc123", "acme") {
@@ -151,11 +170,12 @@ func TestPostgresBlockStore_ListReturnsActiveBlocks(t *testing.T) {
 	dsn := blockTestDSN(t)
 	dropBlockedTable(t, dsn)
 
-	s, err := adapter.NewPostgresBlockStore(dsn, time.Hour, blockTestLogger())
+	db := openBlockTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	s, err := adapter.NewPostgresBlockStore(db, time.Hour, blockTestLogger())
 	if err != nil {
 		t.Fatalf("NewPostgresBlockStore: %v", err)
 	}
-	defer func() { _ = s.Close() }()
 
 	s.Block("alice", "acme", "r1")
 	s.Block("bob", "widgets-inc", "r2")
