@@ -75,16 +75,16 @@ func NewDeciderWithHolderTaintJobBudgetAndCostBudget(holder *reload.ReloadableEn
 
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	pc := policydomain.Context{
-		Identity:      call.Identity,
-		Tenant:        call.Tenant,
-		Tool:          call.Tool,
-		Method:        call.Method,
-		Params:        call.Params,
-		Timestamp:     call.Timestamp,
-		RemoteAddr:    call.RemoteAddr,
-		UserAgent:     call.UserAgent,
-		Tainted:       d.taint != nil && d.taint(call),
-		JobOverBudget: d.jobBudget != nil && d.jobBudget(call),
+		Identity:       call.Identity,
+		Tenant:         call.Tenant,
+		Tool:           call.Tool,
+		Method:         call.Method,
+		Params:         call.Params,
+		Timestamp:      call.Timestamp,
+		RemoteAddr:     call.RemoteAddr,
+		UserAgent:      call.UserAgent,
+		Tainted:        d.taint != nil && d.taint(call),
+		JobOverBudget:  d.jobBudget != nil && d.jobBudget(call),
 		CostOverBudget: d.costBudget != nil && d.costBudget(call),
 	}
 	engine := *d.policy.Current()

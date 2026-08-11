@@ -344,23 +344,23 @@ type Config struct {
 	// the host's system root pool, server name from GRPCUpstream) instead
 	// of plaintext. Default false preserves the plaintext-to-mesh behavior;
 	// set true when Wardline talks directly to a TLS-terminating upstream.
-	GRPCUpstreamTLS bool             `yaml:"grpc_upstream_tls"`
-	PolicyBackend   string           `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
-	Audit           AuditConfig      `yaml:"audit"`
-	Budget          BudgetConfig     `yaml:"budget"`
-	Tracing         TracingConfig    `yaml:"tracing"`
-	Credential      CredentialConfig `yaml:"credential"`
-	RBAC            RBACConfig       `yaml:"rbac"`
-	Scim            ScimConfig       `yaml:"scim"`
-	Anomaly         AnomalyConfig    `yaml:"anomaly"`
-	Federation      FederationConfig `yaml:"federation"`
-	Compliance      ComplianceConfig `yaml:"compliance"`
-	Retention       RetentionConfig  `yaml:"retention"`
-	Taint           TaintConfig      `yaml:"taint"`
-	Approval        ApprovalConfig   `yaml:"approval"`
-	JobBudget       JobBudgetConfig  `yaml:"job_budget"`
+	GRPCUpstreamTLS bool                `yaml:"grpc_upstream_tls"`
+	PolicyBackend   string              `yaml:"policy_backend"` // "yaml" (default), "opa", or "cedar"
+	Audit           AuditConfig         `yaml:"audit"`
+	Budget          BudgetConfig        `yaml:"budget"`
+	Tracing         TracingConfig       `yaml:"tracing"`
+	Credential      CredentialConfig    `yaml:"credential"`
+	RBAC            RBACConfig          `yaml:"rbac"`
+	Scim            ScimConfig          `yaml:"scim"`
+	Anomaly         AnomalyConfig       `yaml:"anomaly"`
+	Federation      FederationConfig    `yaml:"federation"`
+	Compliance      ComplianceConfig    `yaml:"compliance"`
+	Retention       RetentionConfig     `yaml:"retention"`
+	Taint           TaintConfig         `yaml:"taint"`
+	Approval        ApprovalConfig      `yaml:"approval"`
+	JobBudget       JobBudgetConfig     `yaml:"job_budget"`
 	JobCostBudget   JobCostBudgetConfig `yaml:"job_cost_budget"`
-	Features        map[string]bool  `yaml:"features"`
+	Features        map[string]bool     `yaml:"features"`
 
 	// ShutdownDelaySeconds, when > 0, is how long wardline keeps serving
 	// requests normally after receiving SIGTERM/SIGINT before it begins
