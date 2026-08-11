@@ -36,3 +36,13 @@ func TestConfig_CostOf_UndeclaredToolAndUnsetDefaultUsesBuiltinDefault(t *testin
 	var c domain.Config
 	assert.Equal(t, domain.DefaultToolCost, c.CostOf("anything"))
 }
+
+func TestConfig_WindowDefaultsWhenUnset(t *testing.T) {
+	var c domain.Config
+	assert.Equal(t, domain.DefaultSessionWindowSeconds, c.Window())
+}
+
+func TestConfig_WindowExplicitValueWins(t *testing.T) {
+	c := domain.Config{SessionWindowSeconds: 60}
+	assert.Equal(t, 60, c.Window())
+}

@@ -105,12 +105,14 @@ features: {}
 #   grant_ttl_seconds: 300         # optional — how long an approval's single-use grant stays valid; defaults to 300
 # job_budget:
 #   requests_per_job: 500          # optional — total calls allowed per (tenant, identity, session) job; defaults to 500
+#   session_window_seconds: 300    # optional — fallback session width when no session_header is sent; defaults to 300
 # job_cost_budget:
 #   ceiling: 1000                  # optional — total declared cost allowed per (tenant, identity, session) job; defaults to 1000
 #   tool_costs:                    # optional — per-tool declared cost; a tool absent here uses default_cost
 #     run_llm_completion: 50
 #     read_file: 1
 #   default_cost: 1                # optional — cost for a tool not in tool_costs; defaults to 1
+#   session_window_seconds: 300    # optional — fallback session width when no session_header is sent; defaults to 300
 # federation:
 #   instance_id: "eu-cluster-1"
 #   # optional, defaults to os.Hostname() — set to something unique when

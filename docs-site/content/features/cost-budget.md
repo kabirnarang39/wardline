@@ -24,7 +24,8 @@ job_cost_budget:
   tool_costs:                # optional -- per-tool declared cost
     run_llm_completion: 50
     read_file: 1
-  default_cost: 1             # optional -- cost for a tool not in tool_costs; defaults to 1
+  default_cost: 1                # optional -- cost for a tool not in tool_costs; defaults to 1
+  session_window_seconds: 300    # optional -- fallback session width when no session header is sent; defaults to 300
 ```
 
 ## Sessions
@@ -35,9 +36,13 @@ ceiling]({{< relref "job-budget" >}}) reuses — the explicit
 `X-Wardline-Session` header when the agent framework stamps one per run, or
 a per-identity sliding TTL window as a fallback when it doesn't. See [Taint
 tracking → Sessions]({{< relref "taint-tracking#sessions" >}}) for the exact
-mechanics. Cost budget's counters live in their own store, never shared with
-job budget's — the two features never read or write the same key, even
-though both key on the identical triple.
+mechanics — cost budget uses the same fallback logic, with its own
+`job_cost_budget.session_window_seconds` (defaults to 300, independent of
+`taint.session_window_seconds`/`job_budget.session_window_seconds` — cost
+budget works without either of those features being on). Cost budget's
+counters live in their own store, never shared with job budget's — the two
+features never read or write the same key, even though both key on the
+identical triple.
 
 ## Declared cost, not measured usage
 

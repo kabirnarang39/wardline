@@ -27,7 +27,8 @@ Enable with:
 features:
   job_budget: true
 job_budget:
-  requests_per_job: 500   # optional -- defaults to 500 when unset
+  requests_per_job: 500          # optional -- defaults to 500 when unset
+  session_window_seconds: 300    # optional -- fallback session width when no session header is sent; defaults to 300
 ```
 
 ## Sessions
@@ -37,8 +38,10 @@ tracking]({{< relref "taint-tracking" >}}) established: the explicit
 `X-Wardline-Session` header when the agent framework stamps one per run, or
 a per-identity sliding TTL window as a fallback when it doesn't. See [Taint
 tracking → Sessions]({{< relref "taint-tracking#sessions" >}}) for the exact
-mechanics — job budget reuses it unchanged, no separate session config of
-its own.
+mechanics — job budget uses the same fallback logic, with its own
+`job_budget.session_window_seconds` (defaults to 300, independent of
+`taint.session_window_seconds` — job budget works without `taint_tracking`
+being on).
 
 ## Two consumption points
 

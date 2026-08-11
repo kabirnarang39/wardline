@@ -12,10 +12,19 @@ type Config struct {
 	// DefaultCost is the cost for a tool not present in ToolCosts. <=0
 	// uses DefaultToolCost.
 	DefaultCost int
+
+	// SessionWindowSeconds is the sliding-window width for the fallback
+	// session id used when no session header is present -- mirrors
+	// jobbudget/domain.Config.SessionWindowSeconds exactly, own knob
+	// rather than a shared one so cost-budget's window stays configurable
+	// independently of taint_tracking/job_budget being on. <=0 uses
+	// DefaultSessionWindowSeconds.
+	SessionWindowSeconds int
 }
 
 const DefaultCeiling = 1000
 const DefaultToolCost = 1
+const DefaultSessionWindowSeconds = 300
 
 // Limit returns the configured ceiling, or the default when unset.
 func (c Config) Limit() int {
@@ -23,6 +32,15 @@ func (c Config) Limit() int {
 		return DefaultCeiling
 	}
 	return c.Ceiling
+}
+
+// Window returns the configured session-window width in seconds, or the
+// default when unset.
+func (c Config) Window() int {
+	if c.SessionWindowSeconds <= 0 {
+		return DefaultSessionWindowSeconds
+	}
+	return c.SessionWindowSeconds
 }
 
 // CostOf returns tool's declared cost, DefaultCost if tool isn't declared
