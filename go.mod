@@ -4,6 +4,7 @@ go 1.25.3
 
 require (
 	github.com/cedar-policy/cedar-go v1.8.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/lestrrat-go/httprc/v3 v3.0.5
 	github.com/lestrrat-go/jwx/v3 v3.1.1

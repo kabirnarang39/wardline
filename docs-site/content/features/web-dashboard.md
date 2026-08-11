@@ -171,10 +171,12 @@ explicitly.
 ## Policy, Status
 
 Policy shows the active policy backend and raw policy file content as
-currently loaded. It is not auto-detected from the file after edits;
-trigger `POST /dashboard/api/reload/policy` (gated by `config:edit` when
-`rbac` is on) or restart Wardline to refresh it. Status shows version,
-uptime, listen/upstream addresses, and which feature flags are on.
+currently loaded. With `features.config_file_watch` on, an edit to the
+policy file on disk applies automatically (see "Known limitations"
+below); otherwise trigger `POST /dashboard/api/reload/policy` (gated by
+`config:edit` when `rbac` is on) or restart Wardline to refresh it.
+Status shows version, uptime, listen/upstream addresses, and which
+feature flags are on.
 
 ## Security note
 
@@ -210,7 +212,15 @@ does not change this. This is why `web_ui` defaults to off.
 - Federation's correlated-alerts view is not tenant-scoped (see
   [RBAC](/features/rbac/)'s known limitations) — it correlates on an
   identity fingerprint computed locally, independent of tenant.
-- Policy, budget, and RBAC changes are not auto-detected from the file;
-  trigger a reload with `POST /dashboard/api/reload/{domain}` (gated by
-  the `config:edit` permission when `rbac` is on) after editing, or
-  restart Wardline. There is no filesystem watcher.
+- **Policy, budget, and RBAC changes auto-apply on file edit when
+  `features.config_file_watch` is on** — an `fsnotify` watcher on the
+  main config file plus `policy_file`/`rbac.config_file` calls the same
+  reload closures `POST /dashboard/api/reload/{domain}` does,
+  debounced (300ms) so one logical save doesn't trigger several
+  reloads, and robust to an atomic replace-by-rename save (vim and
+  most editors' default) — it watches the enclosing directory, not the
+  file's own inode, which a rename-over-original save would otherwise
+  orphan. Off by default (a new capability beyond the v0.1 baseline);
+  without it, trigger a reload manually with `POST
+  /dashboard/api/reload/{domain}` (gated by the `config:edit`
+  permission when `rbac` is on) after editing, or restart Wardline.
