@@ -7,3 +7,35 @@ linters:
     - staticcheck
     - unused
     - errcheck
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # The one piece of CLAUDE.md's dependency rule go-arch-lint
+        # (.go-arch-lint.yml) structurally can't express: it names net/http
+        # explicitly as a domain/usecase violation even though it's
+        # stdlib -- go-arch-lint's vendor restriction is hardcoded to mean
+        # "non-stdlib" and can't be made to flag a specific stdlib package.
+        # depguard treats every import path uniformly, so it owns this
+        # narrow slice; go-arch-lint owns the layer graph and non-stdlib
+        # vendor restriction. Deny-only, no allow list -- everything else
+        # (including cross-layer imports) is go-arch-lint's job, not this
+        # rule's, so it isn't re-checked here.
+        no-stdlib-io-in-domain-or-usecase:
+          files:
+            - "**/domain/**"
+            - "**/usecase/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: net/http
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"
+            - pkg: net/rpc
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"
+            - pkg: net
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"
+            - pkg: os
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"
+            - pkg: os/exec
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"
+            - pkg: database/sql
+              desc: "domain/usecase must not do I/O directly (CLAUDE.md) -- belongs in adapter"

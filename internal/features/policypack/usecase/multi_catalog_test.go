@@ -38,8 +38,8 @@ policy_file: policy.yaml
 		"custom/policy.yaml": &fstest.MapFile{Data: []byte("default: allow\n")},
 	}
 	mc := usecase.NewMultiCatalog(discardLogger(),
-		usecase.NewCatalog(embeddedLikeFS()),
-		usecase.NewCatalog(external),
+		usecase.NewCatalog(embeddedLikeFS(), fakeDecoder{}),
+		usecase.NewCatalog(external, fakeDecoder{}),
 	)
 
 	packs, err := mc.List()
@@ -66,8 +66,8 @@ policy_file: policy.yaml
 		"built-in/policy.yaml": &fstest.MapFile{Data: []byte("default: allow\n")},
 	}
 	mc := usecase.NewMultiCatalog(discardLogger(),
-		usecase.NewCatalog(embedded),
-		usecase.NewCatalog(override),
+		usecase.NewCatalog(embedded, fakeDecoder{}),
+		usecase.NewCatalog(override, fakeDecoder{}),
 	)
 
 	packs, err := mc.List()
@@ -97,8 +97,8 @@ func TestMultiCatalog_BrokenExternalPack_DoesNotHideOthers(t *testing.T) {
 		"good/policy.yaml": &fstest.MapFile{Data: []byte("default: deny\n")},
 	}
 	mc := usecase.NewMultiCatalog(discardLogger(),
-		usecase.NewCatalog(embeddedLikeFS()),
-		usecase.NewCatalog(external),
+		usecase.NewCatalog(embeddedLikeFS(), fakeDecoder{}),
+		usecase.NewCatalog(external, fakeDecoder{}),
 	)
 
 	packs, err := mc.List()
@@ -124,7 +124,7 @@ func TestMultiCatalog_BrokenExternalPack_DoesNotHideOthers(t *testing.T) {
 }
 
 func TestMultiCatalog_BrokenFirstSource_FailsListEntirely(t *testing.T) {
-	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(errorFS{}))
+	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(errorFS{}, fakeDecoder{}))
 	if _, err := mc.List(); err == nil {
 		t.Fatal("expected List to fail hard when the first (authoritative) source errors")
 	}
@@ -138,7 +138,7 @@ func (errorFS) Open(name string) (fs.File, error) {
 }
 
 func TestMultiCatalog_UnknownName_ReturnsClearError(t *testing.T) {
-	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(embeddedLikeFS()))
+	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(embeddedLikeFS(), fakeDecoder{}))
 	_, _, err := mc.Get("does-not-exist")
 	if err == nil {
 		t.Fatal("expected an error for an unknown pack name")
@@ -146,7 +146,7 @@ func TestMultiCatalog_UnknownName_ReturnsClearError(t *testing.T) {
 }
 
 func TestMultiCatalog_SingleSourceBehavesLikePlainCatalog(t *testing.T) {
-	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(embeddedLikeFS()))
+	mc := usecase.NewMultiCatalog(discardLogger(), usecase.NewCatalog(embeddedLikeFS(), fakeDecoder{}))
 	packs, err := mc.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)

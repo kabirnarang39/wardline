@@ -4,8 +4,37 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/kabirnarang39/wardline/internal/features/policypack/domain"
 	"github.com/kabirnarang39/wardline/internal/features/policypack/usecase"
 )
+
+// fakeDecoder is a plain YAML decode, kept local to the test package
+// rather than reused from adapter -- per CLAUDE.md, a usecase/ package's
+// own tests get a fake for the domain interface it depends on, not the
+// real adapter (that belongs to adapter's own tests instead).
+type fakeDecoder struct{}
+
+func (fakeDecoder) Decode(data []byte) (domain.Manifest, error) {
+	var raw struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Backend     string `yaml:"backend"`
+		PolicyFile  string `yaml:"policy_file"`
+		Version     string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return domain.Manifest{}, err
+	}
+	return domain.Manifest{
+		Name:        raw.Name,
+		Description: raw.Description,
+		Backend:     raw.Backend,
+		PolicyFile:  raw.PolicyFile,
+		Version:     raw.Version,
+	}, nil
+}
 
 func fakeFS() fstest.MapFS {
 	return fstest.MapFS{
@@ -27,7 +56,7 @@ policy_file: policy.yaml
 }
 
 func TestCatalog_ListReturnsAllPacksSortedByName(t *testing.T) {
-	c := usecase.NewCatalog(fakeFS())
+	c := usecase.NewCatalog(fakeFS(), fakeDecoder{})
 
 	packs, err := c.List()
 	if err != nil {
@@ -45,7 +74,7 @@ func TestCatalog_ListReturnsAllPacksSortedByName(t *testing.T) {
 }
 
 func TestCatalog_GetReturnsPackAndPolicySource(t *testing.T) {
-	c := usecase.NewCatalog(fakeFS())
+	c := usecase.NewCatalog(fakeFS(), fakeDecoder{})
 
 	pack, policySource, err := c.Get("alpha-pack")
 	if err != nil {
@@ -60,7 +89,7 @@ func TestCatalog_GetReturnsPackAndPolicySource(t *testing.T) {
 }
 
 func TestCatalog_GetUnknownNameReturnsClearError(t *testing.T) {
-	c := usecase.NewCatalog(fakeFS())
+	c := usecase.NewCatalog(fakeFS(), fakeDecoder{})
 
 	_, _, err := c.Get("does-not-exist")
 	if err == nil {
@@ -69,7 +98,7 @@ func TestCatalog_GetUnknownNameReturnsClearError(t *testing.T) {
 }
 
 func TestCatalog_VersionDefaultsWhenAbsentFromManifest(t *testing.T) {
-	c := usecase.NewCatalog(fakeFS())
+	c := usecase.NewCatalog(fakeFS(), fakeDecoder{})
 
 	pack, _, err := c.Get("alpha-pack")
 	if err != nil {
@@ -91,7 +120,7 @@ version: "2"
 `)},
 		"versioned/policy.yaml": &fstest.MapFile{Data: []byte("default: deny\n")},
 	}
-	c := usecase.NewCatalog(fsys)
+	c := usecase.NewCatalog(fsys, fakeDecoder{})
 
 	pack, _, err := c.Get("versioned")
 	if err != nil {
@@ -103,7 +132,7 @@ version: "2"
 }
 
 func TestCatalog_ListOnEmptyFSReturnsNoPacksNoError(t *testing.T) {
-	c := usecase.NewCatalog(fstest.MapFS{})
+	c := usecase.NewCatalog(fstest.MapFS{}, fakeDecoder{})
 
 	packs, err := c.List()
 	if err != nil {
