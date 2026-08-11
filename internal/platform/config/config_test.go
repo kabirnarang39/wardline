@@ -779,6 +779,107 @@ credential:
 	}
 }
 
+// TestLoad_OIDCProviders_ValidMultiProviderConfigDefaultsClaims mirrors
+// TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience's shape for the
+// oidc_providers list form: each entry gets its own identity_claim/
+// tenant_claim default, independently.
+func TestLoad_OIDCProviders_ValidMultiProviderConfigDefaultsClaims(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      jwks_uri: "https://idp-a.example.com/jwks.json"
+      audience: "wardline"
+    - issuer: "https://idp-b.example.com/"
+      jwks_uri: "https://idp-b.example.com/jwks.json"
+      audience: "wardline"
+      identity_claim: "email"
+      tenant_claim: "org"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if len(cfg.Credential.OIDCProviders) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(cfg.Credential.OIDCProviders))
+	}
+	if got := cfg.Credential.OIDCProviders[0].IdentityClaim; got != "sub" {
+		t.Errorf("provider 0: expected identity_claim to default to %q, got %q", "sub", got)
+	}
+	if got := cfg.Credential.OIDCProviders[0].TenantClaim; got != "tenant" {
+		t.Errorf("provider 0: expected tenant_claim to default to %q, got %q", "tenant", got)
+	}
+	if got := cfg.Credential.OIDCProviders[1].IdentityClaim; got != "email" {
+		t.Errorf("provider 1: expected identity_claim to stay %q (explicitly set), got %q", "email", got)
+	}
+	if got := cfg.Credential.OIDCProviders[1].TenantClaim; got != "org" {
+		t.Errorf("provider 1: expected tenant_claim to stay %q (explicitly set), got %q", "org", got)
+	}
+}
+
+// TestLoad_OIDCProviders_DuplicateIssuerRejected pins the same
+// unambiguous-routing requirement NewMultiOIDCBootstrapper itself
+// enforces, caught earlier at config-validate time with a clearer error.
+func TestLoad_OIDCProviders_DuplicateIssuerRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      audience: "wardline"
+    - issuer: "https://idp-a.example.com/"
+      audience: "other"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for two oidc_providers entries with the same issuer")
+	}
+}
+
+// TestLoad_OIDCProviders_MutuallyExclusiveWithSingleOIDCBlock pins the
+// deliberate ambiguity rejection: setting both credential.oidc and
+// credential.oidc_providers leaves no well-defined answer for which one
+// wins, so validate() rejects it outright rather than picking silently.
+func TestLoad_OIDCProviders_MutuallyExclusiveWithSingleOIDCBlock(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    audience: "wardline"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      audience: "wardline"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for setting both credential.oidc and credential.oidc_providers")
+	}
+}
+
 // TestLoad_MTLSBootstrapRequiresHeader mirrors
 // TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience's shape for the third
 // bootstrap source.

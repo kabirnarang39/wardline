@@ -48,6 +48,9 @@ this shape (`internal/platform/config/config.go`).
 |---|---|---|
 | `identities_file` | string | Path to the identities file. |
 | `signing_key_file` | string | Optional PEM RSA key path — see [HA Deployment](/deployment/high-availability/). |
+| `bootstrap_source` | string | `presharedsecret` (default), `oidc`, or `mtls`. See [SSO](/features/sso/) and [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/). |
+| `oidc.issuer` / `.jwks_uri` / `.audience` / `.identity_claim` / `.tenant_claim` | string×5 | Single-IdP OIDC bootstrap. `jwks_uri` optional (resolved via discovery when unset). See [SSO](/features/sso/). |
+| `oidc_providers` | list | Multi-IdP OIDC bootstrap — a list of the same 5 fields `oidc` above has, one entry per issuer, routed by the token's own `iss` claim. Mutually exclusive with `oidc`. See [SSO](/features/sso/)'s "More than one IdP" section. |
 
 ## `rbac`
 
