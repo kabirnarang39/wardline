@@ -204,7 +204,16 @@ type CredentialConfig struct {
 	// below).
 	BootstrapSource string     `yaml:"bootstrap_source"`
 	OIDC            OIDCConfig `yaml:"oidc"`
-	MTLS            MTLSConfig `yaml:"mtls"`
+	// OIDCProviders configures MORE THAN ONE OIDC issuer at once --
+	// mutually exclusive with OIDC above (validate() rejects setting
+	// both). Each entry is independently verified (own JWKS/discovery,
+	// own audience, own identity/tenant claims); an incoming ID token is
+	// routed to the right provider by its own issuer claim -- see
+	// credentialadapter.NewMultiOIDCBootstrapper. Empty (the default)
+	// preserves single-provider OIDC (the OIDC field above) exactly,
+	// zero behavior change for every existing deployment.
+	OIDCProviders []OIDCConfig `yaml:"oidc_providers"`
+	MTLS          MTLSConfig   `yaml:"mtls"`
 
 	// AccessTokenTTLSeconds is how long an issued access-token JWT is
 	// valid for. 0 (the default) uses defaultAccessTokenTTLSeconds
@@ -621,20 +630,47 @@ func (c *Config) validate() error {
 			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret", "oidc", or "mtls", got %q`, c.Credential.BootstrapSource))
 		}
 		if c.Credential.BootstrapSource == "oidc" {
-			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.Audience == "" {
-				problems = append(problems, "credential.oidc.issuer and audience must both be set when credential.bootstrap_source is \"oidc\"")
-			}
-			// jwks_uri is no longer required: when empty, the bootstrapper
-			// resolves it from issuer's own /.well-known/openid-configuration
-			// discovery document at startup (see
-			// credentialadapter.NewOIDCBootstrapper). An operator who
-			// already sets jwks_uri explicitly keeps that exact behavior,
-			// unchanged -- discovery only runs when it's empty.
-			if c.Credential.OIDC.IdentityClaim == "" {
-				c.Credential.OIDC.IdentityClaim = "sub"
-			}
-			if c.Credential.OIDC.TenantClaim == "" {
-				c.Credential.OIDC.TenantClaim = "tenant"
+			oidcSingleSet := c.Credential.OIDC.Issuer != "" || c.Credential.OIDC.Audience != "" || c.Credential.OIDC.JWKSURI != ""
+			if len(c.Credential.OIDCProviders) > 0 {
+				if oidcSingleSet {
+					problems = append(problems, "credential.oidc and credential.oidc_providers are mutually exclusive -- set one or the other, not both")
+				}
+				seenIssuers := make(map[string]bool, len(c.Credential.OIDCProviders))
+				for i := range c.Credential.OIDCProviders {
+					p := &c.Credential.OIDCProviders[i]
+					if p.Issuer == "" || p.Audience == "" {
+						problems = append(problems, fmt.Sprintf("credential.oidc_providers[%d].issuer and audience must both be set", i))
+					}
+					if seenIssuers[p.Issuer] {
+						problems = append(problems, fmt.Sprintf("credential.oidc_providers[%d].issuer %q duplicates an earlier entry -- each provider must have a distinct issuer for routing to be unambiguous", i, p.Issuer))
+					}
+					seenIssuers[p.Issuer] = true
+					// jwks_uri optional per provider, same discovery
+					// fallback as the single-provider oidc block -- see
+					// that field's own comment below.
+					if p.IdentityClaim == "" {
+						p.IdentityClaim = "sub"
+					}
+					if p.TenantClaim == "" {
+						p.TenantClaim = "tenant"
+					}
+				}
+			} else {
+				if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.Audience == "" {
+					problems = append(problems, "credential.oidc.issuer and audience must both be set when credential.bootstrap_source is \"oidc\" (or use credential.oidc_providers for more than one issuer)")
+				}
+				// jwks_uri is no longer required: when empty, the bootstrapper
+				// resolves it from issuer's own /.well-known/openid-configuration
+				// discovery document at startup (see
+				// credentialadapter.NewOIDCBootstrapper). An operator who
+				// already sets jwks_uri explicitly keeps that exact behavior,
+				// unchanged -- discovery only runs when it's empty.
+				if c.Credential.OIDC.IdentityClaim == "" {
+					c.Credential.OIDC.IdentityClaim = "sub"
+				}
+				if c.Credential.OIDC.TenantClaim == "" {
+					c.Credential.OIDC.TenantClaim = "tenant"
+				}
 			}
 		}
 		if c.Credential.BootstrapSource == "mtls" && c.Credential.MTLS.Header == "" {

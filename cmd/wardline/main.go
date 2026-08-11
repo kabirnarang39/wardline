@@ -672,25 +672,34 @@ func runServe(logger *slog.Logger, args []string) {
 		var bootstrapper credentialdomain.Bootstrapper
 		switch cfg.Credential.BootstrapSource {
 		case "oidc":
-			oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+			oidcBootstrapper, closer, err := newOIDCBootstrapperFromConfig(cfg.Credential)
 			if err != nil {
 				logger.Error("failed to initialize oidc bootstrapper", "error", err)
 				os.Exit(1)
 			}
 			bootstrapper = oidcBootstrapper
-			// Registered as a closer so its JWKS cache's background refresh
-			// goroutines are shut down on exit -- see OIDCBootstrapper.Close's
-			// doc comment.
-			oidcCloser = oidcBootstrapper
-			// OIDC has no static identity registry to look up an arbitrary
-			// identity's tenant from after the fact -- it only ever learns an
-			// identity's tenant at the moment that identity itself
-			// authenticates. Fail closed: every revoke of any identity now
-			// requires a global ClusterRoleBinding grant. Known limitation,
-			// documented in Task 25's docs update rather than solved
-			// differently here.
+			// Registered as a closer so its JWKS cache(s)' background
+			// refresh goroutines are shut down on exit -- see
+			// OIDCBootstrapper.Close/MultiOIDCBootstrapper.Close's doc
+			// comments.
+			oidcCloser = closer
+			// Neither OIDC bootstrap shape has a static identity registry
+			// to look up an arbitrary identity's tenant from after the
+			// fact -- each only ever learns an identity's tenant at the
+			// moment that identity itself authenticates. Fail closed:
+			// every revoke of any identity now requires a global
+			// ClusterRoleBinding grant. Known limitation, documented in
+			// the docs rather than solved differently here.
 			identityTenantLookup = func(string) (string, bool) { return "", false }
-			logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
+			if len(cfg.Credential.OIDCProviders) > 0 {
+				issuers := make([]string, len(cfg.Credential.OIDCProviders))
+				for i, p := range cfg.Credential.OIDCProviders {
+					issuers[i] = p.Issuer
+				}
+				logger.Info("credential issuance enabled (oidc bootstrap, multi-provider)", "issuers", issuers)
+			} else {
+				logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
+			}
 		case "mtls":
 			mtlsBootstrapper, err := credentialadapter.LoadMTLSBootstrapper(cfg.Credential.IdentitiesFile)
 			if err != nil {
@@ -2019,10 +2028,10 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 		// transiently unreachable from wherever validate-config runs (e.g. a
 		// CI pipeline outside the IdP's network) without the rest of the
 		// oidc config block being wrong -- see design doc "CLI".
-		oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+		_, closer, err := newOIDCBootstrapperFromConfig(cfg.Credential)
 		if err != nil {
-			logger.Warn("failed to initialize oidc bootstrapper (jwks endpoint may be unreachable); not treated as a hard failure", "error", err)
-		} else if err := oidcBootstrapper.Close(); err != nil {
+			logger.Warn("failed to initialize oidc bootstrapper (jwks/discovery endpoint may be unreachable); not treated as a hard failure", "error", err)
+		} else if err := closer.Close(); err != nil {
 			logger.Warn("failed to shut down oidc bootstrapper after validation", "error", err)
 		}
 	}
@@ -2874,6 +2883,35 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	}
 
 	return buildAuditWriter(logger, cfg.Output)
+}
+
+// newOIDCBootstrapperFromConfig builds either a single-provider
+// *credentialadapter.OIDCBootstrapper (cfg.OIDC) or a
+// *credentialadapter.MultiOIDCBootstrapper (cfg.OIDCProviders, when
+// non-empty -- config.validate() already rejects setting both), and
+// returns it as the common credentialdomain.Bootstrapper + io.Closer
+// shape both call sites (runServe's real wiring, validate-config's
+// soft-fail check) need, so neither has to duplicate this branch.
+func newOIDCBootstrapperFromConfig(cfg config.CredentialConfig) (credentialdomain.Bootstrapper, io.Closer, error) {
+	if len(cfg.OIDCProviders) > 0 {
+		providers := make([]credentialadapter.OIDCProviderConfig, len(cfg.OIDCProviders))
+		for i, p := range cfg.OIDCProviders {
+			providers[i] = credentialadapter.OIDCProviderConfig{
+				Issuer: p.Issuer, JWKSURI: p.JWKSURI, Audience: p.Audience,
+				IdentityClaim: p.IdentityClaim, TenantClaim: p.TenantClaim,
+			}
+		}
+		b, err := credentialadapter.NewMultiOIDCBootstrapper(providers)
+		if err != nil {
+			return nil, nil, err
+		}
+		return b, b, nil
+	}
+	b, err := credentialadapter.NewOIDCBootstrapper(cfg.OIDC.Issuer, cfg.OIDC.JWKSURI, cfg.OIDC.Audience, cfg.OIDC.IdentityClaim, cfg.OIDC.TenantClaim)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b, b, nil
 }
 
 // deriveInstanceID returns override if non-empty (an operator-supplied
