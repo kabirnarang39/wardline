@@ -92,6 +92,20 @@ features: {}
 #     enabled: true           # requires anomaly.ml_score.enabled: true -- acts on ml_score's value
 #     score_threshold: 4.0    # usually stricter than ml_score.score_threshold -- log at a lower bar than you block at
 #     block_duration_seconds: 300   # strictly time-bounded; no manual early unblock -- see README.md "Auto-block"
+#   drift_detection:
+#     enabled: true           # requires anomaly.ml_score.enabled: true -- reuses its call_rate baseline
+#     k: 0.5                  # CUSUM allowance, in baseline std-devs (Montgomery's standard recommendation)
+#     h: 5.0                  # CUSUM decision threshold, in baseline std-devs -- see docs/features/anomaly-detection.md
+#     min_calls: 5            # same floor as ml_score.min_calls, for the same reason
+#     h_jitter_fraction: 0.2  # optional -- perturbs each identity's own H by up to ±20%, raising the cost of an
+#                             # attack calibrated to the public default H (see docs "Adversarial scenarios").
+#                             # requires jitter_secret_file; 0 (default) disables jitter entirely
+#     jitter_secret_file: "./drift-jitter.secret"   # opaque HMAC key material, like federation.shared_secret_file
+#   tenant_anomaly:
+#     enabled: true           # detects a coordinated spike across many identities in one tenant -- logs only,
+#                             # never auto-blocks (there is no single identity to block for a tenant-level signal)
+#     rate_multiplier: 5.0    # z-score threshold for the tenant's aggregate per-window call volume
+#     min_calls: 10
 # taint:
 #   untrusted_sources:            # tool names whose invocation taints the calling session
 #     - web_fetch

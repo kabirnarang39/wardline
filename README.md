@@ -49,8 +49,8 @@ Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concep
 
 ## Key Features
 
-- **Real-time anomaly auto-block**<br>
-  Four self-baselining heuristics (rate spike, novel tool, deny-rate spike, and a combined `ml_score` z-score via Welford's algorithm — no training data, no external model) that don't just alert: `auto_block` *rejects* a flagged identity's calls for a bounded TTL. Enforcement, not a log line.
+- **Real-time anomaly auto-block, abrupt *and* sustained**<br>
+  Six self-baselining heuristics — rate spike, novel tool, deny-rate spike, a combined `ml_score` z-score, a CUSUM `drift_detection` control chart, and cross-identity `tenant_anomaly` aggregation — all via Welford/CUSUM online statistics, no training data, no external model. `auto_block` *rejects* a flagged identity's calls for a bounded TTL, not a log line. `drift_detection` specifically closes the low-and-slow gap a per-window z-score test can't: the standard statistical-process-control technique (Montgomery's CUSUM, the "de facto workhorse" of sequential intrusion detection) for a slow, sustained ramp no single window looks anomalous on its own — real, measured recall numbers (not a marketing claim) in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark), including the honest residual (a real, quantified mimicry ceiling) in [adversarial scenarios](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#adversarial-scenarios).
 
 - **Three policy backends, one binary**<br>
   Static YAML, embedded OPA/Rego, and embedded AWS Cedar — switched by a single `policy_backend` config key, with no external process and no network hop.
@@ -133,7 +133,7 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 
 ## Performance
 
-Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%) and broadened to 0/6,000 windows across 20 seeds plus a real per-attack-shape recall curve (abrupt spike, low-and-slow, deny-rate spike, novel-tool enumeration) in the [anomaly detection recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
+Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. `BenchmarkDetector_Publish` (same machine): **~251 ns/op** with the four original heuristics, **~293 ns/op** (+17%) with `drift_detection` (K/H jitter included) and `tenant_anomaly` also on — the full six-heuristic stack still costs under 300ns per call, 5 allocations either way. Verified race-free under real concurrent load, not just sequentially: `TestConcurrencyStress_ProductionLikeMultiTenantTraffic` runs 205 goroutines (5 tenants × 40 identities + 5 concurrent attackers) against one shared `Detector` under `go test -race`, no data race. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%) and broadened to 0/6,000 windows across 20 seeds — unchanged with `drift_detection` and `tenant_anomaly` also on — plus a real per-attack-shape recall curve (abrupt spike, low-and-slow, deny-rate spike, novel-tool enumeration) and an adversarial battery (distributed sybil, mimicry ceiling, burst-pause duty cycling) in the [anomaly detection recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
 
 ## Security
 
@@ -149,7 +149,7 @@ features:
   rbac: true                  # gate the dashboard and admin actions on real permissions
 ```
 
-With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. Anomaly detection catches *abrupt* abuse but not *low-and-slow* ramps (see [its known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/)), so keep explicit policy + budget limits as the hard floor.
+With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. `ml_score`/`auto_block` alone catch *abrupt* abuse but not *low-and-slow* ramps; `drift_detection` (a CUSUM control chart, on by default in the shipped example config) closes most of that gap — real, measured numbers, not a claim, in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark) — but a real residual (a ~1.15x sustained-forever ceiling for an attacker who's read the public thresholds) remains, see [known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#known-limitations). Keep explicit policy + budget limits as the hard floor regardless.
 
 ## Project status
 

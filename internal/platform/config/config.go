@@ -251,12 +251,33 @@ type MLScoreConfig struct {
 	MinCalls       int     `yaml:"min_calls"`
 }
 
-// AutoBlockConfig configures whether an ml_score anomaly also blocks the
-// offending identity for a time-bounded window.
+// AutoBlockConfig configures whether an ml_score or drift_detection
+// anomaly also blocks the offending identity for a time-bounded window.
 type AutoBlockConfig struct {
 	Enabled              bool    `yaml:"enabled"`
 	ScoreThreshold       float64 `yaml:"score_threshold"`
 	BlockDurationSeconds int     `yaml:"block_duration_seconds"`
+}
+
+// DriftConfig configures the drift-detection heuristic (a CUSUM control
+// chart over call_rate and tool_diversity) -- see anomaly/
+// domain.DriftConfig's doc comment for the statistics. K and H are both
+// in units of the scored feature's own baseline standard deviation.
+type DriftConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	K                float64 `yaml:"k"`
+	H                float64 `yaml:"h"`
+	MinCalls         int     `yaml:"min_calls"`
+	HJitterFraction  float64 `yaml:"h_jitter_fraction"`
+	JitterSecretFile string  `yaml:"jitter_secret_file"`
+}
+
+// TenantAnomalyConfig configures tenant-aggregate rate detection -- see
+// anomaly/domain.TenantAnomalyConfig's doc comment.
+type TenantAnomalyConfig struct {
+	Enabled        bool    `yaml:"enabled"`
+	RateMultiplier float64 `yaml:"rate_multiplier"`
+	MinCalls       int     `yaml:"min_calls"`
 }
 
 // AnomalyConfig configures anomaly detection. Only validated (and only
@@ -271,6 +292,8 @@ type AnomalyConfig struct {
 	DenyRateSpike     DenyRateSpikeConfig `yaml:"deny_rate_spike"`
 	MLScore           MLScoreConfig       `yaml:"ml_score"`
 	AutoBlock         AutoBlockConfig     `yaml:"auto_block"`
+	Drift             DriftConfig         `yaml:"drift_detection"`
+	TenantAnomaly     TenantAnomalyConfig `yaml:"tenant_anomaly"`
 
 	// RetentionDays mirrors AuditConfig.RetentionDays -- see its doc
 	// comment. This is the anomaly LOG's own retention (the JSONL/
@@ -632,6 +655,40 @@ func (c *Config) validate() error {
 		}
 		if c.Anomaly.MLScore.Enabled && c.Anomaly.MLScore.MinCalls < 2 {
 			problems = append(problems, "anomaly.ml_score.min_calls must be >= 2 when anomaly.ml_score.enabled is true -- a 1-call window has no inter-arrival delta at all, which forces that feature to its harmful-direction range extreme regardless of behavior")
+		}
+		if c.Anomaly.Drift.Enabled {
+			if !c.Anomaly.MLScore.Enabled {
+				problems = append(problems, "anomaly.ml_score.enabled must be true when anomaly.drift_detection.enabled is true -- drift_detection reuses ml_score's own call_rate baseline instead of duplicating one")
+			}
+			if c.Anomaly.Drift.K <= 0 {
+				problems = append(problems, "anomaly.drift_detection.k must be > 0 when anomaly.drift_detection.enabled is true")
+			}
+			if c.Anomaly.Drift.H <= c.Anomaly.Drift.K {
+				problems = append(problems, "anomaly.drift_detection.h must be > anomaly.drift_detection.k -- a decision threshold at or below the allowance would alarm on ordinary noise, not a sustained drift")
+			}
+			if c.Anomaly.Drift.MinCalls <= 0 {
+				problems = append(problems, "anomaly.drift_detection.min_calls must be > 0 when anomaly.drift_detection.enabled is true")
+			}
+			if c.Anomaly.Drift.HJitterFraction < 0 || c.Anomaly.Drift.HJitterFraction >= 1 {
+				problems = append(problems, "anomaly.drift_detection.h_jitter_fraction must be in [0, 1) -- 1 or more could jitter h down to zero or below")
+			}
+			if c.Anomaly.Drift.HJitterFraction > 0 && c.Anomaly.Drift.JitterSecretFile == "" {
+				problems = append(problems, "anomaly.drift_detection.jitter_secret_file must not be empty when anomaly.drift_detection.h_jitter_fraction > 0 -- without a secret the per-identity jitter is attacker-reproducible and provides no real uncertainty")
+			}
+		}
+		if c.Anomaly.TenantAnomaly.Enabled {
+			// Deliberately no dependency on rate_spike/ml_score being
+			// enabled -- unlike drift_detection (which reuses ml_score's
+			// baseline), tenant_anomaly keeps its own self-contained
+			// aggregate baseline and is a legitimate standalone choice for
+			// an operator who only cares about tenant-level coordinated
+			// spikes, not per-identity behavior.
+			if c.Anomaly.TenantAnomaly.RateMultiplier <= 0 {
+				problems = append(problems, "anomaly.tenant_anomaly.rate_multiplier must be > 0 when anomaly.tenant_anomaly.enabled is true")
+			}
+			if c.Anomaly.TenantAnomaly.MinCalls <= 0 {
+				problems = append(problems, "anomaly.tenant_anomaly.min_calls must be > 0 when anomaly.tenant_anomaly.enabled is true")
+			}
 		}
 		if c.Anomaly.GCIntervalSeconds <= 0 {
 			c.Anomaly.GCIntervalSeconds = defaultAnomalyGCIntervalSeconds

@@ -209,6 +209,30 @@ policy-pack marketplace, HA deployment.
   default) and applies the same fallback taint tracking uses — working
   independently of `taint_tracking` being on.
 
+## v2.3 (shipped)
+
+- **Drift detection (CUSUM)** — a one-sided CUSUM control chart over
+  `call_rate` and `tool_diversity`, closing most of `ml_score`'s
+  documented low-and-slow blind spot (a per-window z-score test is
+  provably strong against abrupt shifts and provably weak against small
+  sustained ones — CUSUM is the standard statistical-process-control
+  technique for exactly that gap). Requires `ml_score.enabled` (reuses
+  its baseline rather than duplicating it). Real, measured recall
+  numbers — not a claim — in [Anomaly Detection](/features/anomaly-detection/)'s
+  "Recall benchmark" section. Optional `h_jitter_fraction` moving-target
+  defense (HMAC-secret-keyed per identity) raises, but does not
+  eliminate, the cost of an attack calibrated to the public default
+  threshold — see that page's "Adversarial scenarios" for the honest
+  numbers on both.
+- **Tenant-aggregate anomaly detection** — a new heuristic baselining
+  the sum of every identity's call volume within a tenant, closing the
+  gap no per-identity heuristic (including drift_detection) can close
+  by construction: many identities each individually staying under
+  their own threshold. Detection-only (logs, never auto-blocks — there
+  is no single identity to block for a tenant-level signal). In-memory
+  only this cycle, no Postgres/HA persistence yet. See [Anomaly
+  Detection](/features/anomaly-detection/)'s "Adversarial scenarios".
+
 ## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future

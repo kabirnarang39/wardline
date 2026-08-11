@@ -39,6 +39,16 @@ const abandonedInstancePruneFactor = 4
 func (d *Detector) gc(now time.Time, interval time.Duration) {
 	d.mu.Lock()
 	cutoff := now.Add(-2 * interval)
+	// Tenant-aggregate baselines (in-memory only, no Postgres persistence
+	// this cycle -- see domain.TenantAnomalyConfig) use the same 2x-
+	// interval idle cutoff as identity state: a tenant with no traffic in
+	// that long simply reappears as a fresh baseline on its next call,
+	// same "safe to evict" reasoning as identityState below.
+	for key, ts := range d.tenantState {
+		if ts.lastSeen.Before(cutoff) {
+			delete(d.tenantState, key)
+		}
+	}
 	var deletedKeys []string
 	for key, st := range d.state {
 		if st.lastSeen.Before(cutoff) {

@@ -60,6 +60,20 @@ Both behaviors are pinned by tests in the repo —
 marketed around. See [Anomaly Detection](/features/anomaly-detection/) for the
 full known-limitations list.
 
+**Update:** the paragraph above is still true of `ml_score`/`auto_block`
+alone, and stays true by design (tightening that per-window test would
+cost the false-positive guarantee). It is no longer the whole picture.
+`drift_detection` — a CUSUM control chart run alongside `ml_score`, the
+standard statistical-process-control technique for exactly this
+"per-sample test misses a sustained shift" gap — closes most of it: the
+same low-and-slow ramp that evaded auto-block indefinitely above now
+gets caught within 10 windows, at 1.4× baseline, in the current recall
+benchmark. It isn't a full close — an attacker who reads the exact
+public threshold can still hold a real, measured ~1.15× ceiling forever
+— see [Anomaly Detection](/features/anomaly-detection/)'s "Recall
+benchmark" and "Adversarial scenarios" sections for the actual numbers,
+not a claim.
+
 The takeaway is not "anomaly detection is weak." It is that anomaly detection
 is the *last* line, not the only one. Keep explicit policy and budget limits as
 the hard floor — they bound absolute behavior regardless of ramp speed — and

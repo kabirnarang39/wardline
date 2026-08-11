@@ -2579,7 +2579,21 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		bufferCapacity = ringBufferCapacity
 	}
 	s.buffer = anomalyusecase.NewAlertBuffer(bufferCapacity)
-	heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly)
+
+	// Opaque HMAC key material, not PEM -- read raw, matching how
+	// federation.SharedSecretFile is read (see federationadapter usage
+	// above in this file). Only read when jitter is actually configured,
+	// so a deployment that never sets h_jitter_fraction has no new file
+	// dependency at all.
+	var driftJitterSecret []byte
+	if cfg.Anomaly.Drift.HJitterFraction > 0 {
+		driftJitterSecret, err = os.ReadFile(cfg.Anomaly.Drift.JitterSecretFile)
+		if err != nil {
+			logger.Error("failed to read drift_detection jitter secret file", "error", err)
+			os.Exit(1)
+		}
+	}
+	heuristicCfg := anomalyHeuristicConfig(cfg.Anomaly, driftJitterSecret)
 
 	// Always positive: config.validate() defaults gc_interval_seconds
 	// when anomaly_detection is on. A second fallback here is what let an
@@ -2850,8 +2864,12 @@ func deriveInstanceIDFrom(logger *slog.Logger, override string, hostname func() 
 // anomalyHeuristicConfig translates the operator-facing AnomalyConfig
 // into anomaly/domain.HeuristicConfig, the shape Detector actually
 // consumes -- kept as a pure translation with no I/O so it's trivial to
-// eyeball against the config struct it's built from.
-func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicConfig {
+// eyeball against the config struct it's built from. driftJitterSecret
+// is the one exception to "no I/O inputs": already-read file bytes, not
+// a path, so this function itself still performs no I/O -- the read
+// happens once in buildAnomalyStack (matching where every other secret
+// file in this composition root is read).
+func anomalyHeuristicConfig(cfg config.AnomalyConfig, driftJitterSecret []byte) anomalydomain.HeuristicConfig {
 	return anomalydomain.HeuristicConfig{
 		WindowSeconds:        cfg.WindowSeconds,
 		RateSpikeEnabled:     cfg.RateSpike.Enabled,
@@ -2870,6 +2888,19 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig) anomalydomain.HeuristicCon
 			Enabled:              cfg.AutoBlock.Enabled,
 			ScoreThreshold:       cfg.AutoBlock.ScoreThreshold,
 			BlockDurationSeconds: cfg.AutoBlock.BlockDurationSeconds,
+		},
+		Drift: anomalydomain.DriftConfig{
+			Enabled:         cfg.Drift.Enabled,
+			K:               cfg.Drift.K,
+			H:               cfg.Drift.H,
+			MinCalls:        cfg.Drift.MinCalls,
+			HJitterFraction: cfg.Drift.HJitterFraction,
+			JitterSecret:    driftJitterSecret,
+		},
+		TenantAnomaly: anomalydomain.TenantAnomalyConfig{
+			Enabled:        cfg.TenantAnomaly.Enabled,
+			RateMultiplier: cfg.TenantAnomaly.RateMultiplier,
+			MinCalls:       cfg.TenantAnomaly.MinCalls,
 		},
 	}
 }

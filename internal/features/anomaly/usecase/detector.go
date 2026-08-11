@@ -60,6 +60,12 @@ type Detector struct {
 	// share a baseline. Every read, write, and iteration of this map
 	// must go through tenantIdentityKey.
 	state map[string]*identityState
+
+	// tenantState is TenantAnomaly's aggregate-per-tenant baseline --
+	// keyed by tenant alone (never composed via tenantIdentityKey; there
+	// is no identity component), lazily initialized on first use. See
+	// checkTenantDrift/tenant_detector.go.
+	tenantState map[string]*tenantWindowState
 }
 
 func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore) *Detector {
@@ -221,8 +227,29 @@ func (d *Detector) recordAndCheck(e auditdomain.Entry) []domain.Anomaly {
 	// st.mlStats -- once per call in the *following* window, silently
 	// over-weighting whichever window happens to contain the most calls.
 	if d.cfg.MLScore.Enabled && windowJustCompleted {
+		// checkDrift runs before checkMLScore, not after: it reads
+		// mlStats.rate's baseline via zCount exactly as checkMLScore's own
+		// zRate does, and checkMLScore conditionally folds this window's
+		// rate into that same baseline at the end of its own body. Calling
+		// checkDrift first guarantees it always sees the pre-fold
+		// baseline -- the same one zRate is computed against -- rather
+		// than one that (whenever this window wasn't itself flagged by
+		// ml_score) already includes this window's own value.
+		if d.cfg.Drift.Enabled {
+			toEmit = append(toEmit, d.checkDrift(e, st)...)
+		}
 		if a, ok := d.checkMLScore(e, st); ok {
 			toEmit = append(toEmit, a)
+		}
+	}
+
+	// Tenant-aggregate detection runs on its own, tenant-scoped window
+	// boundary -- independent of windowJustCompleted above, which is
+	// this entry's *identity's* window. See checkTenantDrift's doc
+	// comment.
+	if d.cfg.TenantAnomaly.Enabled {
+		if a := d.checkTenantDrift(e); a != nil {
+			toEmit = append(toEmit, *a)
 		}
 	}
 	return toEmit
@@ -359,6 +386,91 @@ func zCount(s *onlineStat, x float64) float64 {
 // (8) is unchanged from round 11's choice -- only its identity as an
 // independent constant is new.
 const denyRatioContinuityWeight = 8
+
+// checkDrift must be called with d.mu held, only once per completed
+// window (see checkMLScore's own doc comment for why windowJustCompleted
+// gating matters), and before checkMLScore in the same call (see
+// recordAndCheck) so it reads mlStats.rate's baseline pre-fold. Requires
+// MLScore.Enabled -- see DriftConfig's doc comment for why.
+//
+// Implements a one-sided CUSUM (cumulative sum) control chart over
+// call_rate: the standard, decades-proven statistical-process-control
+// technique for exactly the gap a per-window z-score test like
+// ml_score's own zRate cannot close (see DriftConfig's doc comment,
+// docs/features/anomaly-detection.md's "Known limitations" and "Recall
+// benchmark" sections, and TestDetector_AutoBlock_LowAndSlowEvades).
+//
+//	S_t = max(0, S_{t-1} + z_t - K); alarms when S_t > H
+//
+// z_t is this window's call_rate deviation, scored through the exact
+// same zCount helper (and the exact same mlStats.rate baseline) zRate
+// already uses in checkMLScore -- one shared baseline, not a duplicated
+// one. The accumulator (identityState.driftCUSUM) resets to 0 both when
+// it would go negative (a below-allowance window shouldn't bank
+// "credit" that cancels out a future gradual rise, it should simply
+// stop accumulating) and after every alarm (standard post-alarm CUSUM
+// reset: monitoring restarts for the next drift rather than staying
+// pinned at an ever-growing value for as long as a sustained shift
+// continues).
+func (d *Detector) checkDrift(e auditdomain.Entry, st *identityState) []domain.Anomaly {
+	if st.prev.total < d.cfg.Drift.MinCalls {
+		return nil
+	}
+	h := driftEffectiveH(e.Identity, d.cfg.Drift)
+
+	var anomalies []domain.Anomaly
+	if a, ok := d.checkDriftFeature(e, "call_rate", &st.driftCUSUM,
+		zCount(&st.mlStats.rate, float64(st.prev.total)), h); ok {
+		anomalies = append(anomalies, a)
+	}
+	// tool_diversity's CUSUM closes the slow-novel-tool-drip gap
+	// TestAdversarialBenchmark_SlowNovelToolDrip measures: novel_tool
+	// logs every first-ever sighting unconditionally, but ml_score's own
+	// tool_diversity feature only escalates from a burst within one
+	// window (see the novel-tool-enumeration recall table) -- a drip of
+	// one new tool per window never moves any single window's count far
+	// enough. The same small-persistent-deviation shape CUSUM already
+	// closes for call_rate applies identically here: it doesn't matter
+	// which feature z_t comes from, only that it's standardized.
+	if a, ok := d.checkDriftFeature(e, "tool_diversity", &st.driftDiversityCUSUM,
+		zCount(&st.mlStats.diversity, float64(len(st.prev.uniqueTools))), h); ok {
+		anomalies = append(anomalies, a)
+	}
+	return anomalies
+}
+
+// checkDriftFeature runs one feature's CUSUM update/alarm/reset cycle --
+// factored out of checkDrift so call_rate and tool_diversity (identical
+// mechanics, different accumulator and z) can't drift apart. cusum is a
+// pointer into the caller's own persistent accumulator field.
+func (d *Detector) checkDriftFeature(e auditdomain.Entry, feature string, cusum *float64, z, h float64) (domain.Anomaly, bool) {
+	*cusum = math.Max(0, *cusum+z-d.cfg.Drift.K)
+	if *cusum <= h {
+		return domain.Anomaly{}, false
+	}
+	fired := *cusum
+	*cusum = 0 // post-alarm reset -- see checkDrift's doc comment
+
+	var autoBlockSeconds int
+	if d.cfg.AutoBlock.Enabled && d.blocker != nil {
+		d.blocker.Block(e.Identity, e.Tenant, fmt.Sprintf(
+			"drift_detection cusum %.2f exceeded decision threshold %.2f over a sustained rise in %s",
+			fired, h, feature))
+		autoBlockSeconds = d.cfg.AutoBlock.BlockDurationSeconds
+	}
+	return domain.Anomaly{
+		Timestamp: d.now(),
+		Identity:  e.Identity,
+		Tenant:    e.Tenant,
+		Kind:      domain.KindDrift,
+		Detail: fmt.Sprintf(
+			"cumulative sustained rise in %s (cusum %.2f) exceeded decision threshold %.2f",
+			feature, fired, h),
+		Entry:            e,
+		Score:            &fired,
+		AutoBlockSeconds: autoBlockSeconds,
+	}, true
+}
 
 // checkMLScore must be called with d.mu held, and only once per completed
 // window -- the caller (recordAndCheck) enforces this by gating the call

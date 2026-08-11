@@ -134,6 +134,46 @@ func TestRecallBenchmark_AbruptSpike(t *testing.T) {
 	}
 }
 
+// TestRecallBenchmark_AbruptSpike_WithDriftDetection is
+// TestRecallBenchmark_AbruptSpike's counterpart with drift_detection
+// also on, same seeds per trial for a direct comparison. Unplanned
+// finding while building TestAdversarialBenchmark_DistributedSybil: a
+// 2x-baseline single-window spike, 0% recall with ml_score/auto_block
+// alone, blocked 14/20 trials once drift_detection is also on. This
+// isn't drift_detection catching a *ramp* -- it's a single elevated
+// window pushing an already-nonzero CUSUM accumulator (residual from
+// ordinary warmup noise, see checkDrift's doc comment on why the
+// accumulator isn't reset between scenarios) over H in one step.
+// drift_detection's real recall benefit turns out to be broader than
+// "closes the low-and-slow gap" -- it also raises mid-severity
+// (1.5x-3x) single-spike recall, the exact range
+// TestRecallBenchmark_AbruptSpike's own step function showed as 0%.
+func TestRecallBenchmark_AbruptSpike_WithDriftDetection(t *testing.T) {
+	cfg := shippedExampleCfgWithDrift()
+	const baseline = 30
+	const trialsPerMultiple = 20
+	multiples := []float64{1.5, 2, 3, 5, 10, 20}
+
+	t.Log("abrupt-spike recall WITH drift_detection, same trials/seeds as TestRecallBenchmark_AbruptSpike:")
+	for _, mult := range multiples {
+		blocked := 0
+		for trial := 0; trial < trialsPerMultiple; trial++ {
+			rng := rand.New(rand.NewSource(int64(trial)*1000 + int64(mult*10)))
+			identity := fmt.Sprintf("spike-drift-%v-%d", mult, trial)
+			d, blocker, clock, _ := warmDetector(t, rng, cfg, identity, baseline, 20)
+
+			spikeCalls := int(float64(baseline) * mult)
+			scoreWindow(d, clock, cfg, identity, spikeCalls, benchTools[rng.Intn(len(benchTools))], "allow")
+
+			if v := blocker.Check(identity, "", clock.t); !v.Allowed {
+				blocked++
+			}
+		}
+		recall := float64(blocked) / float64(trialsPerMultiple)
+		t.Logf("  %5.1fx baseline: %2d/%d blocked (%.0f%% recall)", mult, blocked, trialsPerMultiple, recall*100)
+	}
+}
+
 // TestRecallBenchmark_LowAndSlow quantifies the documented low-and-slow
 // blind spot (docs/features/anomaly-detection.md "Known limitations"):
 // per ramp rate, whether auto_block ever fires within 150 windows, and
@@ -168,6 +208,93 @@ func TestRecallBenchmark_LowAndSlow(t *testing.T) {
 		} else {
 			t.Logf("  +%2d calls/window: NEVER blocked in %d windows (reached %.1fx baseline, %d calls/window)", ramp, maxWindows, finalMultiple, calls)
 		}
+	}
+}
+
+// shippedExampleCfgWithDrift is shippedExampleCfg plus drift_detection
+// enabled at its own shipped-example values (K=0.5, H=5.0 -- Montgomery's
+// standard CUSUM recommendation, see domain.DriftConfig's doc comment).
+func shippedExampleCfgWithDrift() domain.HeuristicConfig {
+	cfg := shippedExampleCfg()
+	cfg.Drift = domain.DriftConfig{Enabled: true, K: 0.5, H: 5.0, MinCalls: 5}
+	return cfg
+}
+
+// TestRecallBenchmark_LowAndSlow_WithDriftDetection is
+// TestRecallBenchmark_LowAndSlow's direct counterpart with
+// drift_detection turned on -- same ramps, same warmup, same ceiling,
+// so the two tests' output is a real, apples-to-apples before/after.
+func TestRecallBenchmark_LowAndSlow_WithDriftDetection(t *testing.T) {
+	cfg := shippedExampleCfgWithDrift()
+	const baseline = 30
+	const maxWindows = 150
+	ramps := []int{1, 2, 3, 5, 10}
+
+	t.Log("low-and-slow recall WITH drift_detection (K=0.5, H=5.0), same scenario as TestRecallBenchmark_LowAndSlow:")
+	for _, ramp := range ramps {
+		rng := rand.New(rand.NewSource(int64(ramp) * 7919))
+		identity := fmt.Sprintf("creeper-drift-%d", ramp)
+		d, blocker, clock, _ := warmDetector(t, rng, cfg, identity, baseline, 20)
+
+		calls := baseline
+		blockedAtWindow := -1
+		for w := 0; w < maxWindows; w++ {
+			calls += ramp
+			scoreWindow(d, clock, cfg, identity, calls, benchTools[rng.Intn(len(benchTools))], "allow")
+			if v := blocker.Check(identity, "", clock.t); !v.Allowed {
+				blockedAtWindow = w
+				break
+			}
+		}
+		finalMultiple := float64(calls) / float64(baseline)
+		if blockedAtWindow >= 0 {
+			t.Logf("  +%2d calls/window: blocked at window %3d (reached %.1fx baseline)", ramp, blockedAtWindow, finalMultiple)
+		} else {
+			t.Logf("  +%2d calls/window: NEVER blocked in %d windows (reached %.1fx baseline, %d calls/window)", ramp, maxWindows, finalMultiple, calls)
+		}
+	}
+}
+
+// TestRecallBenchmark_FalsePositiveRateWithDriftDetection is
+// TestRecallBenchmark_FalsePositiveRateAcrossSeeds' counterpart with
+// drift_detection on -- CUSUM adds a new false-positive surface (a
+// long enough run of ordinary above-baseline noise could in principle
+// accumulate past H), so this must be measured, not assumed safe from
+// the ml_score-only result alone.
+func TestRecallBenchmark_FalsePositiveRateWithDriftDetection(t *testing.T) {
+	cfg := shippedExampleCfgWithDrift()
+	const windows = 300
+	const seeds = 20
+
+	totalWindows, totalFP := 0, 0
+	worstSeedRate := 0.0
+	for seed := 0; seed < seeds; seed++ {
+		rng := rand.New(rand.NewSource(int64(seed)))
+		identity := fmt.Sprintf("steady-drift-%d", seed)
+		d, _, clock, writer := warmDetector(t, rng, cfg, identity, 30, 20)
+		before := len(writer.anomalies)
+
+		for w := 0; w < windows; w++ {
+			calls := 24 + rng.Intn(13)
+			for c := 0; c < calls; c++ {
+				d.Publish(auditdomain.Entry{Identity: identity, Tool: benchTools[rng.Intn(len(benchTools))], Decision: "allow"})
+			}
+			clock.t = clock.t.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+		}
+		seedFP := len(writer.anomalies) - before
+		rate := float64(seedFP) / float64(windows)
+		t.Logf("  seed %2d: %d/%d windows flagged (%.3f%%)", seed, seedFP, windows, rate*100)
+		if rate > worstSeedRate {
+			worstSeedRate = rate
+		}
+		totalWindows += windows
+		totalFP += seedFP
+	}
+	overall := float64(totalFP) / float64(totalWindows)
+	t.Logf("false-positive rate WITH drift_detection across %d seeds, %d windows each: %d/%d windows flagged (%.3f%% overall, %.3f%% worst single seed)",
+		seeds, windows, totalFP, totalWindows, overall*100, worstSeedRate*100)
+	if overall > 0.02 {
+		t.Errorf("aggregate false-positive rate %.3f%% exceeds the README's 2%% budget across %d seeds", overall*100, seeds)
 	}
 }
 

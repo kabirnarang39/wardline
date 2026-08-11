@@ -96,3 +96,39 @@ func (s *onlineStat) ZScoreFloored(x, extraFloor float64) float64 {
 	}
 	return (x - s.mean) / stddev
 }
+
+// AggregateZScore is checkTenantDrift's z-score -- deliberately not
+// ZScoreFloored. minStddevRelFraction (15% of the mean) exists to
+// protect PER-IDENTITY features, whose small, naturally-tight baselines
+// (a handful of calls/window) can turn an ordinary proportional swing
+// into a large z-score (see minStddevRelFraction's own doc comment).
+// At tenant-aggregate scale that floor becomes counterproductive: it
+// grows *linearly* with the mean (0.15 x ~600 = ~90 for a 20-identity
+// tenant, versus ~4.5 at one identity's own ~30-call baseline),
+// completely swallowing the tighter noise floor tenant aggregation
+// earns via the law of large numbers -- independent identities' own
+// noise partially cancels in the sum, which is exactly what makes
+// tenant aggregation useful for catching a coordinated proportional
+// shift in the first place. Verified directly: a real, shared 1.5x-
+// baseline spike across 20 identities scored z=3.39 through
+// ZScoreFloored's relative floor (below a 5.0 threshold -- an earlier,
+// bugged version of drift_detection's tenant_anomaly feature) and
+// z=12.37 through this one, against the identical underlying data (see
+// TestAdversarialBenchmark_DistributedSybil_WithTenantAnomaly).
+//
+// Floors only at 1.0 absolute (never 0, so a perfectly flat baseline
+// isn't divide-by-zero) -- no relative-to-mean floor at all.
+func (s *onlineStat) AggregateZScore(x float64) float64 {
+	if s.count < minSamplesForZScore {
+		return 0
+	}
+	variance := s.m2 / float64(s.count-1)
+	stddev := 0.0
+	if variance > 0 {
+		stddev = math.Sqrt(variance)
+	}
+	if stddev < 1.0 {
+		stddev = 1.0
+	}
+	return (x - s.mean) / stddev
+}
