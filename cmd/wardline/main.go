@@ -407,10 +407,12 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	// Gated on postgres_storage the same way jobBudget's own meter selects
-	// its backend above.
+	// its backend above. costBudgetMeter is hoisted out of the if-block for
+	// the same reason jobBudgetMeter is: the dashboard wiring further down
+	// type-asserts it onto costbudgetdomain.Lister.
 	var costBudgetChecker *costbudgetusecase.Checker
+	var costBudgetMeter costbudgetdomain.Meter
 	if jobCostBudgetEnabled {
-		var costBudgetMeter costbudgetdomain.Meter
 		if postgresStorageEnabled {
 			cm, err := costbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
 			if err != nil {
@@ -1055,7 +1057,18 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource)
+		// costBudgetSource backs the dashboard cost-budget view -- only
+		// wired when job_cost_budget is on (costBudgetMeter non-nil) AND
+		// the concrete meter implements the optional costbudgetdomain.Lister
+		// capability, mirroring jobBudgetSource above exactly.
+		var costBudgetSource dashboardadapter.CostBudgetSource
+		if costBudgetMeter != nil {
+			if lister, ok := costBudgetMeter.(costbudgetdomain.Lister); ok {
+				costBudgetSource = lister
+			}
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}

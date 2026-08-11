@@ -1,4 +1,4 @@
-import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance, fetchApprovals, decideApproval, fetchJobBudget } from './api.js';
+import { fetchAudit, fetchPolicy, writePolicy, fetchStatus, fetchAnomalies, fetchBlocked, unblockIdentity, fetchFederationCorrelated, revokeCredential, fetchRBAC, fetchBudget, writeBudget, fetchReloadHistory, fetchCompliance, fetchApprovals, decideApproval, fetchJobBudget, fetchCostBudget } from './api.js';
 import { mountIcons } from './icons.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -70,6 +70,7 @@ const state = {
   lastReloadLogID: 0,
   approvals: [],
   jobBudget: [],
+  costBudget: [],
 };
 
 function escapeHTML(s) {
@@ -766,6 +767,45 @@ async function pollJobBudget() {
     }
   }
   renderJobBudget();
+}
+
+// renderCostBudget mirrors renderJobBudget exactly, but reads e.Total
+// (cost/token amount) instead of e.Count (request count) -- the only
+// field-name difference between the two Entry wire shapes.
+function renderCostBudget() {
+  const tbody = document.getElementById('costbudget-rows');
+  const empty = document.getElementById('costbudget-empty');
+  if (!tbody) return;
+
+  const entries = state.costBudget;
+  updateNavCount('nav-count-costbudget', entries.length);
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  tbody.innerHTML = entries.map((e) => `
+    <tr>
+      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td>${escapeHTML(String(e.Total))}</td>
+    </tr>
+  `).join('');
+}
+
+async function pollCostBudget() {
+  if (!disabledPollers.has('costbudget')) {
+    try {
+      state.costBudget = await fetchCostBudget();
+    } catch (err) {
+      // Same "not wired" posture as pollJobBudget: pollerFailed() stops
+      // future retries once a 404 confirms job_cost_budget is off.
+      pollerFailed('costbudget', err);
+    }
+  }
+  renderCostBudget();
 }
 
 // configLoadedAtMs is when the running config was put in place: the epoch of
@@ -1491,6 +1531,7 @@ function switchView(name) {
   if (name === 'rbac') renderRBAC();
   if (name === 'budget') renderBudget();
   if (name === 'job-budget') renderJobBudget();
+  if (name === 'cost-budget') renderCostBudget();
 }
 
 // wireComplianceView wires the Compliance view's manual "Query" button --
@@ -1680,6 +1721,7 @@ function init() {
   pollBlocked();
   pollApprovals();
   pollJobBudget();
+  pollCostBudget();
   pollReloadLog();
   renderOverview();
   setInterval(pollAudit, POLL_INTERVAL_MS);
@@ -1689,6 +1731,7 @@ function init() {
   setInterval(pollBlocked, POLL_INTERVAL_MS);
   setInterval(pollApprovals, POLL_INTERVAL_MS);
   setInterval(pollJobBudget, POLL_INTERVAL_MS);
+  setInterval(pollCostBudget, POLL_INTERVAL_MS);
 }
 
 init();
