@@ -42,9 +42,11 @@ globally, across every tenant — the "no tenant means global" convention
   same as OIDC.
 - Credential revocation is now genuinely `(tenant, identity)`-keyed (see
   [Credential issuance](/features/credential-issuance/)'s known
-  limitations for the residual gap: a revoke whose target tenant cannot
-  be resolved still falls back to a wildcard revoke across every tenant's
-  copy of that identity name).
+  limitations: a revoke whose target tenant cannot be resolved still
+  defaults to a wildcard revoke across every tenant's copy of that
+  identity name, but a caller who already holds the global grant this
+  path requires can pass an explicit `tenant` to scope it to one tenant
+  instead).
 - Federation's correlated-alerts view is not tenant-scoped — it
   correlates on an identity fingerprint computed locally, and making
   that tenant-aware is a separate, not-yet-scheduled change (federation

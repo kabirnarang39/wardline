@@ -33,6 +33,17 @@ type tokenResponse struct {
 
 type revokeRequest struct {
 	Identity string `json:"identity"`
+	// Tenant scopes the revoke to a specific tenant when h.targetTenant
+	// can't resolve one on its own (ambiguous identity name, or an OIDC
+	// bootstrap source with no static registry -- see targetTenant's use
+	// in HandleRevoke below). Optional and ignored whenever targetTenant
+	// DOES resolve one: the static registry is authoritative there, not
+	// whatever the client sends. Reaching the ambiguous branch already
+	// requires the caller to hold a GLOBAL credential:revoke grant (see
+	// newRevokeAuthorizer in cmd/wardline/main.go), so naming a tenant
+	// here narrows an already-authorized wildcard revoke to one tenant
+	// -- it grants no new authority, only less collateral damage.
+	Tenant string `json:"tenant"`
 }
 
 type refreshRequest struct {
@@ -200,9 +211,17 @@ func (h *Handler) HandleRevoke(w http.ResponseWriter, r *http.Request) {
 	// targetTenant resolves the identity being revoked's own tenant so
 	// the revoke is scoped and doesn't over-revoke other tenants sharing
 	// the identity name. ok==false (e.g. OIDC bootstrap source, no
-	// static registry) falls back to "" -- domain.Revoker's documented
-	// wildcard, matching the pre-scoping behavior for those cases.
-	targetTenant, _ := h.targetTenant(req.Identity)
+	// static registry, or an identity name registered under two or more
+	// tenants) falls back to req.Tenant when the caller named one --
+	// narrowing the revoke to exactly the tenant they mean, instead of
+	// domain.Revoker's documented "" wildcard. req.Tenant=="" preserves
+	// the pre-existing wildcard behavior exactly, so an operator/caller
+	// who doesn't know or doesn't care still gets the old, safe-by-
+	// over-revoking default.
+	targetTenant, ok := h.targetTenant(req.Identity)
+	if !ok {
+		targetTenant = req.Tenant
+	}
 	if err := h.revocation.Revoke(targetTenant, req.Identity, h.now().Add(h.revocationHorizon)); err != nil {
 		// A 204 here would tell the caller a security action succeeded
 		// when it didn't -- an operator revoking a compromised identity
