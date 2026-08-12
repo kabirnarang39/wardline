@@ -74,6 +74,7 @@ under real distributed client load with persistent connections.
 | **SCIM Bulk create (5 ops/request)** | max (50 workers) | **100%, 0 errors** | 0.69ms | 3.15ms | 5.01ms — **49,689 bulk-req/s (248,445 Create ops/s)** |
 | Dashboard: 4 concurrent API endpoints + live proxy traffic | 100 req/s each endpoint, 500 req/s proxy | 100% (all 5 concurrent streams) | 0.35–0.65ms | 0.6–1.2ms | 1.1–2.2ms |
 | Postgres storage: audit + budget + anomaly on one shared pool (5 identities) | 100 req/s per identity | 100% | 1.2–1.4ms | 1.9–2.5ms | 3.5–4.1ms |
+| Postgres storage, same combo, built with `go build -race` | 50 req/s per identity (5 identities, 11,250 requests total) | 100%, 0 races detected, exact bookkeeping (11,250 audit entries, 1 budget row per identity) | — | — | — |
 | Federation: 2 instances, real signed publish + correlate under load | 100 req/s each instance | 100% (both instances); correlated on both sides | 1.0ms | 1.7ms | 2.6ms |
 | Job budget ceiling (100/job) under 5x overload | 500 req/s | exactly 1.33% (100 allowed / 7,400 denied) | — | — | — |
 | Job cost budget ceiling (1000/10-per-call) under 5x overload | 500 req/s | exactly 1.33% (100 allowed / 7,400 denied) | — | — | — |
