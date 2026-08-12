@@ -866,6 +866,15 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 .audit-table tbody tr:hover td { background: var(--surface-raised); }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
+/* Job/cost budget's opaque composite key (see jobKey/tenant.Key's
+   length-prefixed, unbroken-by-design composition) has no spaces to
+   wrap at -- reason-cell's white-space:normal only wraps prose, so
+   reusing it here just let the column stretch to fit the whole raw
+   string instead of truncating (text-overflow:ellipsis silently does
+   nothing without white-space:nowrap). Dimmed like tool-cell above: an
+   opaque id, not primary content -- full value is still in the title
+   attribute on hover. */
+.audit-table td.key-cell { white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-data); color: var(--text-muted); }
 .audit-table td.tool-cell { color: var(--text-muted); }
 /* Identity reads as a name, not a code token: sans-serif + full-strength
    text, matching the reference (tool stays mono/muted above). */
