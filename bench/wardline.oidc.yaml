@@ -1,0 +1,20 @@
+# Isolates the oidc bootstrap source under load: credential_issuance on,
+# bootstrap_source "oidc", pointed at bench/oidcidp (a real HTTP JWKS
+# server, not a stub) so wardline's real discovery/JWKS-fetch and
+# signature-verification path is what's under load, not a mock.
+listen: ":38405"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.oidc.jsonl"
+
+features:
+  credential_issuance: true
+
+credential:
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://oidcidp.bench.example.com/"
+    jwks_uri: "http://localhost:39402/jwks"
+    audience: "wardline-bench"
