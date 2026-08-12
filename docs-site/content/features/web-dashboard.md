@@ -1,7 +1,7 @@
 ---
 title: "Web Dashboard"
 weight: 55
-summary: "The in-browser Overview/Activity/Anomalies/Blocked/Federation/Credentials/Policy/Status view."
+summary: "The in-browser dashboard: Overview, Activity, Anomalies, Blocked, Approvals, Federation, Policy, RBAC, Budget, Job/Cost Budget, Credentials, Status, Reload log, and Compliance."
 ---
 
 An in-browser, largely read-only view of what Wardline is doing right
@@ -12,11 +12,18 @@ features:
   web_ui: true
 ```
 
-Then visit `http://<listen-addr>/dashboard/`. Eight views, reached from
-the sidebar in this order: **Overview, Activity, Anomalies, Blocked,
-Federation, Credentials, Policy, Status**. Live views poll every 2
-seconds; Policy and Status are loaded once and reflect state as of
-startup / the last poll respectively.
+Then visit `http://<listen-addr>/dashboard/`. Views are reached from the
+sidebar, grouped the same way the sidebar itself groups them:
+**Overview**; **Activity, Anomalies, Blocked, Approvals, Federation**
+(observability); **Policy, RBAC, Budget, Job Budget, Cost Budget,
+Credentials** (configuration); **Status, Reload log, Compliance**
+(system). Several of these — RBAC, Budget, Job/Cost Budget, Approvals,
+Compliance — are covered on their own feature page rather than
+redescribed here; this page covers Overview, Activity/Anomalies/
+Federation, Blocked, Credentials, and Policy/Status, plus the
+cross-cutting auth/CSRF posture that applies to all of them. Live views
+poll every 2 seconds; Policy and Status are loaded once and reflect
+state as of startup / the last poll respectively.
 
 ## Overview
 
@@ -84,9 +91,13 @@ A live-updating table of identities currently under a time-bounded
 `anomaly.auto_block` — identity, tenant, reason, and expiry. Each row
 carries an **Unblock** button that clears the block early (`DELETE
 /dashboard/api/anomalies/blocked/{identity}`), after a confirm prompt.
-This is one of the dashboard's only two mutations (see Credentials
-below for the other) — see "Auth requirement for mutations" below for
-exactly who can press it successfully.
+Unblock and Credentials' Revoke below are two of several mutations the
+dashboard now exposes (reload, the policy/budget editors, and
+approval decisions are the others — see each feature's own page, and
+"CSRF" under Known limitations for the full current list) — they're
+covered together here because they share a distinctive dual-mechanism
+auth gate the others don't; see "Auth requirement for mutations" below
+for exactly who can press either one successfully.
 
 ## Credentials
 
@@ -180,13 +191,15 @@ feature flags are on.
 The dashboard requires no authentication and every non-mutating route
 is read-only **by default** (unless `features.rbac` is on — see
 [RBAC](/features/rbac/); with it on, every dashboard request must
-resolve an identity holding `dashboard:view`, else `403`). The two
-exceptions are Blocked's Unblock and Credentials' Revoke, above — each
-is a real, security-relevant mutation, and each is independently gated
-by `credential:revoke` rather than the weaker `dashboard:view` a plain
-reader might hold. Neither can influence policy evaluation, budget
-accounting, or how a proxied call is decided going forward except
-through that one narrow, audited, explicitly-permissioned action. The
+resolve an identity holding `dashboard:view`, else `403`). Blocked's
+Unblock and Credentials' Revoke, above, are each independently gated by
+`credential:revoke` rather than the weaker `dashboard:view` a plain
+reader might hold — the same permission the dashboard's other mutations
+(reload, the policy/budget editors, approval decisions) gate behind
+`config:edit` instead, a distinct permission from either of these. No
+dashboard mutation can influence policy evaluation, budget accounting,
+or how a proxied call is decided going forward except through its own
+one narrow, audited, explicitly-permissioned action. The
 dashboard shares the exact same listener/port as the proxy itself, so
 anyone who can reach Wardline's proxy port — including every agent
 Wardline proxies calls for — can already read full audit reasons and

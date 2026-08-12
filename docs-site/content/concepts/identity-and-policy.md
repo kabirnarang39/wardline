@@ -54,6 +54,17 @@ Every request produces exactly one decision, recorded in the audit log:
   (`403`, JSON-RPC error, `Retry-After` header) until
   `auto_block.block_duration_seconds` elapses since the most recent
   detection, with no manual early unblock this cycle.
+- **`needs_approval`** — the policy backend's evaluation itself resolved
+  to requiring human sign-off (see [Approval
+  Workflow](/features/approval-workflow/)); not forwarded until an
+  operator approves the pending request.
+- **`job_budget_exceeded`** — the call would exceed its job's per-job
+  request ceiling (see [Job Budget](/features/job-budget/)); not
+  forwarded. Distinct from `throttled`, which is per-identity, not
+  per-job.
+- **`cost_budget_exceeded`** — the call would exceed its job's per-job
+  cost/token ceiling (see [Cost Budget](/features/cost-budget/)); not
+  forwarded.
 
 Scope note: policy, budget, and audit decisions apply to `tools/call`
 only, for the reason above. `auto_block` is the one deliberate exception:
