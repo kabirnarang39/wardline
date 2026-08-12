@@ -64,6 +64,29 @@ func TestJSONLReader_AnomalyMalformedLineIsSkippedAndCounted(t *testing.T) {
 	}
 }
 
+// TestJSONLReader_AnomalySubSecondBoundaryDoesNotDropEntry is the audit
+// reader's identical regression (see
+// audit/adapter.TestJSONLReader_SubSecondBoundaryDoesNotDropEntry),
+// applied here since anomaly's JSONLReader shares the exact same
+// truncated-storage-vs-full-precision-boundary root cause.
+func TestJSONLReader_AnomalySubSecondBoundaryDoesNotDropEntry(t *testing.T) {
+	path := writeAnomalyJSONLFile(t,
+		`{"timestamp":"2026-01-01T00:00:05Z","identity":"same-second","kind":"novel_tool","detail":"first call","tool":"read_file"}`,
+	)
+	r := adapter.NewJSONLReader(path)
+
+	from := time.Date(2026, 1, 1, 0, 0, 5, 668_000_000, time.UTC)
+	to := time.Date(2026, 1, 1, 0, 0, 8, 0, time.UTC)
+
+	got, err := r.Query(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Identity != "same-second" {
+		t.Fatalf("expected the anomaly sharing from's wall-clock second to be included, got %+v", got)
+	}
+}
+
 func TestJSONLReader_AnomalyMissingFileErrors(t *testing.T) {
 	r := adapter.NewJSONLReader(filepath.Join(t.TempDir(), "does-not-exist.jsonl"))
 	_, err := r.Query(context.Background(), time.Time{}, time.Now())

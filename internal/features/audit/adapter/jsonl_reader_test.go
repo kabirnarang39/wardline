@@ -117,6 +117,39 @@ func TestJSONLReader_MissingTenantDefaultsOnRead(t *testing.T) {
 	}
 }
 
+// TestJSONLReader_SubSecondBoundaryDoesNotDropEntry is the real-bug
+// regression: every stored line's timestamp round-trips at whole-second
+// precision (JSONLWriter's own format has no fractional-second
+// directive), but a real caller's `from` is an ordinary full-precision
+// time.Time -- the scheduled-export job's own window boundaries are
+// literal time.Now() calls, so on every tick `from` almost always has a
+// non-zero sub-second component. An entry timestamped in that exact
+// wall-clock second, before Query started truncating both boundaries,
+// compared as "before from" and was silently dropped -- reproduced live
+// against a real running wardline instance with compliance_scheduled_export
+// on before this fix landed.
+func TestJSONLReader_SubSecondBoundaryDoesNotDropEntry(t *testing.T) {
+	path := writeJSONLFile(t,
+		`{"timestamp":"2026-01-01T00:00:05Z","identity":"same-second","tool":"read_file","decision":"allow","latency_ms":1}`,
+	)
+	r := adapter.NewJSONLReader(path)
+
+	// from's sub-second component (.668) is later within the same wall
+	// clock second than the stored entry's truncated 00:00:05.000 --
+	// without truncating from down to the second first, ts.Before(from)
+	// is true and the entry is wrongly excluded.
+	from := time.Date(2026, 1, 1, 0, 0, 5, 668_000_000, time.UTC)
+	to := time.Date(2026, 1, 1, 0, 0, 8, 0, time.UTC)
+
+	entries, err := r.Query(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Identity != "same-second" {
+		t.Fatalf("expected the entry sharing from's wall-clock second to be included, got %+v", entries)
+	}
+}
+
 func TestJSONLReader_MissingFileErrors(t *testing.T) {
 	r := adapter.NewJSONLReader(filepath.Join(t.TempDir(), "does-not-exist.jsonl"))
 	_, err := r.Query(context.Background(), time.Time{}, time.Now())
