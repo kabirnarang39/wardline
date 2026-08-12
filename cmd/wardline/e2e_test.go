@@ -874,6 +874,71 @@ default: deny
 	}
 }
 
+// TestServeEndToEnd_MetricsServedWhenEnabled proves the prometheus_metrics
+// feature flag, once on, actually mounts GET /metrics in the real binary
+// and that a real proxied call is reflected in it -- not just that the
+// recorder compiles in isolation.
+func TestServeEndToEnd_MetricsServedWhenEnabled(t *testing.T) {
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "features:\n  prometheus_metrics: true\n")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy call failed: %v; stderr=%s", err, stderr.String())
+	}
+	_ = resp.Body.Close()
+
+	metricsResp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
+	defer func() { _ = metricsResp.Body.Close() }()
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics status = %d, want 200 (stderr: %s)", metricsResp.StatusCode, stderr.String())
+	}
+	body, _ := io.ReadAll(metricsResp.Body)
+	if !strings.Contains(string(body), `wardline_proxy_requests_total{decision="allow"} 1`) {
+		t.Errorf("expected the allowed call above reflected in /metrics, got:\n%s", body)
+	}
+	if !strings.Contains(string(body), "go_goroutines") {
+		t.Errorf("expected the Go runtime collector's output in /metrics, got:\n%s", body)
+	}
+}
+
+// TestServeEndToEnd_MetricsNotMountedWhenDisabled proves the inverse of the
+// test above: GET /metrics is a plain 404 (routeOrNotFound's guard),
+// exactly like /scim/v2/* and /federation/summaries when their own flags
+// are off, when prometheus_metrics is off.
+func TestServeEndToEnd_MetricsNotMountedWhenDisabled(t *testing.T) {
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 when prometheus_metrics is off, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+}
+
 // TestServeEndToEnd_GracefulShutdown proves SIGTERM drains the server and
 // exits cleanly within the shutdown timeout, rather than hanging or
 // needing a force-kill — the path a batched OTLP exporter's final flush

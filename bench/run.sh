@@ -721,4 +721,23 @@ else
 fi
 
 echo
+echo "###################################################################"
+echo "# 22. Prometheus metrics: recording overhead under load (vs        #"
+echo "#     baseline) -- same shape as scenario 18's otel overhead check #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.metrics.yaml >"$OUT/server.metrics.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38426
+attack metrics-allow 38426 bench-agent
+# GET /metrics itself must actually work under the same run, not just at
+# startup -- proves the endpoint stays reachable/scrapeable while the
+# recorder it serves is being written to concurrently by the load above.
+curl -s -o "$OUT/metrics-endpoint-sample.txt" -w '%{http_code}' "http://localhost:38426/metrics" > "$OUT/metrics-endpoint-status.txt"
+if ! grep -q "^200$" "$OUT/metrics-endpoint-status.txt"; then
+  echo "GET /metrics FAILED (expected 200) -- see $OUT/metrics-endpoint-status.txt" >&2
+  exit 1
+fi
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
