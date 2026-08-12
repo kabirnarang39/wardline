@@ -25,6 +25,8 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 	"gopkg.in/yaml.v3"
@@ -741,13 +743,15 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		accessTokenTTL := time.Duration(cfg.Credential.AccessTokenTTLSeconds) * time.Second
 		refreshTokenTTL := time.Duration(cfg.Credential.RefreshTokenTTLSeconds) * time.Second
-		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, cfg.Credential.PreviousSigningKeyFiles, accessTokenTTL)
+		issuerVerifier, err := newJWTIssuerVerifierFromConfig(context.Background(), cfg.Credential, accessTokenTTL)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
 			os.Exit(1)
 		}
-		if cfg.Credential.SigningKeyFile == "" {
-			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file to run more than one")
+		if cfg.Credential.KMS.KeyID != "" {
+			logger.Info("credential issuance signing key is backed by aws kms", "key_id", cfg.Credential.KMS.KeyID)
+		} else if cfg.Credential.SigningKeyFile == "" {
+			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file or credential.kms.key_id to run more than one")
 		}
 		if len(cfg.Credential.PreviousSigningKeyFiles) > 0 {
 			logger.Info("credential signing-key rotation window active", "previous_keys", len(cfg.Credential.PreviousSigningKeyFiles))
@@ -2109,6 +2113,15 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.KMS.KeyID != "" {
+		// Soft warning, not os.Exit(1): AWS KMS may be transiently
+		// unreachable (or credentials unavailable) from wherever
+		// validate-config runs -- same reasoning as the OIDC block just
+		// below, which this mirrors.
+		if _, err := newJWTIssuerVerifierFromConfig(context.Background(), cfg.Credential, time.Duration(cfg.Credential.AccessTokenTTLSeconds)*time.Second); err != nil {
+			logger.Warn("failed to initialize kms signer (kms may be unreachable, or aws credentials unavailable here); not treated as a hard failure", "error", err)
+		}
+	}
 	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.BootstrapSource == "oidc" {
 		// Soft warning, not os.Exit(1): the IdP's JWKS endpoint may be
 		// transiently unreachable from wherever validate-config runs (e.g. a
@@ -3035,6 +3048,34 @@ func newOIDCBootstrapperFromConfig(cfg config.CredentialConfig) (credentialdomai
 		return nil, nil, err
 	}
 	return b, b, nil
+}
+
+// newJWTIssuerVerifierFromConfig builds the JWTIssuerVerifier signing
+// this deployment's access tokens: AWS KMS-backed
+// (credentialadapter.NewKMSSigner, when cfg.KMS.KeyID is set --
+// config.validate() already rejects setting this alongside
+// SigningKeyFile) or the existing local-PEM-file/generate-fresh path
+// otherwise. Both call sites (runServe's real wiring, validate-config's
+// soft-fail check for the KMS case) share this so the branch isn't
+// duplicated.
+func newJWTIssuerVerifierFromConfig(ctx context.Context, cfg config.CredentialConfig, accessTokenTTL time.Duration) (*credentialadapter.JWTIssuerVerifier, error) {
+	if cfg.KMS.KeyID == "" {
+		return credentialadapter.NewJWTIssuerVerifier(cfg.SigningKeyFile, cfg.PreviousSigningKeyFiles, accessTokenTTL)
+	}
+	var optFns []func(*awsconfig.LoadOptions) error
+	if cfg.KMS.Region != "" {
+		optFns = append(optFns, awsconfig.WithRegion(cfg.KMS.Region))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("load aws config for kms: %w", err)
+	}
+	kmsClient := kms.NewFromConfig(awsCfg)
+	signer, err := credentialadapter.NewKMSSigner(ctx, kmsClient, cfg.KMS.KeyID)
+	if err != nil {
+		return nil, fmt.Errorf("initialize kms signer: %w", err)
+	}
+	return credentialadapter.NewJWTIssuerVerifierWithSigner(signer, cfg.PreviousSigningKeyFiles, accessTokenTTL)
 }
 
 // deriveInstanceID returns override if non-empty (an operator-supplied

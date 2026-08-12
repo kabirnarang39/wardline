@@ -250,6 +250,74 @@ policy-pack marketplace, HA deployment.
   Detection](/features/anomaly-detection/)'s "Adversarial scenarios" and
   "Known limitations".
 
+## v2.4 (shipped)
+
+A closure pass over known limitations across the project — each item
+below replaces a documented gap with a real, industry-standard fix, not
+a workaround; the math/security tradeoffs that can't be "fixed" without
+being dishonest (CUSUM's mimicry ceiling, no-live-policy-learning,
+shared-budget-bucket AND-semantics) were left exactly as documented,
+correctly.
+
+- **Credential revoke: tenant-scoped wildcard narrowing** — a revoke
+  whose target tenant can't be resolved still defaults to a wildcard
+  across every tenant's copy of that identity name, but a caller who
+  already holds the global grant that path requires can now pass an
+  explicit `tenant` to scope it to one. See [Credential
+  Issuance](/features/credential-issuance/).
+- **One shared Postgres connection pool** (`internal/platform/pgpool`)
+  across every Postgres-backed feature (audit, credential
+  revocation/refresh, budget, job/cost budget, SCIM, anomaly
+  baselines/blocks/tenant aggregates), replacing N independent
+  ~10-connection pools — closes the fail-open-under-load gap
+  `budget-enforcement.md` documented. See
+  `audit.postgres_max_open_conns`.
+- **`identity_churn` HA persistence + CUSUM extension** — Postgres-backed
+  cross-replica window-total merge and baseline persistence (mirroring
+  `tenant_anomaly`'s own HA extension), plus `cusum_enabled` closing the
+  slow-trickle gap a plain per-window count can't. See [Anomaly
+  Detection](/features/anomaly-detection/).
+- **OIDC discovery-document fetching** — `credential.oidc.jwks_uri` is
+  now optional, resolved from `/.well-known/openid-configuration` when
+  unset. See [SSO](/features/sso/).
+- **Multi-IdP SSO** (`credential.oidc_providers`) — more than one OIDC
+  issuer at once, routed by each token's own `iss` claim. See
+  [SSO](/features/sso/).
+- **Full SCIM 2.0 compliance** — a real filter grammar (tokenizer +
+  recursive-descent parser, every operator, `and`/`or`/`not`), bulk
+  operations (`POST /scim/v2/Bulk`), and the discovery triad
+  (`ServiceProviderConfig`/`ResourceTypes`/`Schemas`). See
+  [SCIM](/features/scim/).
+- **Dashboard config-file watcher** (`features.config_file_watch`) —
+  `fsnotify`-based, debounced, survives atomic replace-by-rename saves;
+  editing policy/rbac/budget config on disk now applies automatically.
+  See [Web Dashboard](/features/web-dashboard/).
+- **Dashboard browser-native login** — `GET`/`POST /dashboard/login`
+  exchanges a bootstrap secret or OIDC ID token for a session cookie
+  (httpOnly, `SameSite=Strict`), closing the gap where a browser
+  couldn't attach a bearer token to `/dashboard/`, Blocked's Unblock, or
+  Credentials' Revoke. See [Web Dashboard](/features/web-dashboard/).
+- **Cluster-wide dashboard live-audit view** — with `postgres_storage`
+  on, the Activity view and recent-activity chart read the same durable,
+  cluster-wide `audit_entries` table every replica writes into, not a
+  bounded per-replica in-memory ring buffer. See [HA
+  Deployment](/features/ha-deployment/).
+- **Tenant-scoped federation correlation** — `Tenant` now flows through
+  `AnomalySummary`/`CorrelatedAlert` and the correlation key itself, not
+  just the display: two different tenants' identically-named identities
+  (same pseudonymized fingerprint, since `Fingerprint` is identity-only)
+  no longer incorrectly correlate as one condition, and the
+  correlated-alerts view is tenant-scoped like every other dashboard
+  view. See [Federation](/features/federation/).
+- **AWS KMS-backed signing keys** (`credential.kms.key_id`) — the
+  private signing key never leaves KMS/CloudHSM; every token issuance
+  calls KMS's own `Sign` API via a `crypto.Signer` adapter, the same
+  extension point `jwx/v3` documents for "KMS-backed adapters". Mutually
+  exclusive with `signing_key_file`; existing rotation
+  (`previous_signing_key_files`) works unchanged rotating in or out of
+  KMS custody. GCP Cloud KMS and Azure Key Vault are a sibling adapter
+  away. See [HA Deployment](/features/ha-deployment/).
+
 ## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future

@@ -155,6 +155,29 @@ type OIDCConfig struct {
 	TenantClaim   string `yaml:"tenant_claim"`   // defaults to "tenant"
 }
 
+// KMSConfig configures the AWS KMS-backed signing key adapter (the
+// shipped cloud provider this cycle -- see credentialadapter.KMSSigner's
+// own doc comment on why a second provider is a sibling adapter away,
+// not a rewrite). Only meaningful when KeyID is set.
+type KMSConfig struct {
+	// KeyID names the KMS key to sign with -- a key ID, key ARN, alias
+	// name, or alias ARN, anything AWS KMS's own Sign/GetPublicKey APIs
+	// accept as KeyId. Must be an asymmetric key with KeyUsage
+	// SIGN_VERIFY and KeySpec RSA_2048 or larger (RS256's own floor,
+	// enforced by KMSSigner regardless of what AWS itself would allow).
+	KeyID string `yaml:"key_id"`
+	// Region overrides the AWS SDK's own default region resolution
+	// (AWS_REGION env var, shared config file, EC2/ECS metadata) when
+	// set. Credentials are ALWAYS resolved via the SDK's standard
+	// default chain (env vars, shared credentials file, IAM role) --
+	// deliberately no static access-key config field here, matching
+	// this project's existing "an operator's own secret-management
+	// pipeline, not a config file, owns real credentials" posture (see
+	// HA Deployment's KMS note and mTLS/SPIFFE Bootstrap's own
+	// never-invent-a-new-trust-mechanism stance).
+	Region string `yaml:"region"`
+}
+
 // MTLSConfig configures the mTLS/SPIFFE bootstrap adapter. Only
 // validated (and only meaningful) when credential.bootstrap_source is
 // "mtls". Wardline never terminates TLS or parses X.509 itself -- Header
@@ -196,6 +219,16 @@ type CredentialConfig struct {
 	// drop it from this list. Empty (the default) is the no-rotation-in-
 	// progress state. See README.md "Credential issuance".
 	PreviousSigningKeyFiles []string `yaml:"previous_signing_key_files"`
+
+	// KMS configures a cloud-KMS-backed signing key instead of a local
+	// PEM file -- mutually exclusive with SigningKeyFile (validate()
+	// rejects setting both). The signing private key never leaves the
+	// KMS/HSM boundary; PreviousSigningKeyFiles above still works
+	// unchanged for the verification-only rotation window (a KMS key
+	// rotating in, or out, works exactly like rotating between two local
+	// keys, since verification only ever needs a public key). See
+	// credentialadapter.KMSSigner.
+	KMS KMSConfig `yaml:"kms"`
 
 	// BootstrapSource selects which Bootstrapper adapter authenticates a
 	// credential exchange: "presharedsecret" (default, credentials.yaml
@@ -646,6 +679,9 @@ func (c *Config) validate() error {
 	if c.Features["credential_issuance"] {
 		if c.Credential.IdentitiesFile == "" {
 			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+		}
+		if c.Credential.KMS.KeyID != "" && c.Credential.SigningKeyFile != "" {
+			problems = append(problems, "credential.kms.key_id and credential.signing_key_file are mutually exclusive -- the signing key lives in exactly one place")
 		}
 		if c.Credential.BootstrapSource == "" {
 			c.Credential.BootstrapSource = "presharedsecret"

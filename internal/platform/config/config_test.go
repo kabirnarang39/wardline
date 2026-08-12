@@ -880,6 +880,56 @@ credential:
 	}
 }
 
+// TestLoad_KMSAndSigningKeyFileMutuallyExclusive pins credential.kms.key_id
+// and credential.signing_key_file as mutually exclusive -- the signing
+// key lives in exactly one place, never both.
+func TestLoad_KMSAndSigningKeyFileMutuallyExclusive(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  signing_key_file: "signing.pem"
+  kms:
+    key_id: "arn:aws:kms:us-east-1:123456789012:key/abcd-1234"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for setting both credential.signing_key_file and credential.kms.key_id")
+	}
+}
+
+// TestLoad_KMSKeyIDAlone_ValidatesCleanly proves the KMS-only shape is
+// accepted by config validation on its own (the real KMS connectivity
+// check happens later, at construction, not here).
+func TestLoad_KMSKeyIDAlone_ValidatesCleanly(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  kms:
+    key_id: "arn:aws:kms:us-east-1:123456789012:key/abcd-1234"
+    region: "us-east-1"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.KMS.KeyID == "" || cfg.Credential.KMS.Region != "us-east-1" {
+		t.Errorf("expected kms config to load through, got %+v", cfg.Credential.KMS)
+	}
+}
+
 // TestLoad_MTLSBootstrapRequiresHeader mirrors
 // TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience's shape for the third
 // bootstrap source.
