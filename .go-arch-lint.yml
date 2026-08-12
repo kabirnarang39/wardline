@@ -22,6 +22,11 @@ exclude:
   - docs-site
   - site
   - charts
+  # bench/ holds one-off load-test/demo command-line tools (each its own
+  # flat main.go, no domain/usecase/adapter structure) -- not part of the
+  # application this linter's layering rule governs, same reasoning as
+  # docs-site/site/charts above.
+  - bench
 
 excludeFiles:
   - ".*_test\\.go$"
