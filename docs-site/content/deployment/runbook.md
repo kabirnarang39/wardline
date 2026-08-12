@@ -140,6 +140,55 @@ passed between the backup and the restore relative to
 reflects, it just may not be the window you expect if the gap was
 long.
 
+**Automating it**: Wardline ships no backup scheduler of its own — same
+reasoning as not bundling Postgres itself (see
+[mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/)'s known limitations
+for the same "we don't operate your infrastructure" boundary applied
+elsewhere). On Kubernetes, a `CronJob` running the exact `pg_dump`
+command above against your Postgres service, writing to durable
+storage, is the standard shape — for example:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: wardline-postgres-backup
+spec:
+  schedule: "0 3 * * *"   # daily at 03:00 -- pick a cadence against your own RPO
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-dump
+              image: postgres:16   # match your Postgres server's major version
+              command:
+                - sh
+                - -c
+                - >
+                  pg_dump -h $(PGHOST) -U $(PGUSER) -d $(PGDATABASE) -Fc
+                  -f /backup/wardline-$(date +%Y%m%d-%H%M%S).dump &&
+                  find /backup -name 'wardline-*.dump' -mtime +14 -delete
+              envFrom:
+                - secretRef:
+                    name: wardline-postgres-credentials   # PGHOST/PGUSER/PGPASSWORD/PGDATABASE
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: wardline-postgres-backups
+```
+
+The `find ... -delete` line is the retention policy — 14 days here, tune
+to your own compliance/storage requirements. `PGPASSWORD` in the
+environment is the same widely-used `pg_dump`/`psql` convention as
+every Postgres client tool; keep the secret scoped to a role with
+read-only backup privileges, not the same credential Wardline itself
+uses to write.
+
 ## Rolling upgrades / mixed versions
 
 A rolling deploy always has a window where an old and a new binary run
