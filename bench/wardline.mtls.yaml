@@ -1,0 +1,20 @@
+# Isolates the mtls (header-based) bootstrap source under load: a
+# terminating mesh/proxy is assumed to have already verified the client
+# cert and set the trusted header below -- this scenario's load
+# generator plays that role, setting the header directly (same shape a
+# real Envoy/Istio sidecar would use with request_headers_to_add).
+listen: ":38406"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.mtls.jsonl"
+
+features:
+  credential_issuance: true
+
+credential:
+  identities_file: "./bench/credentials-mtls.bench.yaml"
+  bootstrap_source: "mtls"
+  mtls:
+    header: "X-Wardline-Verified-Spiffe-Id"
