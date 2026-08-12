@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
+
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -172,6 +179,75 @@ default: deny
 	}
 }
 
+// TestServeEndToEnd_MalformedJSONBodyRejected proves the baseline hot
+// path's parse-error edge case end to end against a real running server:
+// unparsable JSON gets a 400 with a JSON-RPC -32700 parse-error envelope
+// (not a 5xx, not a hang), and the rejection still produces an audit
+// entry (decision "error") rather than silently dropping the request off
+// the audit trail — a swallowed error on this path would be a silent
+// security gap per this repo's Go conventions.
+func TestServeEndToEnd_MalformedJSONBodyRejected(t *testing.T) {
+	listenAddr, stdout, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString("not json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-abc123")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed JSON body, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	var rpcErr struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcErr); err != nil {
+		t.Fatalf("response body is not valid JSON-RPC error envelope: %v (body: %s)", err, body)
+	}
+	if rpcErr.Error.Code != -32700 {
+		t.Fatalf("expected JSON-RPC parse-error code -32700, got %d (body: %s)", rpcErr.Error.Code, body)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if lastLine == "" {
+		t.Fatalf("expected an audit entry for the rejected malformed request, got no audit output: %q", stdout.String())
+	}
+	var entry struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+		t.Fatalf("audit log line is not valid JSON: %v (line: %s)", err, lastLine)
+	}
+	if entry.Decision != "error" {
+		t.Fatalf("expected audit decision %q for the malformed request, got %q (line: %s)", "error", entry.Decision, lastLine)
+	}
+}
+
 // TestServeEndToEnd_ResourcesAndPromptsGatedByPolicy is the widening
 // feature's real end-to-end proof, mirroring the empirical-proof
 // discipline docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md
@@ -289,6 +365,28 @@ func postToolCallWithPath(t *testing.T, listenAddr, identity, tool, path string)
 	return postToolCallBody(t, listenAddr, identity, body)
 }
 
+// postToolCallWithTenant is like postToolCall but also sets
+// X-Wardline-Tenant, for tests exercising per-tenant budget overrides
+// (HeaderIdentity resolves tenant from this header — see
+// internal/features/proxy/adapter/identity.go).
+func postToolCallWithTenant(t *testing.T, listenAddr, identity, tenantName, tool string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	req.Header.Set("X-Wardline-Tenant", tenantName)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return resp
+}
+
 func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
@@ -372,6 +470,67 @@ budget:
 	thirdResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if thirdResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for a call in the next window, got %d (stderr: %s)", thirdResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_BudgetTenantOverrideANDSemantics proves the tenant
+// override is checked *alongside*, not *instead of*, the identity budget —
+// InMemoryLimiter.Allow's doc comment promises "in addition to, not
+// instead of" (internal/features/budget/adapter/inmemory.go), and this is
+// the real-server proof, not just the fake-clock unit test. The global
+// default (100/window) is generous enough that identity alone would never
+// throttle here; only a strict per-tenant override (1/window) can produce
+// the 429 below. A second identity under the *same* tenant proves the
+// override is scoped by tenant, not shared across every identity as a
+// single global bucket. A third identity under an unlisted tenant proves
+// tenants with no override configured fall through to the generous
+// default untouched, per SetTenantLimit's doc comment.
+func TestServeEndToEnd_BudgetTenantOverrideANDSemantics(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-a"
+    tool: "read_file"
+    effect: allow
+  - identity: "agent-b"
+    tool: "read_file"
+    effect: allow
+  - identity: "agent-c"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, `features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 1
+  tenants:
+    acme:
+      requests_per_window: 1
+      window_seconds: 1`)
+
+	firstResp := postToolCallWithTenant(t, listenAddr, "agent-a", "acme", "read_file")
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first acme call within the tenant override, got %d (stderr: %s)", firstResp.StatusCode, stderr.String())
+	}
+
+	secondResp := postToolCallWithTenant(t, listenAddr, "agent-a", "acme", "read_file")
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429: acme's tenant override (1/window) should throttle even though the identity default (100/window) alone would allow it, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+
+	// A different identity under the same tenant shares the tenant
+	// bucket -- the override is per-tenant, not per-identity -- so it's
+	// throttled too even though it has never called before.
+	otherIdentitySameTenant := postToolCallWithTenant(t, listenAddr, "agent-b", "acme", "read_file")
+	if otherIdentitySameTenant.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429: a second identity under the same over-budget tenant should also be throttled by the shared tenant bucket, got %d (stderr: %s)", otherIdentitySameTenant.StatusCode, stderr.String())
+	}
+
+	// A tenant with no override configured falls through to the generous
+	// global default untouched.
+	unoverriddenTenant := postToolCallWithTenant(t, listenAddr, "agent-c", "widgets-inc", "read_file")
+	if unoverriddenTenant.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200: a tenant with no configured override should use the global default, got %d (stderr: %s)", unoverriddenTenant.StatusCode, stderr.String())
 	}
 }
 
@@ -517,6 +676,107 @@ func assertAuditLogHasTraceID(t *testing.T, stdout *safeBuffer) {
 	}
 }
 
+// TestServeEndToEnd_LoginCookieSecureByDefault is the regression test
+// for a real bug the security-review pass caught: main.go used to pass
+// cfg.Dashboard.AllowInsecureSessionCookie straight through to
+// NewLoginHandler's cookieSecure parameter, but the two booleans are
+// semantic opposites (AllowInsecureSessionCookie=true means "omit
+// Secure"; cookieSecure=true means "set Secure") -- un-negated, every
+// default deployment (the flag unset/false, the documented
+// TLS-terminating-ingress posture) shipped its session cookie WITHOUT
+// the Secure attribute, letting a network attacker on the same origin
+// capture it over plain HTTP. Proves both directions through the real
+// binary: the default config sets Secure, and
+// allow_insecure_session_cookie: true omits it.
+func TestServeEndToEnd_LoginCookieSecureByDefault(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: alice
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`, fmt.Sprintf(`features:
+  web_ui: true
+  credential_issuance: true
+credential:
+  identities_file: "%s"`, credentialsPath))
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.PostForm("http://"+addr+"/dashboard/login", url.Values{"secret": {"a-long-random-registration-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on successful login, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == proxyadapter.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("expected a wardline_session cookie in the login response")
+	}
+	if !cookie.Secure {
+		t.Error("expected the session cookie to carry the Secure attribute by default (allow_insecure_session_cookie unset) -- without it, the cookie is sent over plain HTTP too")
+	}
+}
+
+// TestServeEndToEnd_LoginCookieInsecureWhenOptedIn is
+// TestServeEndToEnd_LoginCookieSecureByDefault's other direction: an
+// operator who explicitly sets allow_insecure_session_cookie: true (a
+// genuinely plaintext-HTTP dev/loopback deployment, where a Secure
+// cookie would never even be sent by the browser) gets Secure omitted,
+// not silently defaulted back to secure in a way that would break their
+// setup.
+func TestServeEndToEnd_LoginCookieInsecureWhenOptedIn(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: alice
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`, fmt.Sprintf(`features:
+  web_ui: true
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+dashboard:
+  allow_insecure_session_cookie: true`, credentialsPath))
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.PostForm("http://"+addr+"/dashboard/login", url.Values{"secret": {"a-long-random-registration-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on successful login, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == proxyadapter.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("expected a wardline_session cookie in the login response")
+	}
+	if cookie.Secure {
+		t.Error("expected the session cookie to omit Secure when allow_insecure_session_cookie is true")
+	}
+}
+
 // TestServeEndToEnd_DashboardServesWhenEnabled proves the web_ui feature
 // flag, once on, actually mounts the dashboard in the real binary: the SPA
 // shell is servable and its audit API reflects a real proxied call, not
@@ -611,6 +871,71 @@ default: deny
 	}
 	if strings.Contains(string(body), `id="app"`) {
 		t.Error("dashboard SPA should not be reachable when web_ui is off")
+	}
+}
+
+// TestServeEndToEnd_MetricsServedWhenEnabled proves the prometheus_metrics
+// feature flag, once on, actually mounts GET /metrics in the real binary
+// and that a real proxied call is reflected in it -- not just that the
+// recorder compiles in isolation.
+func TestServeEndToEnd_MetricsServedWhenEnabled(t *testing.T) {
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "features:\n  prometheus_metrics: true\n")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy call failed: %v; stderr=%s", err, stderr.String())
+	}
+	_ = resp.Body.Close()
+
+	metricsResp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
+	defer func() { _ = metricsResp.Body.Close() }()
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics status = %d, want 200 (stderr: %s)", metricsResp.StatusCode, stderr.String())
+	}
+	body, _ := io.ReadAll(metricsResp.Body)
+	if !strings.Contains(string(body), `wardline_proxy_requests_total{decision="allow"} 1`) {
+		t.Errorf("expected the allowed call above reflected in /metrics, got:\n%s", body)
+	}
+	if !strings.Contains(string(body), "go_goroutines") {
+		t.Errorf("expected the Go runtime collector's output in /metrics, got:\n%s", body)
+	}
+}
+
+// TestServeEndToEnd_MetricsNotMountedWhenDisabled proves the inverse of the
+// test above: GET /metrics is a plain 404 (routeOrNotFound's guard),
+// exactly like /scim/v2/* and /federation/summaries when their own flags
+// are off, when prometheus_metrics is off.
+func TestServeEndToEnd_MetricsNotMountedWhenDisabled(t *testing.T) {
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-1"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 when prometheus_metrics is off, got %d (stderr: %s)", resp.StatusCode, stderr.String())
 	}
 }
 
@@ -1473,6 +1798,141 @@ audit:
 	}
 	if gotTrustedHeader != "" {
 		t.Errorf("expected the upstream to never see the trusted mtls header, got %q", gotTrustedHeader)
+	}
+}
+
+// newE2EJWKSServer serves a JWKS containing priv's public key over a real
+// HTTP server (not the fake clock/in-process adapter test —
+// internal/features/credential/adapter/oidc_test.go already covers that
+// level), for the oidc bootstrap source's real-binary end-to-end proof.
+// Mirrors adapter.newTestJWKSServer's shape.
+func newE2EJWKSServer(t *testing.T, priv *rsa.PrivateKey, kid string) *httptest.Server {
+	t.Helper()
+	pub, err := jwk.PublicKeyOf(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.KeyIDKey, kid); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		t.Fatal(err)
+	}
+	set := jwk.NewSet()
+	if err := set.AddKey(pub); err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+}
+
+// signE2EIDToken signs a JWKS-verifiable ID token, expiring in ttl (use a
+// negative ttl to mint an already-expired token for the edge-case test
+// below).
+func signE2EIDToken(t *testing.T, priv *rsa.PrivateKey, kid, issuer, audience, sub, tenantValue string, ttl time.Duration) string {
+	t.Helper()
+	signingKey, err := jwk.Import(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signingKey.Set(jwk.KeyIDKey, kid); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := jwt.NewBuilder().
+		Issuer(issuer).
+		Audience([]string{audience}).
+		Subject(sub).
+		Claim("tenant", tenantValue).
+		IssuedAt(time.Now()).
+		Expiration(time.Now().Add(ttl)).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), signingKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(signed)
+}
+
+// TestServeEndToEnd_OIDCBootstrap proves the oidc bootstrap source end to
+// end against a real running wardline serve: a real HTTP JWKS server
+// stands in for the IdP (no live IdP needed, unlike the comment on
+// e2e_tenant_isolation_test.go's SSO test explains why that one uses
+// SCIM instead) — a valid ID token bootstraps a working bearer token, an
+// expired one is rejected, and a token signed for the wrong audience is
+// rejected too, all as real HTTP responses from the real binary, not
+// unit-level Authenticate() calls (see oidc_test.go for those).
+func TestServeEndToEnd_OIDCBootstrap(t *testing.T) {
+	key, err := rsa.GenerateKey(crand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksSrv := newE2EJWKSServer(t, key, "e2e-key")
+	defer jwksSrv.Close()
+
+	const issuer = "https://idp.e2e-test.example.com/"
+	const audience = "wardline"
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "%s"
+    jwks_uri: "%s"
+    audience: "%s"`, issuer, jwksSrv.URL, audience))
+
+	// Happy path: a valid ID token bootstraps a real bearer token that
+	// proxies an allowed call.
+	validToken := signE2EIDToken(t, key, "e2e-key", issuer, audience, "alice", "acme", time.Hour)
+	tokenResp := postCredentialsToken(t, listenAddr, validToken)
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a valid OIDC ID token, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty bearer token")
+	}
+	allowedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with a bootstrapped bearer token, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// Deny path: wrong audience.
+	wrongAudienceToken := signE2EIDToken(t, key, "e2e-key", issuer, "someone-else", "alice", "acme", time.Hour)
+	wrongAudResp := postCredentialsToken(t, listenAddr, wrongAudienceToken)
+	if wrongAudResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an ID token with the wrong audience, got %d (stderr: %s)", wrongAudResp.StatusCode, stderr.String())
+	}
+
+	// Edge case: expired ID token.
+	expiredToken := signE2EIDToken(t, key, "e2e-key", issuer, audience, "alice", "acme", -time.Hour)
+	expiredResp := postCredentialsToken(t, listenAddr, expiredToken)
+	if expiredResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an expired ID token, got %d (stderr: %s)", expiredResp.StatusCode, stderr.String())
+	}
+
+	// A raw X-Wardline-Identity header alone must still not work, same
+	// regression guard as the other bootstrap sources.
+	legacyHeaderResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if legacyHeaderResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a raw X-Wardline-Identity header with credential_issuance on, got %d", legacyHeaderResp.StatusCode)
 	}
 }
 

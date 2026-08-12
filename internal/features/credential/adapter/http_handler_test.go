@@ -414,6 +414,65 @@ func TestHandleRevoke_UnresolvableTargetTenantRevokesAsWildcard(t *testing.T) {
 	}
 }
 
+// TestHandleRevoke_UnresolvableTargetTenantHonorsExplicitTenant covers the
+// fix for the residual wildcard gap documented on credential-issuance.md's
+// "Known limitations": when h.targetTenant can't resolve a tenant (OIDC
+// bootstrap source, or an ambiguous identity name), a caller that already
+// named the intended tenant in the request body gets a scoped revoke, not
+// a full wildcard across every tenant's copy of that identity.
+func TestHandleRevoke_UnresolvableTargetTenantHonorsExplicitTenant(t *testing.T) {
+	revoker := &recordingRevoker{}
+	refreshStore := adapter.NewInMemoryRefreshStore()
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{}, refreshStore, time.Hour)
+	revocation := usecase.NewRevocationService(revoker, refreshStore)
+	refresh := usecase.NewRefreshService(refreshStore, revoker, fakeHandlerIssuer{}, time.Hour, time.Now)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := adapter.NewHandler(issuance, revocation, refresh, logger, nil, noTargetTenant, "", time.Hour) // e.g. OIDC bootstrap source, no static registry
+
+	body := bytes.NewBufferString(`{"identity":"alice","tenant":"acme"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if revoker.tenant != "acme" || revoker.identity != "alice" {
+		t.Errorf("Revoke called with (%q,%q), want (\"acme\",\"alice\")", revoker.tenant, revoker.identity)
+	}
+}
+
+// TestHandleRevoke_ResolvedTargetTenantIgnoresExplicitTenant covers the
+// other half of the same fix: when h.targetTenant DOES resolve a tenant,
+// the static registry is authoritative -- an explicit (and here,
+// deliberately conflicting) req.Tenant from the client must never
+// override it.
+func TestHandleRevoke_ResolvedTargetTenantIgnoresExplicitTenant(t *testing.T) {
+	revoker := &recordingRevoker{}
+	refreshStore := adapter.NewInMemoryRefreshStore()
+	issuance := usecase.NewIssuanceService(fakeHandlerBootstrapper{}, fakeHandlerIssuer{}, refreshStore, time.Hour)
+	revocation := usecase.NewRevocationService(revoker, refreshStore)
+	refresh := usecase.NewRefreshService(refreshStore, revoker, fakeHandlerIssuer{}, time.Hour, time.Now)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	targetTenant := func(identity string) (string, bool) {
+		if identity == "alice" {
+			return "acme", true
+		}
+		return "", false
+	}
+	h := adapter.NewHandler(issuance, revocation, refresh, logger, nil, targetTenant, "", time.Hour)
+
+	body := bytes.NewBufferString(`{"identity":"alice","tenant":"widgets-inc"}`)
+	req := httptest.NewRequest(http.MethodPost, "/credentials/revoke", body)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+
+	h.HandleRevoke(w, req)
+
+	if revoker.tenant != "acme" {
+		t.Errorf("registry-resolved tenant must win over client-supplied tenant: got %q, want \"acme\"", revoker.tenant)
+	}
+}
+
 func TestHandleToken_MTLSHeaderPresentAndValidReturns200WithToken(t *testing.T) {
 	refreshStore := adapter.NewInMemoryRefreshStore()
 	revoker := &recordingRevoker{}

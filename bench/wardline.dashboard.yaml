@@ -1,0 +1,30 @@
+# Isolates web_ui's dashboard API under CONCURRENT load from multiple
+# distinct endpoints at once, while real proxy traffic is simultaneously
+# generating the audit/anomaly/budget data those endpoints read --
+# budget_enforcement and anomaly_detection are both on so
+# /dashboard/api/budget and /dashboard/api/anomalies have real,
+# continuously-changing data to serve during the run, not an empty
+# baseline.
+listen: ":38412"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.dashboard.jsonl"
+
+features:
+  web_ui: true
+  budget_enforcement: true
+  anomaly_detection: true
+
+budget:
+  requests_per_window: 1000000
+  window_seconds: 60
+
+anomaly:
+  output: "./bench/.out/anomaly.dashboard.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 100.0
+    min_calls: 1000000

@@ -61,6 +61,32 @@ type tenantBaselineStoreIface interface {
 	SaveAll(baselines map[string]OnlineStatSnapshot) error
 }
 
+// churnWindowStore is the narrow interface PostgresChurnWindowStore
+// satisfies -- an atomic add-and-read for one tenant's current
+// identity_churn window total, genuinely shared across replicas.
+// Structurally identical to tenantWindowStore (same underlying
+// mechanics), but a distinct named interface/table: churn counts and
+// tenant_anomaly's call-volume totals are different metrics that must
+// never collide in the same (tenant, window_start) row. nil-able: when
+// nil, checkIdentityChurn scores only this replica's own local total
+// (today's behavior, unchanged).
+type churnWindowStore interface {
+	AddAndGet(tenantName string, windowStart time.Time, delta int) (int, error)
+}
+
+// churnBaselineStoreIface is the narrow interface
+// PostgresChurnBaselineStore satisfies -- per-instance restart
+// persistence for identity_churn's baseline AND its CUSUM accumulator
+// (ChurnBaselineSnapshot, not OnlineStatSnapshot -- the extra Cusum
+// field is churn-specific and would be dead weight on every
+// tenant_anomaly row if the two shared a type). Same "converge by
+// folding the merged total, not by reading each other's rows"
+// non-cross-replica-merge model as tenantBaselineStoreIface.
+type churnBaselineStoreIface interface {
+	LoadAll() (map[string]ChurnBaselineSnapshot, error)
+	SaveAll(baselines map[string]ChurnBaselineSnapshot) error
+}
+
 // Detector implements audit/domain.LiveSink: every published audit entry
 // is run through all enabled heuristics. Publish must never block or
 // error outward -- the same contract every other LiveSink already
@@ -101,6 +127,12 @@ type Detector struct {
 	// NOT share across replicas.
 	tenantWindowStorePg   tenantWindowStore
 	tenantBaselineStorePg tenantBaselineStoreIface
+
+	// churnWindowStorePg/churnBaselineStorePg mirror
+	// tenantWindowStorePg/tenantBaselineStorePg exactly, one layer down
+	// for identity_churn -- see WithChurnStores.
+	churnWindowStorePg   churnWindowStore
+	churnBaselineStorePg churnBaselineStoreIface
 }
 
 func NewDetector(cfg domain.HeuristicConfig, writer domain.Writer, buffer alertSink, blocker blocker, onError func(error), now func() time.Time, store baselineStore) *Detector {
@@ -178,6 +210,54 @@ func (d *Detector) LoadTenantBaselines() error {
 			d.tenantState[tenantName] = ts
 		}
 		ts.rateStat = onlineStat{mean: snap.Mean, m2: snap.M2, count: snap.Count}
+	}
+	return nil
+}
+
+// WithChurnStores wires the two optional Postgres-backed identity_churn
+// stores onto an already-constructed Detector -- a setter, not a third
+// combinatorial constructor, deliberately: NewDetectorWithTenantStores
+// already covers tenant_anomaly's own two stores, and a real deployment
+// may enable postgres_storage + tenant_anomaly + identity_churn all at
+// once, so a `NewDetectorWithTenantAndChurnStores` fourth constructor
+// would only be the first of a combinatorial explosion as more optional
+// stores are added later. Composable with either NewDetector or
+// NewDetectorWithTenantStores; call after construction and before
+// LoadChurnBaselines/StartGC, mirroring NewDetectorWithTenantStores'
+// own call-order contract. Returns d so callers can chain it inline at
+// the construction site.
+func (d *Detector) WithChurnStores(window churnWindowStore, baseline churnBaselineStoreIface) *Detector {
+	d.churnWindowStorePg = window
+	d.churnBaselineStorePg = baseline
+	return d
+}
+
+// LoadChurnBaselines populates each tenant's identity_churn rateStat and
+// CUSUM accumulator from churnBaselineStorePg, if any -- a no-op
+// returning nil when nil. Mirrors LoadTenantBaselines' exact calling
+// convention: called once, synchronously, by the composition root
+// immediately after WithChurnStores and before StartGC begins.
+func (d *Detector) LoadChurnBaselines() error {
+	if d.churnBaselineStorePg == nil {
+		return nil
+	}
+	snapshots, err := d.churnBaselineStorePg.LoadAll()
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.churnState == nil {
+		d.churnState = make(map[string]*churnWindowState)
+	}
+	for tenantName, snap := range snapshots {
+		cs, ok := d.churnState[tenantName]
+		if !ok {
+			cs = &churnWindowState{}
+			d.churnState[tenantName] = cs
+		}
+		cs.rateStat = onlineStat{mean: snap.Mean, m2: snap.M2, count: snap.Count}
+		cs.churnCUSUM = snap.CUSUM
 	}
 	return nil
 }
@@ -532,17 +612,38 @@ func (d *Detector) checkDrift(e auditdomain.Entry, st *identityState) []domain.A
 	return anomalies
 }
 
+// cusumStep runs one CUSUM (cumulative sum) control-chart update:
+//
+//	S_t = max(0, S_{t-1} + z - k); alarms (and resets to 0) when S_t > h
+//
+// Page's 1954 formulation, the standard SPC average-run-length
+// technique this codebase already relies on for drift_detection (see
+// checkDriftFeature) -- factored out here so identity_churn's own CUSUM
+// extension (checkIdentityChurn) shares the exact same, once-verified
+// arithmetic instead of reimplementing it independently. cusum is a
+// pointer into the caller's own persistent accumulator field (reset to
+// 0 in place on alarm, same as checkDriftFeature's own doc comment on
+// why: standard post-alarm CUSUM reset, monitoring restarts for the
+// next drift rather than staying pinned at an ever-growing value).
+func cusumStep(cusum *float64, z, k, h float64) (fired float64, alarmed bool) {
+	*cusum = math.Max(0, *cusum+z-k)
+	if *cusum <= h {
+		return 0, false
+	}
+	fired = *cusum
+	*cusum = 0
+	return fired, true
+}
+
 // checkDriftFeature runs one feature's CUSUM update/alarm/reset cycle --
 // factored out of checkDrift so call_rate and tool_diversity (identical
 // mechanics, different accumulator and z) can't drift apart. cusum is a
 // pointer into the caller's own persistent accumulator field.
 func (d *Detector) checkDriftFeature(e auditdomain.Entry, feature string, cusum *float64, z, h float64) (domain.Anomaly, bool) {
-	*cusum = math.Max(0, *cusum+z-d.cfg.Drift.K)
-	if *cusum <= h {
+	fired, alarmed := cusumStep(cusum, z, d.cfg.Drift.K, h)
+	if !alarmed {
 		return domain.Anomaly{}, false
 	}
-	fired := *cusum
-	*cusum = 0 // post-alarm reset -- see checkDrift's doc comment
 
 	var autoBlockSeconds int
 	if d.cfg.AutoBlock.Enabled && d.blocker != nil {

@@ -1,0 +1,27 @@
+default: deny
+
+rules:
+  # bench-agent is allowed every tool -- the throughput/latency benchmarks
+  # exercise the allow path, which is the hot path in production (a
+  # correctly-configured deployment denies far less traffic than it allows).
+  - identity: bench-agent
+    tool: "*"
+    effect: allow
+
+  # gRPC calls evaluate under the method namespace "grpc" (a blank
+  # method defaults to "tools/call", the HTTP/MCP case), so the rule
+  # above alone never matches a gRPC call -- see grpc-transport.md.
+  - identity: bench-agent
+    method: grpc
+    tool: "*"
+    effect: allow
+
+  # bench-denied-agent has no rule at all, so every call falls through to
+  # "default: deny" -- this is the deny-path benchmark's identity.
+
+  # ha-bench-agent is the HA scenario's own identity (bench/run.sh,
+  # wardline.ha-replica.yaml.tmpl) -- kept distinct from bench-agent so
+  # its budget/audit rows are unambiguous to query and verify against.
+  - identity: ha-bench-agent
+    tool: "*"
+    effect: allow

@@ -9,8 +9,19 @@ import (
 )
 
 // errMissingBearerToken is returned by bearerIdentity.Authenticate when
-// the Authorization header is absent or isn't a "Bearer <token>" value.
+// the Authorization header is absent or isn't a "Bearer <token>" value,
+// and no SessionCookieName cookie is present either.
 var errMissingBearerToken = errors.New("missing or malformed Authorization header")
+
+// SessionCookieName is the httpOnly cookie a browser session (see
+// credentialadapter.LoginHandler) carries its access token in --
+// bearerIdentity.Authenticate reads it as a fallback token source, so
+// a browser that can't attach a custom Authorization header on a plain
+// navigation still authenticates. Exported so LoginHandler (a different
+// package -- it needs access to credentialusecase.IssuanceService,
+// which this package can't import without creating a dependency cycle)
+// sets the exact same cookie name this reads.
+const SessionCookieName = "wardline_session"
 
 // IdentityAuthenticator resolves the caller's identity and tenant for a
 // request, or fails the request outright. HeaderIdentity (today's behavior,
@@ -58,11 +69,26 @@ func NewBearerIdentity(authenticator Authenticator) IdentityAuthenticator {
 	return bearerIdentity{authenticator: authenticator}
 }
 
+// Authenticate tries the Authorization header first -- unchanged for
+// every existing API caller, zero behavior change. Only when that
+// header is absent/malformed does it fall back to SessionCookieName: a
+// browser navigating to /dashboard/ (or a plain HTML form POSTing to
+// Blocked's Unblock/Credentials' Revoke) can't attach a custom
+// Authorization header, but DOES automatically send a cookie the
+// browser already holds -- see credentialadapter.LoginHandler, which
+// sets this cookie to the exact same access token an Authorization
+// header would carry, minted through the exact same
+// IssuanceService.Bootstrap path /credentials/token itself uses. Both
+// paths end at the same authenticator.Authenticate call: a cookie
+// carries no extra trust, only an extra delivery channel.
 func (b bearerIdentity) Authenticate(r *http.Request) (string, string, error) {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, prefix) {
-		return "", "", errMissingBearerToken
+	if token, ok := strings.CutPrefix(header, prefix); ok {
+		return b.authenticator.Authenticate(token)
 	}
-	return b.authenticator.Authenticate(strings.TrimPrefix(header, prefix))
+	if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
+		return b.authenticator.Authenticate(cookie.Value)
+	}
+	return "", "", errMissingBearerToken
 }

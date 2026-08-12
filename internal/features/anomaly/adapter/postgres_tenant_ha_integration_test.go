@@ -9,6 +9,7 @@ import (
 	"github.com/kabirnarang39/wardline/internal/features/anomaly/domain"
 	anomalyusecase "github.com/kabirnarang39/wardline/internal/features/anomaly/usecase"
 	auditdomain "github.com/kabirnarang39/wardline/internal/features/audit/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
 
 // recordingWriterForTest is this file's own writer.Write fake -- the
@@ -42,16 +43,24 @@ func TestTenantAnomalyHA_CoordinatedSpikeSplitAcrossTwoRealReplicas(t *testing.T
 	tenant := fmt.Sprintf("ha-test-tenant-%d", time.Now().UnixNano())
 
 	newReplica := func(instanceID string) (*anomalyusecase.Detector, *recordingWriterForTest) {
-		tws, err := anomalyadapter.NewPostgresTenantWindowStore(dsn, nil)
+		// Each simulated replica gets its own connection pool -- real
+		// replicas would too (pgpool.Open, called once per process in
+		// cmd/wardline/main.go) -- rather than both stores below sharing
+		// one, which would understate how independent replicas actually
+		// behave.
+		db, err := pgpool.Open(dsn, 0)
+		if err != nil {
+			t.Fatalf("pgpool.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		tws, err := anomalyadapter.NewPostgresTenantWindowStore(db, nil)
 		if err != nil {
 			t.Fatalf("NewPostgresTenantWindowStore: %v", err)
 		}
-		t.Cleanup(func() { _ = tws.Close() })
-		tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(dsn, instanceID, nil)
+		tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(db, instanceID, nil)
 		if err != nil {
 			t.Fatalf("NewPostgresTenantBaselineStore: %v", err)
 		}
-		t.Cleanup(func() { _ = tbs.Close() })
 
 		cfg := domain.HeuristicConfig{
 			WindowSeconds: 2,

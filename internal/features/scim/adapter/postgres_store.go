@@ -52,40 +52,22 @@ type PostgresBindingStore struct {
 	logger *slog.Logger
 }
 
-// NewPostgresBindingStore opens a connection pool to dsn, creates the
-// scim_group_bindings table and its member_username index if they don't
-// already exist, and pings the connection -- a bad DSN or unreachable
-// database fails here, at construction time, not on the first
-// provisioning call. Mirrors PostgresRevoker's connection-pool and
-// idempotent-table pattern exactly. logger is optional (nil is valid,
-// same "logger may be nil" convention PostgresRevoker uses) and is used
-// to surface SetGroupMembers/RemoveGroup write failures that would
-// otherwise vanish silently -- see warn.
-func NewPostgresBindingStore(dsn string, logger *slog.Logger) (*PostgresBindingStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), bindingStoreTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresBindingStore creates the scim_group_bindings table and its
+// member_username index on db if they don't already exist. db is expected
+// already open and pinged -- see pgpool.Open, called once in
+// cmd/wardline/main.go and shared across every Postgres-backed feature -- a
+// bad db fails here, at construction time, not on the first provisioning
+// call. logger is optional (nil is valid, same "logger may be nil"
+// convention PostgresRevoker uses) and is used to surface
+// SetGroupMembers/RemoveGroup write failures that would otherwise vanish
+// silently -- see warn.
+func NewPostgresBindingStore(db *sql.DB, logger *slog.Logger) (*PostgresBindingStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), bindingStoreTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createSCIMBindingsTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create scim_group_bindings table: %w", err)
 	}
 	if _, err := db.ExecContext(createCtx, createSCIMBindingsMemberIndexSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create scim_group_bindings member_username index: %w", err)
 	}
 
@@ -188,10 +170,4 @@ func (p *PostgresBindingStore) Bindings(identity string) (cluster []rbacdomain.C
 		return nil, nil
 	}
 	return cluster, scoped
-}
-
-// Close releases the underlying connection pool, draining in-flight
-// connections. Called during Wardline's graceful shutdown.
-func (p *PostgresBindingStore) Close() error {
-	return p.db.Close()
 }

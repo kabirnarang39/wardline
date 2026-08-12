@@ -1,0 +1,15 @@
+# Isolates prometheus_metrics's own overhead under load: identical shape
+# to scenario 1's baseline allow path (same policy, same rate/duration),
+# with prometheus_metrics on -- the only variable that changed from the
+# baseline number is the two counter/histogram writes ObserveRequest does
+# per request, so any meaningful latency delta is metrics-recording cost,
+# not noise from a different scenario shape.
+listen: ":38426"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.metrics.jsonl"
+
+features:
+  prometheus_metrics: true

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -55,7 +56,17 @@ type verifyKey struct {
 // identical kid for an identical key file with no operator-facing
 // identifier to keep in sync.
 type JWTIssuerVerifier struct {
-	privateKey *rsa.PrivateKey
+	// signer is whatever holds the signing private key -- a local
+	// *rsa.PrivateKey (the default, in-process-generated or loaded from
+	// keyPath) or a KMSSigner (credential.kms configured instead of
+	// signing_key_file), both of which satisfy crypto.Signer. Sign is
+	// the ONLY place this distinction matters: everything else (Verify,
+	// JWKS, key rotation) already worked against a public key alone,
+	// unaffected by where the private half actually lives. jwx/v3's jws
+	// package documents crypto.Signer as a first-class key type
+	// specifically for "KMS-backed adapters" -- this is that extension
+	// point, not a workaround.
+	signer     crypto.Signer
 	signingKID string
 	// verifyKeys is every public key accepted for verification, keyed by
 	// kid -- always includes the signing key's own, plus every
@@ -85,10 +96,35 @@ func NewJWTIssuerVerifier(keyPath string, previousKeyPaths []string, tokenTTL ti
 		}
 		signingKey = key
 	}
+	return newJWTIssuerVerifierFromSigner(signingKey, previousKeyPaths, tokenTTL)
+}
 
-	signingKID := publicKeyID(&signingKey.PublicKey)
-	verifyKeys := map[string]*rsa.PublicKey{signingKID: &signingKey.PublicKey}
-	verifyOrder := []verifyKey{{kid: signingKID, public: &signingKey.PublicKey}}
+// NewJWTIssuerVerifierWithSigner builds an issuer/verifier whose signing
+// private key lives entirely behind signer (never in this process's own
+// memory) -- KMSSigner is the shipped implementation, but any
+// crypto.Signer over an RSA key works identically, matching jwx/v3's own
+// documented "crypto.Signer (e.g. KMS-backed adapters)" extension point.
+// previousKeyPaths still accepts local PEM files for verification-only,
+// same rotation-window semantics as NewJWTIssuerVerifier -- a rotation
+// FROM a local key TO a KMS-backed one (or the reverse) works exactly
+// like rotating between two local keys, since Verify never cares where
+// a key's private half lives, only its public half.
+func NewJWTIssuerVerifierWithSigner(signer crypto.Signer, previousKeyPaths []string, tokenTTL time.Duration) (*JWTIssuerVerifier, error) {
+	return newJWTIssuerVerifierFromSigner(signer, previousKeyPaths, tokenTTL)
+}
+
+func newJWTIssuerVerifierFromSigner(signer crypto.Signer, previousKeyPaths []string, tokenTTL time.Duration) (*JWTIssuerVerifier, error) {
+	signingPub, ok := signer.Public().(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("signing key is not an RSA public key (got %T) -- only RS256 is supported", signer.Public())
+	}
+	if bits := signingPub.N.BitLen(); bits < rsaKeyBits {
+		return nil, fmt.Errorf("signing key is %d bits, minimum %d required for RS256 signing", bits, rsaKeyBits)
+	}
+
+	signingKID := publicKeyID(signingPub)
+	verifyKeys := map[string]*rsa.PublicKey{signingKID: signingPub}
+	verifyOrder := []verifyKey{{kid: signingKID, public: signingPub}}
 
 	for _, p := range previousKeyPaths {
 		key, err := loadRSAPrivateKeyFile(p)
@@ -108,7 +144,7 @@ func NewJWTIssuerVerifier(keyPath string, previousKeyPaths []string, tokenTTL ti
 	}
 
 	return &JWTIssuerVerifier{
-		privateKey:  signingKey,
+		signer:      signer,
 		signingKID:  signingKID,
 		verifyKeys:  verifyKeys,
 		verifyOrder: verifyOrder,
@@ -210,7 +246,7 @@ func (j *JWTIssuerVerifier) Issue(identity, tenantName string) (string, error) {
 	if err := hdrs.Set(jws.KeyIDKey, j.signingKID); err != nil {
 		return "", fmt.Errorf("set kid header: %w", err)
 	}
-	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), j.privateKey, jws.WithProtectedHeaders(hdrs)))
+	signed, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), j.signer, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("sign token: %w", err)
 	}

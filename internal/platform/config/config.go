@@ -18,6 +18,18 @@ type AuditConfig struct {
 	Output      string `yaml:"output"`       // "stdout" or a file path
 	PostgresDSN string `yaml:"postgres_dsn"` // only used when features.postgres_storage is true
 
+	// PostgresMaxOpenConns sizes the ONE connection pool shared by every
+	// Postgres-backed feature (audit, revocation, refresh tokens, budget,
+	// job/cost budget, SCIM, anomaly baselines/blocks) -- see
+	// internal/platform/pgpool. Defaults to 25 when unset/zero: replacing
+	// each feature's own independent 10-connection pool with a single
+	// shared one already cuts total connections roughly in half for a
+	// deployment running every Postgres-backed feature, and a shared pool
+	// applies backpressure across every feature coherently rather than
+	// one feature's pool starving while another's sits idle. Tune this
+	// against your Postgres's own max_connections and replica count.
+	PostgresMaxOpenConns int `yaml:"postgres_max_open_conns"`
+
 	// RetentionDays, when > 0, is how many days of audit history
 	// features.log_retention's periodic job keeps before purging older
 	// entries -- 0 (the default) means keep forever, preserving every
@@ -130,11 +142,65 @@ type TracingConfig struct {
 // OIDCConfig configures the OIDC SSO bootstrap adapter. Only validated
 // (and only meaningful) when credential.bootstrap_source is "oidc".
 type OIDCConfig struct {
-	Issuer        string `yaml:"issuer"`
+	Issuer string `yaml:"issuer"`
+	// JWKSURI is optional -- when empty, the bootstrapper resolves it at
+	// startup from issuer's own /.well-known/openid-configuration
+	// discovery document (standard OIDC discovery, RFC-adjacent to the
+	// core spec every major IdP implements). Set explicitly to skip
+	// discovery entirely (an IdP with a non-standard or unreachable
+	// discovery endpoint, or an operator who prefers to pin the value).
 	JWKSURI       string `yaml:"jwks_uri"`
 	Audience      string `yaml:"audience"`
 	IdentityClaim string `yaml:"identity_claim"` // defaults to "sub"
 	TenantClaim   string `yaml:"tenant_claim"`   // defaults to "tenant"
+}
+
+// KMSConfig configures the AWS KMS-backed signing key adapter (the
+// shipped cloud provider this cycle -- see credentialadapter.KMSSigner's
+// own doc comment on why a second provider is a sibling adapter away,
+// not a rewrite). Only meaningful when KeyID is set.
+type KMSConfig struct {
+	// KeyID names the KMS key to sign with -- a key ID, key ARN, alias
+	// name, or alias ARN, anything AWS KMS's own Sign/GetPublicKey APIs
+	// accept as KeyId. Must be an asymmetric key with KeyUsage
+	// SIGN_VERIFY and KeySpec RSA_2048 or larger (RS256's own floor,
+	// enforced by KMSSigner regardless of what AWS itself would allow).
+	KeyID string `yaml:"key_id"`
+	// Region overrides the AWS SDK's own default region resolution
+	// (AWS_REGION env var, shared config file, EC2/ECS metadata) when
+	// set. Credentials are ALWAYS resolved via the SDK's standard
+	// default chain (env vars, shared credentials file, IAM role) --
+	// deliberately no static access-key config field here, matching
+	// this project's existing "an operator's own secret-management
+	// pipeline, not a config file, owns real credentials" posture (see
+	// HA Deployment's KMS note and mTLS/SPIFFE Bootstrap's own
+	// never-invent-a-new-trust-mechanism stance).
+	Region string `yaml:"region"`
+}
+
+// SPIFFEWorkloadConfig configures the OUTBOUND SPIFFE Workload API
+// client (credentialadapter.SPIFFEWorkloadIdentity) -- only meaningful
+// when features.spiffe_workload_identity is on.
+type SPIFFEWorkloadConfig struct {
+	// SocketPath names the Workload API endpoint (typically a Unix
+	// domain socket a local SPIRE agent listens on, e.g.
+	// "unix:///run/spire/sockets/agent.sock"). Empty (the default) uses
+	// the go-spiffe SDK's own SPIFFE_ENDPOINT_SOCKET environment
+	// variable, matching the SPIFFE Workload API spec's own standard
+	// discovery mechanism -- so a deployment that already sets that env
+	// var (the common case in a SPIRE-equipped cluster) needs no config
+	// change at all.
+	SocketPath string `yaml:"socket_path"`
+	// UpstreamPeerID, when set, is the exact SPIFFE ID
+	// (credential.spiffe_workload's outbound mTLS connection to
+	// grpc_upstream) must present -- pinning one expected peer, the
+	// same specificity RBAC/credential's own explicit-over-inferred
+	// posture prefers elsewhere in this codebase. Empty accepts any
+	// SPIFFE-authenticated peer (tlsconfig.AuthorizeAny()) -- a real,
+	// working default (still requires a valid SPIFFE SVID, not "any
+	// certificate"), logged as a Warn at startup so an operator who
+	// meant to pin one peer notices the gap.
+	UpstreamPeerID string `yaml:"upstream_peer_id"`
 }
 
 // MTLSConfig configures the mTLS/SPIFFE bootstrap adapter. Only
@@ -179,6 +245,24 @@ type CredentialConfig struct {
 	// progress state. See README.md "Credential issuance".
 	PreviousSigningKeyFiles []string `yaml:"previous_signing_key_files"`
 
+	// SPIFFEWorkload configures Wardline to fetch its own SPIFFE identity
+	// from a local SPIRE agent's Workload API, for OUTBOUND mutual TLS
+	// (the gRPC upstream dial, when both grpc_transport and
+	// grpc_upstream_tls are also on) -- distinct from BootstrapSource
+	// "mtls" above, which trusts an already-verified SPIFFE ID on
+	// INBOUND requests. See credentialadapter.SPIFFEWorkloadIdentity.
+	SPIFFEWorkload SPIFFEWorkloadConfig `yaml:"spiffe_workload"`
+
+	// KMS configures a cloud-KMS-backed signing key instead of a local
+	// PEM file -- mutually exclusive with SigningKeyFile (validate()
+	// rejects setting both). The signing private key never leaves the
+	// KMS/HSM boundary; PreviousSigningKeyFiles above still works
+	// unchanged for the verification-only rotation window (a KMS key
+	// rotating in, or out, works exactly like rotating between two local
+	// keys, since verification only ever needs a public key). See
+	// credentialadapter.KMSSigner.
+	KMS KMSConfig `yaml:"kms"`
+
 	// BootstrapSource selects which Bootstrapper adapter authenticates a
 	// credential exchange: "presharedsecret" (default, credentials.yaml
 	// via IdentitiesFile), "oidc" (OIDC ID token via OIDC below), or
@@ -186,7 +270,16 @@ type CredentialConfig struct {
 	// below).
 	BootstrapSource string     `yaml:"bootstrap_source"`
 	OIDC            OIDCConfig `yaml:"oidc"`
-	MTLS            MTLSConfig `yaml:"mtls"`
+	// OIDCProviders configures MORE THAN ONE OIDC issuer at once --
+	// mutually exclusive with OIDC above (validate() rejects setting
+	// both). Each entry is independently verified (own JWKS/discovery,
+	// own audience, own identity/tenant claims); an incoming ID token is
+	// routed to the right provider by its own issuer claim -- see
+	// credentialadapter.NewMultiOIDCBootstrapper. Empty (the default)
+	// preserves single-provider OIDC (the OIDC field above) exactly,
+	// zero behavior change for every existing deployment.
+	OIDCProviders []OIDCConfig `yaml:"oidc_providers"`
+	MTLS          MTLSConfig   `yaml:"mtls"`
 
 	// AccessTokenTTLSeconds is how long an issued access-token JWT is
 	// valid for. 0 (the default) uses defaultAccessTokenTTLSeconds
@@ -209,6 +302,28 @@ type CredentialConfig struct {
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
 // meaningful) when the rbac feature flag is on.
+// DashboardConfig configures the web_ui feature's browser-facing login
+// flow. Only meaningful when features.web_ui and
+// features.credential_issuance are both on.
+type DashboardConfig struct {
+	// AllowInsecureSessionCookie, when true, omits the Secure attribute
+	// from the browser login session cookie
+	// (proxyadapter.SessionCookieName) -- required for a genuinely
+	// plaintext-HTTP deployment (local dev, a loopback-only setup),
+	// since a Secure cookie is never sent by the browser over plain
+	// HTTP. Default false (Secure) is correct for the expected
+	// production posture: a TLS-terminating ingress/mesh in front of
+	// Wardline, which never terminates TLS itself (see mTLS/SPIFFE
+	// Bootstrap's own doc comment on that architectural stance) -- the
+	// browser's own connection to that ingress is HTTPS even though
+	// Wardline's own listener behind it is plain HTTP, so this is a
+	// genuine explicit opt-OUT of the safer default, never inferred
+	// from r.TLS (nil in that correct posture too, since TLS terminates
+	// upstream of Wardline) or a client-spoofable header like
+	// X-Forwarded-Proto.
+	AllowInsecureSessionCookie bool `yaml:"allow_insecure_session_cookie"`
+}
+
 type RBACConfig struct {
 	ConfigFile string `yaml:"config_file"`
 }
@@ -286,6 +401,13 @@ type IdentityChurnConfig struct {
 	Enabled          bool    `yaml:"enabled"`
 	RateMultiplier   float64 `yaml:"rate_multiplier"`
 	MinNewIdentities int     `yaml:"min_new_identities"`
+
+	// CUSUMEnabled/K/H mirror DriftConfig's own fields -- see
+	// anomaly/domain.IdentityChurnConfig.CUSUMEnabled's doc comment for
+	// why this is a separate K/H, not a reuse of drift_detection's.
+	CUSUMEnabled bool    `yaml:"cusum_enabled"`
+	K            float64 `yaml:"k"`
+	H            float64 `yaml:"h"`
 }
 
 // AnomalyConfig configures anomaly detection. Only validated (and only
@@ -393,6 +515,7 @@ type Config struct {
 	Tracing         TracingConfig       `yaml:"tracing"`
 	Credential      CredentialConfig    `yaml:"credential"`
 	RBAC            RBACConfig          `yaml:"rbac"`
+	Dashboard       DashboardConfig     `yaml:"dashboard"`
 	Scim            ScimConfig          `yaml:"scim"`
 	Anomaly         AnomalyConfig       `yaml:"anomaly"`
 	Federation      FederationConfig    `yaml:"federation"`
@@ -491,6 +614,11 @@ func (c *Config) validate() error {
 		if c.Audit.PostgresDSN == "" {
 			problems = append(problems, "audit.postgres_dsn must not be empty when features.postgres_storage is true")
 		}
+		if c.Audit.PostgresMaxOpenConns == 0 {
+			c.Audit.PostgresMaxOpenConns = 25
+		} else if c.Audit.PostgresMaxOpenConns < 0 {
+			problems = append(problems, "audit.postgres_max_open_conns must be >= 0")
+		}
 	} else if c.Audit.Output == "" {
 		problems = append(problems, "audit.output must not be empty (or set features.postgres_storage: true and audit.postgres_dsn instead)")
 	}
@@ -582,8 +710,20 @@ func (c *Config) validate() error {
 		}
 	}
 	if c.Features["credential_issuance"] {
-		if c.Credential.IdentitiesFile == "" {
-			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+		// identities_file backs a static identity registry -- required
+		// for presharedsecret (the secret->identity map itself) and mtls
+		// (the spiffe_id->identity map, see LoadMTLSBootstrapper), but
+		// oidc has no static registry to speak of: an identity and its
+		// tenant are learned entirely from the ID token's own claims at
+		// the moment it authenticates (see main.go's oidc bootstrap
+		// branch, which never reads cfg.Credential.IdentitiesFile at
+		// all). Requiring it unconditionally forced every OIDC-only
+		// operator to maintain a dummy, wholly unused identities file.
+		if c.Credential.IdentitiesFile == "" && c.Credential.BootstrapSource != "oidc" {
+			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true (unless credential.bootstrap_source is \"oidc\")")
+		}
+		if c.Credential.KMS.KeyID != "" && c.Credential.SigningKeyFile != "" {
+			problems = append(problems, "credential.kms.key_id and credential.signing_key_file are mutually exclusive -- the signing key lives in exactly one place")
 		}
 		if c.Credential.BootstrapSource == "" {
 			c.Credential.BootstrapSource = "presharedsecret"
@@ -591,14 +731,47 @@ func (c *Config) validate() error {
 			problems = append(problems, fmt.Sprintf(`credential.bootstrap_source must be "presharedsecret", "oidc", or "mtls", got %q`, c.Credential.BootstrapSource))
 		}
 		if c.Credential.BootstrapSource == "oidc" {
-			if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.JWKSURI == "" || c.Credential.OIDC.Audience == "" {
-				problems = append(problems, "credential.oidc.issuer, jwks_uri, and audience must all be set when credential.bootstrap_source is \"oidc\"")
-			}
-			if c.Credential.OIDC.IdentityClaim == "" {
-				c.Credential.OIDC.IdentityClaim = "sub"
-			}
-			if c.Credential.OIDC.TenantClaim == "" {
-				c.Credential.OIDC.TenantClaim = "tenant"
+			oidcSingleSet := c.Credential.OIDC.Issuer != "" || c.Credential.OIDC.Audience != "" || c.Credential.OIDC.JWKSURI != ""
+			if len(c.Credential.OIDCProviders) > 0 {
+				if oidcSingleSet {
+					problems = append(problems, "credential.oidc and credential.oidc_providers are mutually exclusive -- set one or the other, not both")
+				}
+				seenIssuers := make(map[string]bool, len(c.Credential.OIDCProviders))
+				for i := range c.Credential.OIDCProviders {
+					p := &c.Credential.OIDCProviders[i]
+					if p.Issuer == "" || p.Audience == "" {
+						problems = append(problems, fmt.Sprintf("credential.oidc_providers[%d].issuer and audience must both be set", i))
+					}
+					if seenIssuers[p.Issuer] {
+						problems = append(problems, fmt.Sprintf("credential.oidc_providers[%d].issuer %q duplicates an earlier entry -- each provider must have a distinct issuer for routing to be unambiguous", i, p.Issuer))
+					}
+					seenIssuers[p.Issuer] = true
+					// jwks_uri optional per provider, same discovery
+					// fallback as the single-provider oidc block -- see
+					// that field's own comment below.
+					if p.IdentityClaim == "" {
+						p.IdentityClaim = "sub"
+					}
+					if p.TenantClaim == "" {
+						p.TenantClaim = "tenant"
+					}
+				}
+			} else {
+				if c.Credential.OIDC.Issuer == "" || c.Credential.OIDC.Audience == "" {
+					problems = append(problems, "credential.oidc.issuer and audience must both be set when credential.bootstrap_source is \"oidc\" (or use credential.oidc_providers for more than one issuer)")
+				}
+				// jwks_uri is no longer required: when empty, the bootstrapper
+				// resolves it from issuer's own /.well-known/openid-configuration
+				// discovery document at startup (see
+				// credentialadapter.NewOIDCBootstrapper). An operator who
+				// already sets jwks_uri explicitly keeps that exact behavior,
+				// unchanged -- discovery only runs when it's empty.
+				if c.Credential.OIDC.IdentityClaim == "" {
+					c.Credential.OIDC.IdentityClaim = "sub"
+				}
+				if c.Credential.OIDC.TenantClaim == "" {
+					c.Credential.OIDC.TenantClaim = "tenant"
+				}
 			}
 		}
 		if c.Credential.BootstrapSource == "mtls" && c.Credential.MTLS.Header == "" {
@@ -711,6 +884,14 @@ func (c *Config) validate() error {
 			}
 			if c.Anomaly.IdentityChurn.MinNewIdentities <= 0 {
 				problems = append(problems, "anomaly.identity_churn.min_new_identities must be > 0 when anomaly.identity_churn.enabled is true")
+			}
+			if c.Anomaly.IdentityChurn.CUSUMEnabled {
+				if c.Anomaly.IdentityChurn.K <= 0 {
+					problems = append(problems, "anomaly.identity_churn.k must be > 0 when anomaly.identity_churn.cusum_enabled is true")
+				}
+				if c.Anomaly.IdentityChurn.H <= 0 {
+					problems = append(problems, "anomaly.identity_churn.h must be > 0 when anomaly.identity_churn.cusum_enabled is true")
+				}
 			}
 		}
 		if c.Anomaly.GCIntervalSeconds <= 0 {

@@ -1,0 +1,35 @@
+# Template, not a static config: postgres_dsn varies per environment
+# (WARDLINE_TEST_POSTGRES_DSN), so bench/run.sh sed's this into
+# bench/.out/wardline.postgres.yaml before starting wardline (sed, not
+# envsubst -- envsubst isn't installed by default on every dev machine
+# this bench suite might run on, and this repo's other bench configs
+# require no tooling beyond go/vegeta). Isolates
+# postgres_storage under real concurrent load with audit, budget, AND
+# anomaly detection all sharing the ONE pool -- pgPool is the single
+# connection pool behind all three (see cmd/wardline/main.go's own
+# comment on pgPool), so this is the scenario most likely to surface a
+# real contention/pool-exhaustion bug a single-feature Postgres test
+# wouldn't.
+listen: ":38413"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.postgres.yaml"
+
+features:
+  postgres_storage: true
+  budget_enforcement: true
+  anomaly_detection: true
+
+audit:
+  postgres_dsn: "${WARDLINE_TEST_POSTGRES_DSN}"
+
+budget:
+  requests_per_window: 1000000
+  window_seconds: 60
+
+anomaly:
+  output: "./bench/.out/anomaly.postgres.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 100.0
+    min_calls: 1000000

@@ -1,0 +1,28 @@
+# Soak config: a realistic combined production shape (proxy + policy +
+# audit + budget + anomaly), NOT the max-throughput/edge-case configs
+# every other bench/*.yaml isolates a single feature with -- this one
+# runs for 30-60 real minutes at a moderate sustained rate, so its own
+# thresholds stay generous/never-trip (bench/soak.sh is watching for
+# memory/goroutine growth, not testing any ceiling's precision).
+listen: ":38430"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.soak.jsonl"
+
+features:
+  budget_enforcement: true
+  anomaly_detection: true
+
+budget:
+  requests_per_window: 1000000
+  window_seconds: 60
+
+anomaly:
+  output: "./bench/.out/anomaly.soak.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 100.0
+    min_calls: 1000000

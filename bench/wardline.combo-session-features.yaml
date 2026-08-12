@@ -1,0 +1,39 @@
+# Risk-based combination #2: taint_tracking + approval_workflow +
+# job_budget + job_cost_budget all on at once. All four key their state
+# by the SAME (tenant, identity, session) composite (taintKey, jobKey,
+# approval's own grantKey, cost_budget's equivalent) -- the combination
+# most likely for one feature's session-keyed store to interfere with
+# another's under concurrent load for the SAME sessions, not the
+# pairwise/isolated proofs bench/wardline.taint.yaml and
+# bench/wardline.approval.yaml already give each feature alone.
+# Ceilings generous enough neither budget ever triggers here (this
+# combo tests coexistence, not each ceiling's own precision -- that's
+# wardline.jobbudget.yaml/wardline.costbudget.yaml's job) so the
+# read-then-write-then-approve-then-retry cycle bench/sessionload's
+# "approval" mode drives is the only thing that can fail.
+listen: ":38423"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.sessionload.rego"
+policy_backend: opa
+
+audit:
+  output: "./bench/.out/audit.combo-session.jsonl"
+
+features:
+  taint_tracking: true
+  approval_workflow: true
+  job_budget: true
+  job_cost_budget: true
+
+taint:
+  untrusted_sources:
+    - web_fetch
+
+job_budget:
+  requests_per_job: 100000
+
+job_cost_budget:
+  ceiling: 100000
+  tool_costs:
+    web_fetch: 1
+    delete_file: 1

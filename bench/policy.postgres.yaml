@@ -1,0 +1,27 @@
+# Five distinct identities, unlike bench/policy.bench.yaml's single
+# named "bench-agent" -- this scenario deliberately spreads load across
+# several identities (see bench/run.sh's postgres_storage scenario) so
+# budget/anomaly's per-identity Postgres rows aren't all the same one
+# row serializing every request behind a single lock, which would
+# measure Postgres row-lock contention on an artificially hot key, not
+# realistic concurrent load from many agents. Matcher (policy/usecase)
+# has no identity wildcard -- only Tool supports "*" -- so each identity
+# needs its own rule.
+default: deny
+
+rules:
+  - identity: "pg-agent-1"
+    tool: "*"
+    effect: allow
+  - identity: "pg-agent-2"
+    tool: "*"
+    effect: allow
+  - identity: "pg-agent-3"
+    tool: "*"
+    effect: allow
+  - identity: "pg-agent-4"
+    tool: "*"
+    effect: allow
+  - identity: "pg-agent-5"
+    tool: "*"
+    effect: allow

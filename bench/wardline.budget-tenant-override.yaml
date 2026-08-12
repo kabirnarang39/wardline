@@ -1,0 +1,24 @@
+# Isolates the tenant-override AND-semantics path under load: a generous
+# global default (which alone would never throttle at this rate) plus a
+# strict per-tenant override for "acme" -- every request in this scenario
+# carries X-Wardline-Tenant: acme, so the override is what has to hold the
+# line, proving the tenant bucket is actually consulted under real
+# concurrent load, not just in the fake-clock unit test or the
+# single-request e2e proof (TestServeEndToEnd_BudgetTenantOverrideANDSemantics).
+listen: ":38404"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.budget-tenant-override.jsonl"
+
+features:
+  budget_enforcement: true
+
+budget:
+  requests_per_window: 100000
+  window_seconds: 1
+  tenants:
+    acme:
+      requests_per_window: 100
+      window_seconds: 1

@@ -8,12 +8,25 @@ import (
 
 // AnomalySummary is the only thing that ever crosses the federation wire
 // about a local anomaly: a pseudonymized identity fingerprint, which
-// heuristic kind fired, how many times, and over what window. It
-// deliberately carries no tool name, no detail string, and no
+// heuristic kind fired, how many times, over what window, and which
+// tenant. It deliberately carries no tool name, no detail string, and no
 // audit.Entry -- those are dropped before a summary is ever constructed
 // (see usecase.Aggregate), not filtered out later.
+//
+// Tenant is plaintext, not hashed the way Fingerprint is -- tenant names
+// are organizational labels Wardline already treats as plaintext
+// everywhere else (audit entries, RBAC bindings, the dashboard's own
+// tenant-scoped views), not per-identity sensitive the way a raw
+// identity string is. Carrying it lets the dashboard's correlated-alerts
+// view be tenant-scoped like every other view (see
+// rbac.md/RBAC known limitations, which used to document this as a gap)
+// and lets Correlator group sightings per-tenant, so two different
+// tenants' identically-named identities (the same fingerprint, since
+// Fingerprint hashes identity alone) never get folded into one
+// correlated alert.
 type AnomalySummary struct {
 	Fingerprint string
+	Tenant      string
 	Kind        anomalydomain.Kind
 	Count       int
 	WindowStart time.Time

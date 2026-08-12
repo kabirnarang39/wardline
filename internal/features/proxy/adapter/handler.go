@@ -28,6 +28,7 @@ import (
 	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	prdomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/metrics"
 )
 
 // BudgetChecker is the subset of budgetusecase.Checker's behavior Handler
@@ -112,6 +113,15 @@ func writeJSONRPCError(w http.ResponseWriter, status, code int, id json.RawMessa
 // upstream to start responding; MCP tool calls are fast, so 30s is generous.
 const upstreamResponseHeaderTimeout = 30 * time.Second
 
+// upstreamMaxIdleConnsPerHost overrides http.Transport's default of 2.
+// Wardline's whole job is fronting a small number of upstream hosts (often
+// exactly one) under concurrent load from many agents at once -- the
+// default starves that down to 2 pooled connections per host, so anything
+// past trivial concurrency pays a fresh dial+handshake per request instead
+// of reusing a keep-alive connection. 256 gives real headroom without
+// keeping open connections indefinitely (IdleConnTimeout still applies).
+const upstreamMaxIdleConnsPerHost = 256
+
 // maxRequestBodyBytes caps how much of the request body we'll read before
 // any policy check runs; MCP tool-call payloads are small JSON-RPC
 // envelopes, so 1 MiB is generous headroom, not a real limit in practice.
@@ -156,6 +166,14 @@ type Handler struct {
 	// a nil checker skips the per-job cost/token ceiling hard gate entirely
 	// (see ServeHTTP).
 	costBudgetChecker CostBudgetChecker
+
+	// metricsRecorder observes every completed request's decision and
+	// latency. nil-able like autoBlockChecker/jobBudgetChecker/
+	// costBudgetChecker above -- nil (what every existing test in this
+	// package passes) skips recording entirely; main.go passes
+	// metrics.NewDisabled() when features.prometheus_metrics is off and a
+	// real *metrics.PrometheusRecorder when it's on.
+	metricsRecorder metrics.Recorder
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -163,8 +181,8 @@ type Handler struct {
 // don't wire one up (including every existing test in this package) get the
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
-	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil, nil)
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, metricsRecorder metrics.Recorder) *Handler {
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil, nil, metricsRecorder)
 }
 
 // NewHandlerWithApproval is NewHandler plus an ApprovalPort (wired only when
@@ -174,7 +192,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 // JobBudgetChecker (wired only when job_budget is on; nil skips the hard
 // gate entirely), and a CostBudgetChecker (wired only when job_cost_budget
 // is on; nil skips its hard gate entirely).
-func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker, costBudgetChecker CostBudgetChecker) *Handler {
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker, costBudgetChecker CostBudgetChecker, metricsRecorder metrics.Recorder) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -182,6 +200,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 	// ResponseHeaderTimeout is overridden.
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
+	tr.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
 	proxy.Transport = tr
 	return &Handler{
 		decider:          decider,
@@ -199,6 +218,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 		sessionHeader:         sessionHeader,
 		jobBudgetChecker:      jobBudgetChecker,
 		costBudgetChecker:     costBudgetChecker,
+		metricsRecorder:       metricsRecorder,
 	}
 }
 
@@ -556,6 +576,12 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	if sc := span.SpanContext(); sc.IsValid() {
 		traceID = sc.TraceID().String()
 	}
+	// metricsRecorder is nil-able like autoBlockChecker/jobBudgetChecker
+	// above -- every existing test in this package constructs a Handler
+	// without one.
+	if h.metricsRecorder != nil {
+		h.metricsRecorder.ObserveRequest(decision, h.now().Sub(start))
+	}
 	h.record(identity, tenant, tool, decision, reason, traceID, sessionID, start, effect, status)
 }
 
@@ -571,6 +597,26 @@ func (h *Handler) record(identity, tenant, tool, decision, reason, traceID, sess
 func readResponseSignal(resp *http.Response) proxyusecase.EffectSignal {
 	sig := proxyusecase.EffectSignal{ResponseStatus: resp.StatusCode}
 	if resp.Body == nil {
+		return sig
+	}
+	// A streaming response body is never buffered here. MCP's Streamable
+	// HTTP transport (the spec's own 2025-03-26 revision) uses
+	// text/event-stream for progressive results -- a real tool call
+	// trickling small events over its whole (possibly long) duration.
+	// io.ReadAll below blocks until it either fills cap or the reader
+	// returns EOF, and an open SSE stream does neither until the tool
+	// call itself finishes: reading it here, before ReverseProxy starts
+	// copying the body to the client, would stall every byte of a real
+	// streaming response behind that block, defeating the entire reason
+	// a server chose to stream in the first place. The no-op/error
+	// signal isn't extractable from a streaming body without buffering
+	// it anyway, so skipping straight to the unconfirmed default is the
+	// same conservative tradeoff this function already accepts for a
+	// signal that falls past the 8 KiB prefix cap below -- not a special
+	// case invented for this, the existing one just needed to also cover
+	// "never reaches cap or EOF promptly" instead of only "reaches EOF
+	// promptly but the signal is past cap".
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
 		return sig
 	}
 	const cap = 8 << 10 // 8 KiB

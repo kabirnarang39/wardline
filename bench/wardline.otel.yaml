@@ -1,0 +1,20 @@
+# Isolates otel_tracing's own overhead under load: identical shape to
+# scenario 1's baseline allow path (same policy, same rate/duration),
+# with otel_tracing on and pointed at a real OTLP/HTTP exporter round
+# trip (bench/otelcollector, a mock collector standing in the same way
+# bench/httpupstream stands in for a real MCP server) -- the only
+# variable that changed from the baseline number is tracing, so any
+# meaningful latency delta is span-generation/export cost, not noise
+# from a different scenario shape.
+listen: ":38421"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.otel.jsonl"
+
+features:
+  otel_tracing: true
+
+tracing:
+  otlp_endpoint: "localhost:39501"

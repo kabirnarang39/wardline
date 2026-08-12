@@ -28,6 +28,19 @@ globally, across every tenant — the "no tenant means global" convention
 - File-based role/binding management (`rbac.yaml`) is still the only
   static source — SCIM-provisioned bindings (see [SCIM](/features/scim/))
   are additive on top, not a replacement.
+- **The RBAC dashboard view (and its `GET /dashboard/api/rbac`
+  endpoint) lists only `rbac.yaml`'s static bindings.** SCIM-provisioned
+  bindings are fully enforced (a SCIM-derived role grants real
+  permissions on every request, verified end to end) but never appear
+  in this list or in a role's `binding_count`. The gap is structural,
+  not an oversight to patch: `CompositeAuthorizer` (what actually
+  authorizes a request once SCIM is on) only asks its dynamic source
+  "what bindings does *this one identity* have," the lookup shape
+  enforcement needs — it has no "list every binding that currently
+  exists" operation, which is what a display would need instead.
+  Adding that is a real new capability (touching the SCIM binding
+  store's interface and both its in-memory and Postgres
+  implementations), not a rewire.
 - When `credential.bootstrap_source: oidc`, cross-tenant credential-revoke
   scoping (see [SSO](/features/sso/)) falls back to requiring a global
   `ClusterRoleBinding` grant for *every* revoke — the OIDC bootstrapper
@@ -42,13 +55,15 @@ globally, across every tenant — the "no tenant means global" convention
   same as OIDC.
 - Credential revocation is now genuinely `(tenant, identity)`-keyed (see
   [Credential issuance](/features/credential-issuance/)'s known
-  limitations for the residual gap: a revoke whose target tenant cannot
-  be resolved still falls back to a wildcard revoke across every tenant's
-  copy of that identity name).
-- Federation's correlated-alerts view is not tenant-scoped — it
-  correlates on an identity fingerprint computed locally, and making
-  that tenant-aware is a separate, not-yet-scheduled change (federation
-  has no dedicated docs page yet).
+  limitations: a revoke whose target tenant cannot be resolved still
+  defaults to a wildcard revoke across every tenant's copy of that
+  identity name, but a caller who already holds the global grant this
+  path requires can pass an explicit `tenant` to scope it to one tenant
+  instead).
+- Federation's correlated-alerts view is now tenant-scoped, same as
+  every other dashboard view — see [Federation](/features/federation/)'s
+  own known limitations for what's still instance-scoped (each
+  Wardline instance's own `Correlator`, not merged fleet-wide).
 - Does not require `credential_issuance` — composes with whatever
   identity source is active, and is only as strong as whatever
   authenticates that identity.

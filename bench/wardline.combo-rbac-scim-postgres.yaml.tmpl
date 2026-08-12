@@ -1,0 +1,28 @@
+# Risk-based combination #1: rbac + scim + web_ui + postgres_storage
+# all on at once -- the combo most likely to share a resource/lock per
+# the load-testing brief's own example (rbac + scim + federation), sized
+# down to the three that actually interact directly: SCIM provisions
+# RBAC bindings dynamically (CompositeAuthorizer's dynamic lookup path,
+# not the static-file path every other rbac bench scenario exercises),
+# scim.persist_postgres shares the same pool audit/budget/anomaly do,
+# and web_ui's dashboard reads are what RBAC actually gates here.
+# Template: postgres_dsn varies per environment, sed'd in by bench/run.sh.
+listen: ":38422"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+features:
+  rbac: true
+  scim: true
+  web_ui: true
+  postgres_storage: true
+
+audit:
+  postgres_dsn: "${WARDLINE_TEST_POSTGRES_DSN}"
+
+rbac:
+  config_file: "./bench/rbac.combo.yaml"
+
+scim:
+  bearer_token_env: "WARDLINE_BENCH_COMBO_SCIM_TOKEN"
+  persist_postgres: true

@@ -32,6 +32,15 @@ func NewJSONLReader(path string) *JSONLReader {
 }
 
 func (r *JSONLReader) Query(ctx context.Context, from, to time.Time) ([]domain.Anomaly, error) {
+	// Same fix as audit/adapter.JSONLReader.Query, same root cause: every
+	// line's own timestamp round-trips at whole-second precision (see
+	// JSONLWriter), but from/to are full-precision time.Time values --
+	// without truncating both here, an anomaly recorded in the same
+	// wall-clock second as a scheduled-export tick's own time.Now() could
+	// be silently dropped from every export.
+	from = from.Truncate(time.Second)
+	to = to.Truncate(time.Second)
+
 	f, err := os.Open(r.path)
 	if err != nil {
 		return nil, fmt.Errorf("open anomaly file %s: %w", r.path, err)

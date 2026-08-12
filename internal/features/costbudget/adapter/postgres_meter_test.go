@@ -12,6 +12,7 @@ import (
 
 	"github.com/kabirnarang39/wardline/internal/features/costbudget/adapter"
 	"github.com/kabirnarang39/wardline/internal/features/costbudget/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,6 +28,19 @@ func testDSN(t *testing.T) string {
 	return dsn
 }
 
+// openTestPool opens a pool the same way cmd/wardline/main.go does (via
+// pgpool.Open, shared across every Postgres-backed feature in production)
+// -- test callers get the identical Open+Ping+pool-config path real
+// traffic goes through, not a bespoke test-only shortcut.
+func openTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTestPool: %v", err)
+	}
+	return db
+}
+
 func dropCostBudgetTable(t *testing.T, dsn string) {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
@@ -40,13 +54,17 @@ func TestPostgresMeter_AddsAndPersistsAcrossInstances(t *testing.T) {
 	dsn := testDSN(t)
 	dropCostBudgetTable(t, dsn)
 
-	m1, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db1 := openTestPool(t, dsn)
+	defer func() { _ = db1.Close() }()
+	m1, err := adapter.NewPostgresMeter(db1, testLogger)
 	require.NoError(t, err)
 	t1, err := m1.Add("job-1", 30, time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, 30, t1)
 
-	m2, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db2 := openTestPool(t, dsn)
+	defer func() { _ = db2.Close() }()
+	m2, err := adapter.NewPostgresMeter(db2, testLogger)
 	require.NoError(t, err)
 	t2, err := m2.Add("job-1", 20, time.Now())
 	require.NoError(t, err)
@@ -56,7 +74,9 @@ func TestPostgresMeter_AddsAndPersistsAcrossInstances(t *testing.T) {
 func TestPostgresMeter_KeysIndependent(t *testing.T) {
 	dsn := testDSN(t)
 	dropCostBudgetTable(t, dsn)
-	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	m, err := adapter.NewPostgresMeter(db, testLogger)
 	require.NoError(t, err)
 	_, _ = m.Add("job-a", 10, time.Now())
 	total, err := m.Add("job-b", 5, time.Now())
@@ -67,7 +87,9 @@ func TestPostgresMeter_KeysIndependent(t *testing.T) {
 func TestPostgresMeter_CurrentDoesNotAdd(t *testing.T) {
 	dsn := testDSN(t)
 	dropCostBudgetTable(t, dsn)
-	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	m, err := adapter.NewPostgresMeter(db, testLogger)
 	require.NoError(t, err)
 	total, err := m.Current("never-seen", time.Now())
 	require.NoError(t, err)
@@ -81,7 +103,9 @@ func TestPostgresMeter_CurrentDoesNotAdd(t *testing.T) {
 func TestPostgresMeter_ConcurrentAddsAreAtomic(t *testing.T) {
 	dsn := testDSN(t)
 	dropCostBudgetTable(t, dsn)
-	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	m, err := adapter.NewPostgresMeter(db, testLogger)
 	require.NoError(t, err)
 	const n = 20
 	errs := make(chan error, n)
@@ -102,7 +126,9 @@ func TestPostgresMeter_ConcurrentAddsAreAtomic(t *testing.T) {
 func TestPostgresMeter_ListNearCeiling_SortsByTotalDescendingAndLimits(t *testing.T) {
 	dsn := testDSN(t)
 	dropCostBudgetTable(t, dsn)
-	m, err := adapter.NewPostgresMeter(dsn, testLogger)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	m, err := adapter.NewPostgresMeter(db, testLogger)
 	require.NoError(t, err)
 	_, _ = m.Add("low", 1, time.Now())
 	_, _ = m.Add("high", 30, time.Now())

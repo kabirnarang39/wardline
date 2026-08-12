@@ -94,9 +94,11 @@ type CostBudgetSource interface {
 }
 
 // FederationSource is the subset of federation/usecase.CorrelatedAlertBuffer's
-// behavior Handler depends on -- same one-method pattern as AnomalySource.
+// behavior Handler depends on -- same Since(afterID, limit, tenantFilter)
+// shape as AuditSource/AnomalySource, now that correlated alerts carry a
+// Tenant (see federation/domain.AnomalySummary's own doc comment).
 type FederationSource interface {
-	Since(afterID int64, limit int) []federationusecase.CorrelatedAlertEntry
+	Since(afterID int64, limit int, tenantFilter string) []federationusecase.CorrelatedAlertEntry
 }
 
 // BlockedSource is the subset of anomaly/usecase.BlockChecker's behavior
@@ -589,12 +591,13 @@ func (h *Handler) handleFederationCorrelated(w http.ResponseWriter, r *http.Requ
 	}
 	after, limit := pagination(r)
 
-	alerts := h.federation.Since(after, limit)
+	alerts := h.federation.Since(after, limit, h.tenantFilter(r))
 	entries := make([]domain.CorrelatedAlertEntry, 0, len(alerts))
 	for _, a := range alerts {
 		entries = append(entries, domain.CorrelatedAlertEntry{
 			ID:          a.ID,
 			Fingerprint: a.Fingerprint,
+			Tenant:      a.Tenant,
 			Kind:        string(a.Kind),
 			InstanceIDs: a.InstanceIDs,
 			FirstSeen:   a.FirstSeen.UTC().Format("2006-01-02T15:04:05Z07:00"),

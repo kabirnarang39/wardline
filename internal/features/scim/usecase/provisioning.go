@@ -27,17 +27,33 @@ type bindingSink interface {
 // keyed by ID. UserName/DisplayName are each treated as unique (SCIM's
 // own uniqueness constraint) -- CreateUser/CreateGroup reject a
 // duplicate with domain.ErrConflict.
+//
+// userNameToID/groupNameToID are secondary indices existing purely to
+// keep that uniqueness check (and GetUserByName) O(1): without them,
+// CreateUser/CreateGroup linear-scanned the whole users/groups map on
+// EVERY call while holding s.mu, so provisioning cost grew with total
+// resource count and every operation (not just creates) queued behind
+// the same growing scan -- O(n) per call, O(n^2) over a provisioning
+// run, found by SCIM Bulk load-testing (bench/scimload): create
+// throughput visibly degraded as the map grew, not the flat per-op cost
+// every other endpoint in this codebase holds. Kept in lockstep with
+// users/groups by every mutator (Create/Delete) -- there is no
+// mutation path that touches one map without the other.
 type ProvisioningService struct {
-	mu       sync.Mutex
-	users    map[string]domain.User  // by ID
-	groups   map[string]domain.Group // by ID
-	bindings bindingSink
+	mu            sync.Mutex
+	users         map[string]domain.User  // by ID
+	groups        map[string]domain.Group // by ID
+	userNameToID  map[string]string       // userName -> ID
+	groupNameToID map[string]string       // displayName -> ID
+	bindings      bindingSink
 }
 
 func NewProvisioningService() *ProvisioningService {
 	return &ProvisioningService{
-		users:  make(map[string]domain.User),
-		groups: make(map[string]domain.Group),
+		users:         make(map[string]domain.User),
+		groups:        make(map[string]domain.Group),
+		userNameToID:  make(map[string]string),
+		groupNameToID: make(map[string]string),
 	}
 }
 
@@ -55,10 +71,8 @@ func (s *ProvisioningService) SetBindingStore(store bindingSink) {
 func (s *ProvisioningService) CreateUser(userName string, active bool) (domain.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, u := range s.users {
-		if u.UserName == userName {
-			return domain.User{}, domain.ErrConflict
-		}
+	if _, exists := s.userNameToID[userName]; exists {
+		return domain.User{}, domain.ErrConflict
 	}
 	id, err := randomID()
 	if err != nil {
@@ -66,6 +80,7 @@ func (s *ProvisioningService) CreateUser(userName string, active bool) (domain.U
 	}
 	u := domain.User{ID: id, UserName: userName, Active: active}
 	s.users[id] = u
+	s.userNameToID[userName] = id
 	return u, nil
 }
 
@@ -89,12 +104,11 @@ func (s *ProvisioningService) GetUser(id string) (domain.User, error) {
 func (s *ProvisioningService) GetUserByName(userName string) (domain.User, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, u := range s.users {
-		if u.UserName == userName {
-			return u, true
-		}
+	id, ok := s.userNameToID[userName]
+	if !ok {
+		return domain.User{}, false
 	}
-	return domain.User{}, false
+	return s.users[id], true
 }
 
 func (s *ProvisioningService) ListUsers() []domain.User {
@@ -110,10 +124,12 @@ func (s *ProvisioningService) ListUsers() []domain.User {
 func (s *ProvisioningService) DeleteUser(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[id]; !ok {
+	u, ok := s.users[id]
+	if !ok {
 		return domain.ErrNotFound
 	}
 	delete(s.users, id)
+	delete(s.userNameToID, u.UserName)
 	// The deleted user's username may still be sitting in one or more
 	// groups' Members (by ID, which no longer resolves) or -- since
 	// syncBindingLocked pushes by username -- in the BindingStore itself
@@ -145,10 +161,8 @@ func (s *ProvisioningService) PatchUserActive(id string, active bool) error {
 func (s *ProvisioningService) CreateGroup(displayName string, memberUserIDs []string) (domain.Group, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, g := range s.groups {
-		if g.DisplayName == displayName {
-			return domain.Group{}, domain.ErrConflict
-		}
+	if _, exists := s.groupNameToID[displayName]; exists {
+		return domain.Group{}, domain.ErrConflict
 	}
 	id, err := randomID()
 	if err != nil {
@@ -162,6 +176,7 @@ func (s *ProvisioningService) CreateGroup(displayName string, memberUserIDs []st
 	}
 	g := domain.Group{ID: id, DisplayName: displayName, Members: members}
 	s.groups[id] = g
+	s.groupNameToID[displayName] = id
 	s.syncBindingLocked(g)
 	return g, nil
 }
@@ -197,6 +212,7 @@ func (s *ProvisioningService) DeleteGroup(id string) error {
 		s.bindings.RemoveGroup(g.DisplayName)
 	}
 	delete(s.groups, id)
+	delete(s.groupNameToID, g.DisplayName)
 	return nil
 }
 

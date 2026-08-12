@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -67,12 +66,12 @@ func runInferPolicy(logger *slog.Logger, args []string) {
 	}
 	featureFlags := flags.NewStaticProvider(cfg.Features)
 
-	auditReader, jsonlReader, err := newAuditReader(logger, featureFlags, cfg.Audit, "infer-policy")
+	auditReader, jsonlReader, closer, err := newAuditReader(logger, featureFlags, cfg.Audit, "infer-policy")
 	if err != nil {
 		logger.Error("failed to set up audit reader", "error", err)
 		os.Exit(1)
 	}
-	if closer, ok := auditReader.(io.Closer); ok {
+	if closer != nil {
 		defer func() { _ = closer.Close() }()
 	}
 

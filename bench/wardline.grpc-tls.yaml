@@ -1,0 +1,29 @@
+# Isolates grpc_transport's TLS-on path under load: spiffe_workload_identity
+# fetches Wardline's own outbound X.509-SVID from bench/spiffeidp (a
+# minimal Workload API stand-in, see that program's own doc comment),
+# and grpc_upstream_tls presents it as real mutual TLS to the upstream
+# gRPC server (bench/grpcload upstream, started with cert/key/ca so it
+# requires and verifies wardline's presented SVID too).
+listen: ":38409"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.grpc-tls.jsonl"
+
+features:
+  grpc_transport: true
+  spiffe_workload_identity: true
+
+credential:
+  spiffe_workload:
+    # Absolute path, not a repo-relative one: gRPC's unix-target
+    # resolver expects "unix:///absolute/path", and a relative one is
+    # ambiguous depending on wardline's CWD at startup -- see
+    # bench/spiffeidp, which listens on this exact path.
+    socket_path: "unix:///tmp/wardline-bench-spiffe-workload.sock"
+    upstream_peer_id: "spiffe://bench.example.com/upstream"
+
+grpc_listen: ":38410"
+grpc_upstream: "localhost:39403"
+grpc_upstream_tls: true

@@ -1,0 +1,35 @@
+# Template: signing_key_file/shared_secret_file/peers_file paths are
+# generated fresh into bench/.out per run (real RSA keys, not
+# checked-in fixtures), so bench/run.sh sed's this into
+# bench/.out/wardline.federation-a.yaml before starting. Federation
+# instance A -- peers.yaml (generated alongside) names instance B by
+# its fixed bench port.
+listen: ":38415"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.federation-a.jsonl"
+
+features:
+  web_ui: true
+  anomaly_detection: true
+  federation: true
+
+anomaly:
+  output: "./bench/.out/anomaly.federation-a.jsonl"
+  window_seconds: 3
+  rate_spike:
+    enabled: true
+    rate_multiplier: 2.0
+    min_calls: 5
+
+federation:
+  instance_id: "bench-instance-a"
+  peers_file: "${FEDERATION_PEERS_A}"
+  signing_key_file: "${FEDERATION_KEY_A}"
+  shared_secret_file: "${FEDERATION_SHARED_SECRET}"
+  publish_interval_seconds: 1
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600

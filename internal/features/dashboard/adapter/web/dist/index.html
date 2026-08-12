@@ -586,6 +586,25 @@
     </main>
   </div>
 
+  <div id="confirm-modal" class="modal-overlay" hidden>
+    <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-message">
+      <p id="confirm-modal-message"></p>
+      <div class="modal-actions">
+        <button type="button" id="confirm-modal-cancel" class="modal-btn modal-btn-secondary">Cancel</button>
+        <button type="button" id="confirm-modal-confirm" class="modal-btn modal-btn-primary">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="alert-modal" class="modal-overlay" hidden>
+    <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="alert-modal-message">
+      <p id="alert-modal-message"></p>
+      <div class="modal-actions">
+        <button type="button" id="alert-modal-ok" class="modal-btn modal-btn-primary">OK</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

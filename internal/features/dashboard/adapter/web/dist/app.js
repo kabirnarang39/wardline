@@ -4,6 +4,51 @@ import { mountIcons } from './icons.js';
 const POLL_INTERVAL_MS = 2000;
 const MAX_CLIENT_ROWS = 500;
 
+// showConfirm/showAlert replace window.confirm()/window.alert() for every
+// dashboard mutation (Unblock, Revoke, Approve/Deny's failure path) -- a
+// native dialog is the one visibly un-branded moment in an otherwise
+// consistently themed dashboard, and it blocks the whole tab (including
+// any automated tooling driving the page). Both resolve/return once the
+// single shared overlay element is dismissed; only one of either kind is
+// ever open at a time, matching how window.confirm/alert are themselves
+// strictly modal.
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('confirm-modal');
+    document.getElementById('confirm-modal-message').textContent = message;
+    const cancelBtn = document.getElementById('confirm-modal-cancel');
+    const confirmBtn = document.getElementById('confirm-modal-confirm');
+    const cleanup = (result) => {
+      overlay.hidden = true;
+      cancelBtn.removeEventListener('click', onCancel);
+      confirmBtn.removeEventListener('click', onConfirm);
+      resolve(result);
+    };
+    const onCancel = () => cleanup(false);
+    const onConfirm = () => cleanup(true);
+    cancelBtn.addEventListener('click', onCancel);
+    confirmBtn.addEventListener('click', onConfirm);
+    overlay.hidden = false;
+    confirmBtn.focus();
+  });
+}
+
+function showAlert(message) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('alert-modal');
+    document.getElementById('alert-modal-message').textContent = message;
+    const okBtn = document.getElementById('alert-modal-ok');
+    const onOk = () => {
+      overlay.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      resolve();
+    };
+    okBtn.addEventListener('click', onOk);
+    overlay.hidden = false;
+    okBtn.focus();
+  });
+}
+
 // FEATURE_INFO gives the Status view's feature grid a human-readable name +
 // real, accurate one-line description for every flag this build actually
 // supports (see cmd/wardline/main.go's featureFlags.Enabled(...) call
@@ -49,7 +94,12 @@ function pollerFailed(name, err) {
   if (err && err.status === 404) {
     if (!disabledPollers.has(name)) {
       disabledPollers.add(name);
-      console.error(`${name} poll failed (feature not enabled on this server, no further retries):`, err);
+      // console.info, not console.error: this is the expected, permanent
+      // "operator didn't turn the feature on" state (see disabledPollers'
+      // own doc comment above), not something wrong -- logging it as an
+      // error would show up red in devtools next to genuinely actionable
+      // errors for someone debugging something unrelated.
+      console.info(`${name} poll failed (feature not enabled on this server, no further retries):`, err);
     }
     return;
   }
@@ -642,12 +692,12 @@ async function pollBlocked() {
 }
 
 async function confirmUnblock(identity, tenant) {
-  if (!window.confirm(`Unblock "${identity}" in tenant "${tenant}"? This clears the automated block before it expires.`)) {
+  if (!(await showConfirm(`Unblock "${identity}" in tenant "${tenant}"? This clears the automated block before it expires.`))) {
     return;
   }
   const result = await unblockIdentity(identity, tenant);
   if (!result.ok) {
-    window.alert(`Could not unblock: ${result.message}`);
+    await showAlert(`Could not unblock: ${result.message}`);
     return;
   }
   pollBlocked();
@@ -719,7 +769,7 @@ async function pollApprovals() {
 async function decideApprovalAction(id, action) {
   const result = await decideApproval(id, action);
   if (!result.ok) {
-    window.alert(`Could not ${action}: ${result.message}`);
+    await showAlert(`Could not ${action}: ${result.message}`);
     return;
   }
   pollApprovals();
@@ -749,7 +799,7 @@ function renderJobBudget() {
 
   tbody.innerHTML = entries.map((e) => `
     <tr>
-      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td class="key-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
       <td>${escapeHTML(String(e.Count))}</td>
     </tr>
   `).join('');
@@ -789,7 +839,7 @@ function renderCostBudget() {
 
   tbody.innerHTML = entries.map((e) => `
     <tr>
-      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td class="key-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
       <td>${escapeHTML(String(e.Total))}</td>
     </tr>
   `).join('');
@@ -1025,7 +1075,7 @@ function wireCredentials() {
       result.style.color = 'var(--status-critical)';
       return;
     }
-    if (!window.confirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`)) {
+    if (!(await showConfirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`))) {
       return;
     }
     btn.disabled = true;
@@ -1512,6 +1562,25 @@ function formatUptime(totalSeconds) {
   return `${h}h ${m}m ${s}s`;
 }
 
+// VALID_VIEWS mirrors every .nav-item's data-view value in index.html.
+// Kept as an explicit list rather than derived from the DOM at call
+// time so viewFromHash (used before the DOM is guaranteed ready, and
+// on every popstate) never depends on query timing.
+const VALID_VIEWS = [
+  'overview', 'activity', 'anomalies', 'blocked', 'approvals', 'federation',
+  'policy', 'rbac', 'budget', 'job-budget', 'cost-budget', 'credentials',
+  'status', 'reload-log', 'compliance',
+];
+
+// viewFromHash resolves the current #/<view> URL fragment to a valid
+// view name, defaulting to 'overview' for an empty, malformed, or
+// unrecognized fragment -- the same fail-safe-to-a-known-good-state
+// posture every other unrecognized-input path in this dashboard takes.
+function viewFromHash() {
+  const name = location.hash.replace(/^#\/?/, '');
+  return VALID_VIEWS.includes(name) ? name : 'overview';
+}
+
 function switchView(name) {
   document.querySelectorAll('.view').forEach((el) => {
     el.hidden = el.id !== `view-${name}`;
@@ -1607,10 +1676,21 @@ function renderComplianceManifest(m) {
     : '<li>No anomalies in this range.</li>';
 }
 
+// wireNav wires each sidebar button to switch views AND keep the URL's
+// #/<view> fragment in sync (pushState, so browser back/forward moves
+// between views like any other real navigation) -- without this, a
+// bookmarked or shared link to a specific view, or a page refresh,
+// always landed back on Overview regardless of which view the URL
+// fragment named, because nothing ever read or wrote location.hash.
 function wireNav() {
   document.querySelectorAll('.nav-item').forEach((btn) => {
-    btn.addEventListener('click', () => switchView(btn.dataset.view));
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.view;
+      if (location.hash !== `#/${name}`) history.pushState(null, '', `#/${name}`);
+      switchView(name);
+    });
   });
+  window.addEventListener('popstate', () => switchView(viewFromHash()));
 }
 
 function wireFilters() {
@@ -1714,6 +1794,11 @@ function init() {
   wireTopbar();
   wireThemeToggle();
   document.getElementById('needs-review-cta').addEventListener('click', () => switchView('anomalies'));
+  // Restores whatever view a #/<view> URL fragment names (a deep link,
+  // a bookmark, a refresh) -- a no-op for the common empty-hash case,
+  // since index.html's markup already shows Overview by default.
+  const initialView = viewFromHash();
+  if (initialView !== 'overview') switchView(initialView);
   loadStatus();
   pollAudit();
   pollAnomalies();

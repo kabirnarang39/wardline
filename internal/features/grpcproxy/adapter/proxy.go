@@ -99,11 +99,23 @@ func NewProxy(decider PolicyDecider, budget BudgetChecker, autoBlock AutoBlockCh
 // true uses TLS verified against the host's system root pool, with the
 // server name taken from target -- for a private CA, add it to the
 // container's trust store (a mounted CA bundle) rather than passing a
-// custom pool here.
-func DialUpstream(target string, useTLS bool) (*grpc.ClientConn, error) {
+// custom pool here. clientTLSConfig, when non-nil, REPLACES that default
+// system-root-verified config wholesale -- the caller's config decides
+// everything (server verification AND whether Wardline presents its own
+// client certificate). credentialadapter.SPIFFEWorkloadIdentity.
+// ClientTLSConfig is the shipped source of one: real mutual TLS using
+// Wardline's own SPIFFE workload identity, for an upstream that's
+// itself a SPIFFE workload rather than one verified by a plain CA
+// bundle. Ignored when useTLS is false (there is no TLS config to
+// override on a plaintext dial).
+func DialUpstream(target string, useTLS bool, clientTLSConfig *tls.Config) (*grpc.ClientConn, error) {
 	creds := grpc.WithTransportCredentials(insecure.NewCredentials())
 	if useTLS {
-		creds = grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+		tlsCfg := clientTLSConfig
+		if tlsCfg == nil {
+			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	}
 	return grpc.NewClient(target,
 		creds,

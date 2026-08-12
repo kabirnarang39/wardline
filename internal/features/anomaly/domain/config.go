@@ -134,13 +134,38 @@ type TenantAnomalyConfig struct {
 //
 // Detection-only, same reasoning as TenantAnomalyConfig: there is no
 // single identity to auto-block for a churn signal (the whole point is
-// that no single identity's behavior is what's anomalous). In-memory
-// only this cycle -- see the design doc's "scope" section for why HA
-// sharing is a deliberately deferred follow-up, not an oversight.
+// that no single identity's behavior is what's anomalous). Postgres-
+// backed HA sharing (window-total merge + baseline persistence) is
+// available when features.postgres_storage is also on -- see
+// adapter.PostgresChurnWindowStore/PostgresChurnBaselineStore, wired the
+// same way TenantAnomalyConfig's own two stores are.
 type IdentityChurnConfig struct {
 	Enabled          bool
 	RateMultiplier   float64
 	MinNewIdentities int
+
+	// CUSUMEnabled turns on a cumulative-sum control-chart extension over
+	// identity_churn's own per-window totals -- same arithmetic
+	// drift_detection's call_rate/tool_diversity CUSUM already uses
+	// (S_t = max(0, S_{t-1}+z-K); alarms when S_t>H, see cusumStep),
+	// applied here to the tenant-level churn count instead of a
+	// per-identity feature. Closes the slow-trickle gap a plain
+	// per-window RateMultiplier test can't: one new disposable identity
+	// every many windows, individually below MinNewIdentities/
+	// RateMultiplier every single window, but a sustained rate CUSUM
+	// still accumulates toward and eventually crosses H -- see
+	// docs/superpowers/specs/2026-08-12-identity-churn-design.md's "out
+	// of scope" section, which named this exact extension as the
+	// documented next step, not a new mechanism to invent.
+	//
+	// Independent of DriftConfig.Enabled and its own K/H: identity_churn
+	// is a tenant-level signal with no single identity to jitter H
+	// against (DriftConfig.HJitterFraction is meaningless here), so it
+	// gets its own K/H rather than reusing or requiring drift_detection
+	// to be on.
+	CUSUMEnabled bool
+	K            float64
+	H            float64
 }
 
 // HeuristicConfig configures all anomaly-detection heuristics. Each

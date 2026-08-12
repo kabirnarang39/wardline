@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux; only ever served when WARDLINE_DEBUG_PPROF is set -- see maybeStartDebugPprof
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,7 +27,11 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"google.golang.org/grpc"
 	"gopkg.in/yaml.v3"
 
@@ -78,6 +84,8 @@ import (
 	taintusecase "github.com/kabirnarang39/wardline/internal/features/taint/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/metrics"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
 	"github.com/kabirnarang39/wardline/internal/platform/tenant"
@@ -161,10 +169,39 @@ func main() {
 	}
 }
 
+// maybeStartDebugPprof starts a loopback-only net/http/pprof listener
+// when WARDLINE_DEBUG_PPROF names an address (e.g. "127.0.0.1:6060") --
+// an ops/debug utility, not an operator-facing feature, so it's an env
+// var rather than a config.yaml flag (see this repo's "Feature flags"
+// convention: the YAML flag system is for capabilities operators choose
+// to run, not process-internal debug tooling). Off by default; never
+// bind anything but loopback here, this is unauthenticated. Used by
+// bench/soak.sh to sample real heap/goroutine counts during a sustained
+// run rather than guessing from process RSS alone.
+func maybeStartDebugPprof(logger *slog.Logger) {
+	addr := os.Getenv("WARDLINE_DEBUG_PPROF")
+	if addr == "" {
+		return
+	}
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("WARDLINE_DEBUG_PPROF set but failed to listen; continuing without it", "addr", addr, "error", err)
+		return
+	}
+	logger.Warn("debug pprof endpoint enabled (unauthenticated, loopback-only) -- do not set WARDLINE_DEBUG_PPROF in production", "addr", addr)
+	go func() {
+		if err := http.Serve(lis, nil); err != nil { //nolint:gosec // loopback-only debug endpoint, gated behind an explicit env var
+			logger.Error("debug pprof listener exited", "error", err)
+		}
+	}()
+}
+
 func runServe(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "wardline.yaml", "path to config file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
+
+	maybeStartDebugPprof(logger)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -197,7 +234,28 @@ func runServe(logger *slog.Logger, args []string) {
 	jobBudgetEnabled := featureFlags.Enabled("job_budget")
 	jobCostBudgetEnabled := featureFlags.Enabled("job_cost_budget")
 
-	writer, auditCloser := buildAuditSink(logger, featureFlags, cfg.Audit)
+	// pgPool is the ONE connection pool shared by every Postgres-backed
+	// feature below (audit, credential revocation/refresh, budget,
+	// job/cost budget, SCIM, anomaly baselines/blocks/tenant aggregates)
+	// instead of each one opening its own -- see internal/platform/pgpool
+	// and docs-site/content/features/budget-enforcement.md's former
+	// "Known limitations" entry on this. cfg.validate() already requires
+	// cfg.Audit.PostgresDSN to be set whenever postgres_storage is true,
+	// so the only failure mode here is a genuinely bad/unreachable DSN --
+	// fail fast, at startup, same posture every individual adapter used
+	// to have on its own.
+	var pgPool *sql.DB
+	if postgresStorageEnabled {
+		pool, err := pgpool.Open(cfg.Audit.PostgresDSN, cfg.Audit.PostgresMaxOpenConns)
+		if err != nil {
+			logger.Error("failed to open shared postgres connection pool", "error", err)
+			os.Exit(1)
+		}
+		pgPool = pool
+		logger.Info("postgres connection pool opened (shared across every postgres-backed feature)", "max_open_conns", cfg.Audit.PostgresMaxOpenConns)
+	}
+
+	writer := buildAuditSink(logger, featureFlags, cfg.Audit, pgPool)
 
 	// retentionStop/scheduledExportStop are independent of
 	// anomalyDetectionEnabled -- retention purges the audit log even when
@@ -217,25 +275,17 @@ func runServe(logger *slog.Logger, args []string) {
 	// blocker is the auto-block surface passed to the detector, proxy, and
 	// dashboard -- either the in-memory *BlockChecker (with its own GC
 	// ticker) or the Postgres-backed *PostgresBlockStore (shared across HA
-	// replicas, self-reaping in SQL). blockStoreCloser drains the Postgres
-	// pool on shutdown, nil for the in-memory case.
+	// replicas, self-reaping in SQL, backed by pgPool -- shutdown closes
+	// pgPool once, not this store individually).
 	var blocker anomalydomain.Blocker
-	var blockStoreCloser io.Closer
 	var autoBlockGCStop chan struct{}
-	var anomalyBaselineStoreCloser io.Closer
-	var tenantWindowStoreCloser io.Closer
-	var tenantBaselineStoreCloser io.Closer
 	if anomalyDetectionEnabled {
-		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled)
+		as := buildAnomalyStack(logger, cfg, postgresStorageEnabled, pgPool)
 		anomalyDetector = as.detector
 		anomalyBuffer = as.buffer
 		blocker = as.blocker
 		anomalyGCStop = as.gcStop
 		autoBlockGCStop = as.autoBlockGCStop
-		blockStoreCloser = as.blockStoreCloser
-		anomalyBaselineStoreCloser = as.baselineCloser
-		tenantWindowStoreCloser = as.tenantWindowCloser
-		tenantBaselineStoreCloser = as.tenantBaselineCloser
 	}
 
 	// federation requires anomaly_detection (enforced by config.validate()),
@@ -386,7 +436,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if jobBudgetEnabled {
 		jobBudgetCfg := jobbudgetdomain.Config{RequestsPerJob: cfg.JobBudget.RequestsPerJob, SessionWindowSeconds: cfg.JobBudget.SessionWindowSeconds}
 		if postgresStorageEnabled {
-			pm, err := jobbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			pm, err := jobbudgetadapter.NewPostgresMeter(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres job-budget meter", "error", err)
 				os.Exit(1)
@@ -418,7 +468,7 @@ func runServe(logger *slog.Logger, args []string) {
 	var costBudgetMeter costbudgetdomain.Meter
 	if jobCostBudgetEnabled {
 		if postgresStorageEnabled {
-			cm, err := costbudgetadapter.NewPostgresMeter(cfg.Audit.PostgresDSN, logger)
+			cm, err := costbudgetadapter.NewPostgresMeter(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres cost-budget meter", "error", err)
 				os.Exit(1)
@@ -478,9 +528,8 @@ func runServe(logger *slog.Logger, args []string) {
 	// enabled. The Checker no-ops on the flag regardless of which Limiter
 	// backs it, so InMemoryLimiter is the harmless choice when off.
 	var limiter budgetdomain.Limiter
-	var budgetLimiterCloser io.Closer
 	if postgresStorageEnabled && budgetEnforcementEnabled {
-		pl, err := budgetadapter.NewPostgresLimiter(cfg.Audit.PostgresDSN, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
+		pl, err := budgetadapter.NewPostgresLimiter(pgPool, cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second, logger)
 		if err != nil {
 			logger.Error("failed to initialize postgres budget limiter", "error", err)
 			os.Exit(1)
@@ -492,7 +541,6 @@ func runServe(logger *slog.Logger, args []string) {
 			pl.SetToolLimit(toolName, toolCfg.RequestsPerWindow, time.Duration(toolCfg.WindowSeconds)*time.Second)
 		}
 		limiter = pl
-		budgetLimiterCloser = pl
 		logger.Info("budget enforcement backed by postgres (shared across replicas)")
 	} else {
 		il := budgetadapter.NewInMemoryLimiter(cfg.Budget.RequestsPerWindow, time.Duration(cfg.Budget.WindowSeconds)*time.Second)
@@ -518,6 +566,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("failed to initialize tracing", "error", err)
 		os.Exit(1)
 	}
+	metricsRecorder, metricsHandler := buildMetricsRecorder(logger, featureFlags)
 
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
@@ -591,18 +640,14 @@ func runServe(logger *slog.Logger, args []string) {
 	// reference the exact same shape.
 	var scimBindingStore scimDynamicBindingSource
 	var scimHandler http.Handler
-	var bindingStoreCloser io.Closer
 	if scimEnabled {
 		if cfg.Scim.PersistPostgres {
-			pbs, err := scimadapter.NewPostgresBindingStore(cfg.Audit.PostgresDSN, logger)
+			pbs, err := scimadapter.NewPostgresBindingStore(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize scim postgres binding store", "error", err)
 				os.Exit(1)
 			}
 			scimBindingStore = pbs
-			// Registered as a closer so its connection pool is released on
-			// exit -- mirrors oidcCloser below (M2).
-			bindingStoreCloser = pbs
 			logger.Info("scim-provisioned bindings backed by postgres (shared across replicas)")
 		} else {
 			scimBindingStore = scimusecase.NewBindingStore()
@@ -634,6 +679,17 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 
 	rbacReload := newRBACReloadFn(rbacHolder, *configPath, rbacEnabled, scimEnabled, scimBindingStore)
+	// watchedPolicyReload/watchedRBACReload/watchedBudgetReload are what
+	// the config-file watcher (see the config_file_watch block near the
+	// end of runServe) actually calls. Default to the plain closures
+	// just built; if webUIEnabled, they're overridden below to the
+	// SAME wrapped closures reloadCoordinator uses for the manual POST
+	// /dashboard/api/reload/{domain} path (the "policy" one additionally
+	// refreshes policyInfoHolder so the dashboard's Rule editor reflects
+	// an auto-reload too, not just a manually-triggered one) -- one
+	// reload implementation per domain, triggered two ways, never two
+	// implementations.
+	watchedPolicyReload, watchedRBACReload, watchedBudgetReload := policyReload, rbacReload, budgetReload
 	// identityTenantLookup resolves a *target* revoke identity's own
 	// tenant. It's a settable closure for the same reason identityAuth is
 	// handed to newRevokeAuthorizer by pointer below: the bootstrapper
@@ -658,33 +714,48 @@ func runServe(logger *slog.Logger, args []string) {
 
 	var credentialHandler *credentialadapter.Handler
 	var jwksHandler *credentialadapter.JWKSHandler
-	var revokerCloser io.Closer
-	var refreshStoreCloser io.Closer
 	var oidcCloser io.Closer
 	var mtlsHeader string
+	// issuanceForLogin/accessTTLForLogin are hoisted out of the
+	// credentialIssuanceEnabled block below (which declares its own
+	// locally-scoped issuance/accessTokenTTL) so the webUIEnabled
+	// block further down can wire LoginHandler -- the browser-native
+	// dashboard login flow needs the exact same IssuanceService.
+	// Bootstrap path /credentials/token itself uses, not a second one.
+	var issuanceForLogin *credentialusecase.IssuanceService
+	var accessTTLForLogin time.Duration
 	if credentialIssuanceEnabled {
 		var bootstrapper credentialdomain.Bootstrapper
 		switch cfg.Credential.BootstrapSource {
 		case "oidc":
-			oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+			oidcBootstrapper, closer, err := newOIDCBootstrapperFromConfig(cfg.Credential)
 			if err != nil {
 				logger.Error("failed to initialize oidc bootstrapper", "error", err)
 				os.Exit(1)
 			}
 			bootstrapper = oidcBootstrapper
-			// Registered as a closer so its JWKS cache's background refresh
-			// goroutines are shut down on exit -- see OIDCBootstrapper.Close's
-			// doc comment.
-			oidcCloser = oidcBootstrapper
-			// OIDC has no static identity registry to look up an arbitrary
-			// identity's tenant from after the fact -- it only ever learns an
-			// identity's tenant at the moment that identity itself
-			// authenticates. Fail closed: every revoke of any identity now
-			// requires a global ClusterRoleBinding grant. Known limitation,
-			// documented in Task 25's docs update rather than solved
-			// differently here.
+			// Registered as a closer so its JWKS cache(s)' background
+			// refresh goroutines are shut down on exit -- see
+			// OIDCBootstrapper.Close/MultiOIDCBootstrapper.Close's doc
+			// comments.
+			oidcCloser = closer
+			// Neither OIDC bootstrap shape has a static identity registry
+			// to look up an arbitrary identity's tenant from after the
+			// fact -- each only ever learns an identity's tenant at the
+			// moment that identity itself authenticates. Fail closed:
+			// every revoke of any identity now requires a global
+			// ClusterRoleBinding grant. Known limitation, documented in
+			// the docs rather than solved differently here.
 			identityTenantLookup = func(string) (string, bool) { return "", false }
-			logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
+			if len(cfg.Credential.OIDCProviders) > 0 {
+				issuers := make([]string, len(cfg.Credential.OIDCProviders))
+				for i, p := range cfg.Credential.OIDCProviders {
+					issuers[i] = p.Issuer
+				}
+				logger.Info("credential issuance enabled (oidc bootstrap, multi-provider)", "issuers", issuers)
+			} else {
+				logger.Info("credential issuance enabled (oidc bootstrap)", "issuer", cfg.Credential.OIDC.Issuer)
+			}
 		case "mtls":
 			mtlsBootstrapper, err := credentialadapter.LoadMTLSBootstrapper(cfg.Credential.IdentitiesFile)
 			if err != nil {
@@ -707,13 +778,15 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		accessTokenTTL := time.Duration(cfg.Credential.AccessTokenTTLSeconds) * time.Second
 		refreshTokenTTL := time.Duration(cfg.Credential.RefreshTokenTTLSeconds) * time.Second
-		issuerVerifier, err := credentialadapter.NewJWTIssuerVerifier(cfg.Credential.SigningKeyFile, cfg.Credential.PreviousSigningKeyFiles, accessTokenTTL)
+		issuerVerifier, err := newJWTIssuerVerifierFromConfig(context.Background(), cfg.Credential, accessTokenTTL)
 		if err != nil {
 			logger.Error("failed to initialize credential issuer", "error", err)
 			os.Exit(1)
 		}
-		if cfg.Credential.SigningKeyFile == "" {
-			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file to run more than one")
+		if cfg.Credential.KMS.KeyID != "" {
+			logger.Info("credential issuance signing key is backed by aws kms", "key_id", cfg.Credential.KMS.KeyID)
+		} else if cfg.Credential.SigningKeyFile == "" {
+			logger.Warn("credential issuance signing key is generated fresh in-process; safe for exactly one replica -- set credential.signing_key_file or credential.kms.key_id to run more than one")
 		}
 		if len(cfg.Credential.PreviousSigningKeyFiles) > 0 {
 			logger.Info("credential signing-key rotation window active", "previous_keys", len(cfg.Credential.PreviousSigningKeyFiles))
@@ -722,20 +795,18 @@ func runServe(logger *slog.Logger, args []string) {
 		var revoker credentialdomain.Revoker
 		var refreshStore credentialdomain.RefreshStore
 		if postgresStorageEnabled {
-			pr, err := credentialadapter.NewPostgresRevoker(cfg.Audit.PostgresDSN, logger)
+			pr, err := credentialadapter.NewPostgresRevoker(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres revoker", "error", err)
 				os.Exit(1)
 			}
 			revoker = pr
-			revokerCloser = pr
-			prs, err := credentialadapter.NewPostgresRefreshStore(cfg.Audit.PostgresDSN)
+			prs, err := credentialadapter.NewPostgresRefreshStore(pgPool)
 			if err != nil {
 				logger.Error("failed to initialize postgres refresh store", "error", err)
 				os.Exit(1)
 			}
 			refreshStore = prs
-			refreshStoreCloser = prs
 			logger.Info("credential revocation and refresh tokens backed by postgres (shared across replicas)")
 		} else {
 			revoker = credentialadapter.NewRevocationList()
@@ -744,6 +815,7 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier, refreshStore, refreshTokenTTL)
+		issuanceForLogin, accessTTLForLogin = issuance, accessTokenTTL
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker, refreshStore)
 		refresh := credentialusecase.NewRefreshService(refreshStore, revoker, issuerVerifier, refreshTokenTTL, time.Now)
@@ -812,7 +884,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if costBudgetChecker != nil {
 		costBudgetPort = costBudgetChecker
 	}
-	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort)
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort, metricsRecorder)
 
 	startedAt := time.Now()
 
@@ -947,6 +1019,9 @@ func runServe(logger *slog.Logger, args []string) {
 				reloadBuffer.Add(result)
 			},
 		}
+		watchedPolicyReload = reloadCoordinator.Reloaders["policy"]
+		watchedRBACReload = reloadCoordinator.Reloaders["rbac"]
+		watchedBudgetReload = reloadCoordinator.Reloaders["budget"]
 
 		// reloadAuth gates POST /dashboard/api/reload/{domain} the same way
 		// unblockAuthorizer just above gates DELETE
@@ -1072,12 +1147,69 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
+		// auditSource backs the dashboard's live-audit view.
+		// ringBuffer (in-memory, this replica's own traffic only) is the
+		// default; when postgres_storage is also on and the audit
+		// writer is genuinely a *auditadapter.PostgresWriter (i.e.
+		// buildAuditSink actually picked the postgres path, not just
+		// the flag being on), swap in the Postgres-backed source
+		// instead -- every replica writes into the SAME audit_entries
+		// table, so any replica's dashboard now shows the whole
+		// fleet's live traffic, not just its own. Closes the
+		// cluster-wide live-audit-aggregation gap web-dashboard.md's
+		// "Known limitations" documents.
+		var auditSource dashboardadapter.AuditSource = ringBuffer
+		if pw, ok := writer.(*auditadapter.PostgresWriter); ok {
+			auditSource = postgresAuditSourceFunc(func(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry {
+				rows, err := pw.Since(afterID, limit, tenantFilter)
+				if err != nil {
+					logger.Warn("dashboard: live audit query failed, returning empty (client will retry)", "error", err)
+					return nil
+				}
+				out := make([]dashboarddomain.LiveEntry, len(rows))
+				for i, r := range rows {
+					out[i] = dashboarddomain.LiveEntry{
+						ID: r.ID, Timestamp: r.Timestamp, Identity: r.Identity, Tenant: r.Tenant,
+						Tool: r.Tool, Decision: r.Decision, LatencyMS: r.LatencyMS, Reason: r.Reason, TraceID: r.TraceID,
+					}
+				}
+				return out
+			})
+			logger.Info("dashboard live audit view backed by postgres (cluster-wide, not per-replica)")
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(auditSource, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
+
+		// Browser-native login: only meaningful when there's an
+		// IssuanceService to exchange a secret/ID-token for an access
+		// token in the first place. Deliberately mounted OUTSIDE
+		// dashboardRoute's own rbacEnabled RequirePermission wrap above
+		// -- a caller with no session yet must be able to reach the
+		// login form itself, or rbac's own gate would make logging in
+		// impossible.
+		if issuanceForLogin != nil {
+			// Negated: AllowInsecureSessionCookie=true means "omit
+			// Secure" (an explicit opt-out for plaintext-HTTP dev/
+			// loopback setups), but NewLoginHandler's cookieSecure
+			// means the opposite -- true SETS Secure. Passing the
+			// config value straight through (as this used to) silently
+			// inverted the default: every out-of-the-box deployment
+			// (AllowInsecureSessionCookie unset/false, the documented
+			// TLS-terminating-ingress posture) shipped the session
+			// cookie WITHOUT Secure, and an operator who explicitly
+			// opted into insecure HTTP got Secure set instead, which
+			// silently breaks their own setup (browsers never send a
+			// Secure cookie over plain HTTP).
+			loginHandler := credentialadapter.NewLoginHandler(issuanceForLogin, accessTTLForLogin, !cfg.Dashboard.AllowInsecureSessionCookie)
+			extraRoutes["/dashboard/login"] = http.HandlerFunc(loginHandler.HandleLogin)
+			extraRoutes["/dashboard/logout"] = http.HandlerFunc(loginHandler.HandleLogout)
+			logger.Info("dashboard browser login enabled", "path", "/dashboard/login")
+		}
 	}
 	// Registered unconditionally, unlike /dashboard/ above -- mirrors
 	// handleAnomalies/handleFederationCorrelated/handleBlocked's nil-source
@@ -1132,6 +1264,11 @@ func runServe(logger *slog.Logger, args []string) {
 	// operator opts into with a flag.
 	extraRoutes["/healthz"] = healthHandler
 	extraRoutes["/readyz"] = healthHandler
+	// Gated on prometheus_metrics, unlike /healthz and /readyz above --
+	// metricsHandler is nil when the flag is off, but routeOrNotFound never
+	// invokes it in that case (returns 404), same guard as /scim/v2/* and
+	// /federation/summaries.
+	extraRoutes["/metrics"] = routeOrNotFound(featureFlags.Enabled("prometheus_metrics"), metricsHandler)
 	// Also unconditional, and deliberately independent of webUIEnabled:
 	// browsers request GET /favicon.ico from the origin root automatically
 	// on every page load, dashboard or not. Without a route registered
@@ -1173,6 +1310,8 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 	}
 
+	configWatchStop := maybeStartConfigFileWatcher(logger, featureFlags, *configPath, cfg, watchedPolicyReload, watchedRBACReload, watchedBudgetReload)
+
 	// Startup security posture: the proxy fails closed on policy, but by
 	// default identity is trusted from the X-Wardline-Identity header
 	// (spoofable) and the dashboard's read views are unauthenticated. Warn
@@ -1207,10 +1346,51 @@ func runServe(logger *slog.Logger, args []string) {
 	// transports share one policy engine, one budget, and one audit trail. A
 	// fatal Serve error shares the HTTP path's serveErr channel; graceful
 	// shutdown GracefulStops it alongside srv.Shutdown below.
+	// spiffeWorkloadIdentity is Wardline's own SPIFFE identity, fetched
+	// (and continuously auto-rotated) from a local SPIRE agent's
+	// Workload API -- nil unless features.spiffe_workload_identity is
+	// on. Built here, ahead of the gRPC transport block below, since
+	// grpc_upstream_tls is (for now) its only real-instance-touching
+	// consumer, but the identity itself is deliberately not scoped
+	// INSIDE that block: a future outbound consumer (federation's own
+	// peer HTTP client, say) can reuse the exact same identity without
+	// this feature flag caring which consumers exist yet.
+	var spiffeWorkloadIdentity *credentialadapter.SPIFFEWorkloadIdentity
+	if featureFlags.Enabled("spiffe_workload_identity") {
+		identity, err := credentialadapter.NewSPIFFEWorkloadIdentity(context.Background(), cfg.Credential.SPIFFEWorkload.SocketPath)
+		if err != nil {
+			logger.Error("failed to fetch spiffe workload identity", "error", err)
+			os.Exit(1)
+		}
+		spiffeWorkloadIdentity = identity
+		id, err := identity.ID()
+		if err != nil {
+			logger.Warn("spiffe workload identity fetched but its own SPIFFE ID could not be read", "error", err)
+		} else {
+			logger.Info("spiffe workload identity enabled", "spiffe_id", id.String())
+		}
+	}
+
 	var grpcServer *grpc.Server
 	var grpcUpstreamConn *grpc.ClientConn
 	if featureFlags.Enabled("grpc_transport") {
-		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream, cfg.GRPCUpstreamTLS)
+		var clientTLSConfig *tls.Config
+		if spiffeWorkloadIdentity != nil && cfg.GRPCUpstreamTLS {
+			authorizer := tlsconfig.AuthorizeAny()
+			if cfg.Credential.SPIFFEWorkload.UpstreamPeerID != "" {
+				peerID, err := spiffeid.FromString(cfg.Credential.SPIFFEWorkload.UpstreamPeerID)
+				if err != nil {
+					logger.Error("invalid credential.spiffe_workload.upstream_peer_id", "error", err)
+					os.Exit(1)
+				}
+				authorizer = tlsconfig.AuthorizeID(peerID)
+			} else {
+				logger.Warn("credential.spiffe_workload.upstream_peer_id is not set; the gRPC upstream mTLS connection accepts any SPIFFE-authenticated peer, not one pinned exact identity")
+			}
+			clientTLSConfig = spiffeWorkloadIdentity.ClientTLSConfig(authorizer)
+			logger.Info("grpc upstream dial presenting spiffe workload identity for mutual tls")
+		}
+		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream, cfg.GRPCUpstreamTLS, clientTLSConfig)
 		if err != nil {
 			logger.Error("gRPC upstream dial failed", "error", err, "upstream", cfg.GRPCUpstream)
 			os.Exit(1)
@@ -1240,54 +1420,20 @@ func runServe(logger *slog.Logger, args []string) {
 				logger.Error("tracing shutdown failed", "error", err)
 			}
 			tracingCancel()
-			if auditCloser != nil {
-				if err := auditCloser.Close(); err != nil {
-					logger.Error("audit writer shutdown failed", "error", err)
-				}
-			}
-			if revokerCloser != nil {
-				if err := revokerCloser.Close(); err != nil {
-					logger.Error("revoker shutdown failed", "error", err)
-				}
-			}
-			if refreshStoreCloser != nil {
-				if err := refreshStoreCloser.Close(); err != nil {
-					logger.Error("refresh store shutdown failed", "error", err)
-				}
-			}
-			if budgetLimiterCloser != nil {
-				if err := budgetLimiterCloser.Close(); err != nil {
-					logger.Error("budget limiter shutdown failed", "error", err)
-				}
-			}
-			if anomalyBaselineStoreCloser != nil {
-				if err := anomalyBaselineStoreCloser.Close(); err != nil {
-					logger.Error("anomaly baseline store shutdown failed", "error", err)
-				}
-			}
-			if tenantWindowStoreCloser != nil {
-				if err := tenantWindowStoreCloser.Close(); err != nil {
-					logger.Error("tenant anomaly window store shutdown failed", "error", err)
-				}
-			}
-			if tenantBaselineStoreCloser != nil {
-				if err := tenantBaselineStoreCloser.Close(); err != nil {
-					logger.Error("tenant anomaly baseline store shutdown failed", "error", err)
-				}
-			}
-			if blockStoreCloser != nil {
-				if err := blockStoreCloser.Close(); err != nil {
-					logger.Error("anomaly block store shutdown failed", "error", err)
+			// pgPool is the ONE pool behind audit, credential revocation/
+			// refresh, budget, job/cost budget, SCIM, and anomaly
+			// baselines/blocks/tenant aggregates (whichever of those are
+			// on) -- closing it once here replaces the eight-plus
+			// individual per-feature closer calls this used to be, one
+			// per Postgres-backed adapter's own now-removed Close method.
+			if pgPool != nil {
+				if err := pgPool.Close(); err != nil {
+					logger.Error("shared postgres pool shutdown failed", "error", err)
 				}
 			}
 			if oidcCloser != nil {
 				if err := oidcCloser.Close(); err != nil {
 					logger.Error("oidc bootstrapper shutdown failed", "error", err)
-				}
-			}
-			if bindingStoreCloser != nil {
-				if err := bindingStoreCloser.Close(); err != nil {
-					logger.Error("scim binding store shutdown failed", "error", err)
 				}
 			}
 			if healthDB != nil {
@@ -1312,6 +1458,14 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 			if federationGCStop != nil {
 				close(federationGCStop)
+			}
+			if configWatchStop != nil {
+				close(configWatchStop)
+			}
+			if spiffeWorkloadIdentity != nil {
+				if err := spiffeWorkloadIdentity.Close(); err != nil {
+					logger.Error("spiffe workload identity shutdown failed", "error", err)
+				}
 			}
 			os.Exit(1)
 		}
@@ -1368,39 +1522,18 @@ func runServe(logger *slog.Logger, args []string) {
 	if err := tracingProvider.Shutdown(tracingShutdownCtx); err != nil {
 		logger.Error("tracing shutdown failed", "error", err)
 	}
-	if auditCloser != nil {
-		if err := auditCloser.Close(); err != nil {
-			logger.Error("audit writer shutdown failed", "error", err)
-		}
-	}
-	if revokerCloser != nil {
-		if err := revokerCloser.Close(); err != nil {
-			logger.Error("revoker shutdown failed", "error", err)
-		}
-	}
-	if refreshStoreCloser != nil {
-		if err := refreshStoreCloser.Close(); err != nil {
-			logger.Error("refresh store shutdown failed", "error", err)
-		}
-	}
-	if budgetLimiterCloser != nil {
-		if err := budgetLimiterCloser.Close(); err != nil {
-			logger.Error("budget limiter shutdown failed", "error", err)
-		}
-	}
-	if anomalyBaselineStoreCloser != nil {
-		if err := anomalyBaselineStoreCloser.Close(); err != nil {
-			logger.Error("anomaly baseline store shutdown failed", "error", err)
+	// pgPool is the ONE pool behind audit, credential revocation/refresh,
+	// budget, job/cost budget, SCIM, and anomaly baselines/blocks/tenant
+	// aggregates (whichever of those are on) -- closing it once here
+	// replaces the individual per-feature closer calls this used to be.
+	if pgPool != nil {
+		if err := pgPool.Close(); err != nil {
+			logger.Error("shared postgres pool shutdown failed", "error", err)
 		}
 	}
 	if oidcCloser != nil {
 		if err := oidcCloser.Close(); err != nil {
 			logger.Error("oidc bootstrapper shutdown failed", "error", err)
-		}
-	}
-	if bindingStoreCloser != nil {
-		if err := bindingStoreCloser.Close(); err != nil {
-			logger.Error("scim binding store shutdown failed", "error", err)
 		}
 	}
 	if healthDB != nil {
@@ -1426,6 +1559,14 @@ func runServe(logger *slog.Logger, args []string) {
 	if federationGCStop != nil {
 		close(federationGCStop)
 	}
+	if configWatchStop != nil {
+		close(configWatchStop)
+	}
+	if spiffeWorkloadIdentity != nil {
+		if err := spiffeWorkloadIdentity.Close(); err != nil {
+			logger.Error("spiffe workload identity shutdown failed", "error", err)
+		}
+	}
 	if grpcUpstreamConn != nil {
 		if err := grpcUpstreamConn.Close(); err != nil {
 			logger.Error("gRPC upstream connection shutdown failed", "error", err)
@@ -1442,6 +1583,29 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	}
 	logger.Info("otel tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "service_name", cfg.ServiceName)
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
+}
+
+// buildMetricsRecorder returns a disabled (no-op) Recorder unless
+// prometheus_metrics is on, in which case it builds a real
+// *metrics.PrometheusRecorder and its GET /metrics handler is registered by
+// the caller (see runServe's extraRoutes).
+func buildMetricsRecorder(logger *slog.Logger, featureFlags flags.Provider) (metrics.Recorder, http.Handler) {
+	if !featureFlags.Enabled("prometheus_metrics") {
+		return metrics.NewDisabled(), nil
+	}
+	logger.Info("prometheus metrics enabled", "path", "/metrics")
+	rec := metrics.NewPrometheus()
+	return rec, rec.Handler()
+}
+
+// postgresAuditSourceFunc adapts a plain function to
+// dashboardadapter.AuditSource -- the closure built in runServe (see
+// auditSource's own wiring comment) doesn't need its own named type
+// there, matching revokeAuthorizerFunc's exact pattern just below.
+type postgresAuditSourceFunc func(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry
+
+func (f postgresAuditSourceFunc) Since(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry {
+	return f(afterID, limit, tenantFilter)
 }
 
 // revokeAuthorizerFunc adapts a plain function to credentialadapter.RevokeAuthorizer,
@@ -2065,15 +2229,24 @@ func runValidateConfig(logger *slog.Logger, args []string) {
 			os.Exit(1)
 		}
 	}
+	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.KMS.KeyID != "" {
+		// Soft warning, not os.Exit(1): AWS KMS may be transiently
+		// unreachable (or credentials unavailable) from wherever
+		// validate-config runs -- same reasoning as the OIDC block just
+		// below, which this mirrors.
+		if _, err := newJWTIssuerVerifierFromConfig(context.Background(), cfg.Credential, time.Duration(cfg.Credential.AccessTokenTTLSeconds)*time.Second); err != nil {
+			logger.Warn("failed to initialize kms signer (kms may be unreachable, or aws credentials unavailable here); not treated as a hard failure", "error", err)
+		}
+	}
 	if flags.NewStaticProvider(cfg.Features).Enabled("credential_issuance") && cfg.Credential.BootstrapSource == "oidc" {
 		// Soft warning, not os.Exit(1): the IdP's JWKS endpoint may be
 		// transiently unreachable from wherever validate-config runs (e.g. a
 		// CI pipeline outside the IdP's network) without the rest of the
 		// oidc config block being wrong -- see design doc "CLI".
-		oidcBootstrapper, err := credentialadapter.NewOIDCBootstrapper(cfg.Credential.OIDC.Issuer, cfg.Credential.OIDC.JWKSURI, cfg.Credential.OIDC.Audience, cfg.Credential.OIDC.IdentityClaim, cfg.Credential.OIDC.TenantClaim)
+		_, closer, err := newOIDCBootstrapperFromConfig(cfg.Credential)
 		if err != nil {
-			logger.Warn("failed to initialize oidc bootstrapper (jwks endpoint may be unreachable); not treated as a hard failure", "error", err)
-		} else if err := oidcBootstrapper.Close(); err != nil {
+			logger.Warn("failed to initialize oidc bootstrapper (jwks/discovery endpoint may be unreachable); not treated as a hard failure", "error", err)
+		} else if err := closer.Close(); err != nil {
 			logger.Warn("failed to shut down oidc bootstrapper after validation", "error", err)
 		}
 	}
@@ -2255,11 +2428,11 @@ func readRedactedIdentities(path string) ([]compliancedomain.RedactedIdentity, e
 // buildAndWriteEvidenceBundle's caller still needs those for
 // WriteBundle, while the dashboard querier only needs the Manifest.
 func queryComplianceManifest(logger *slog.Logger, cfg *config.Config, featureFlags flags.Provider, from, to time.Time) (compliancedomain.Manifest, []auditdomain.Entry, []anomalydomain.Anomaly, error) {
-	auditReader, jsonlReader, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
+	auditReader, jsonlReader, closer, err := newAuditReader(logger, featureFlags, cfg.Audit, "export-evidence")
 	if err != nil {
 		return compliancedomain.Manifest{}, nil, nil, fmt.Errorf("set up audit reader: %w", err)
 	}
-	if closer, ok := auditReader.(io.Closer); ok {
+	if closer != nil {
 		defer func() { _ = closer.Close() }()
 	}
 
@@ -2530,6 +2703,43 @@ func maybeStartRetention(logger *slog.Logger, featureFlags flags.Provider, cfg *
 	return stop
 }
 
+// maybeStartConfigFileWatcher starts the config_file_watch fsnotify
+// watcher (internal/platform/reload.WatchFiles) when that flag is on,
+// returning its stop channel (nil when the flag is off). Watches
+// configPath (policy/budget/rbac settings embedded directly in the main
+// config file all live here) plus cfg.PolicyFile and
+// cfg.RBAC.ConfigFile (each a separate file the main config only
+// NAMES) -- editing any of the three now applies automatically, closing
+// the gap documented on web-dashboard.md's "Known limitations": no
+// filesystem watcher, an operator had to POST
+// /dashboard/api/reload/{domain} or restart. rbacReload is a genuine
+// no-op when rbac itself is off (see newRBACReloadFn), so watching
+// cfg.RBAC.ConfigFile even when rbacEnabled is false is harmless, not
+// wrong -- simpler than threading that flag through here to skip it.
+func maybeStartConfigFileWatcher(logger *slog.Logger, featureFlags flags.Provider, configPath string, cfg *config.Config, policyReload, rbacReload, budgetReload func() error) chan struct{} {
+	if !featureFlags.Enabled("config_file_watch") {
+		return nil
+	}
+	targets := []reload.WatchTarget{
+		{Path: configPath, Name: "policy", Fn: policyReload},
+		{Path: configPath, Name: "rbac", Fn: rbacReload},
+		{Path: configPath, Name: "budget", Fn: budgetReload},
+	}
+	if cfg.PolicyFile != "" && cfg.PolicyFile != configPath {
+		targets = append(targets, reload.WatchTarget{Path: cfg.PolicyFile, Name: "policy", Fn: policyReload})
+	}
+	if cfg.RBAC.ConfigFile != "" && cfg.RBAC.ConfigFile != configPath {
+		targets = append(targets, reload.WatchTarget{Path: cfg.RBAC.ConfigFile, Name: "rbac", Fn: rbacReload})
+	}
+	stop := make(chan struct{})
+	if err := reload.WatchFiles(logger, targets, stop); err != nil {
+		logger.Error("failed to start config file watcher", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("config file watcher enabled", "paths", len(targets))
+	return stop
+}
+
 // maybeStartScheduledExport starts the periodic compliance-evidence export
 // job when the compliance_scheduled_export flag is on, returning its stop
 // channel (nil when the flag is off). Fatal on signing-key load or output
@@ -2567,25 +2777,21 @@ func maybeStartScheduledExport(logger *slog.Logger, featureFlags flags.Provider,
 // nil when their sub-feature is off (no auto-block, no postgres), which the
 // caller's later wiring and shutdown already nil-check exactly as before.
 type anomalyStack struct {
-	detector         *anomalyusecase.Detector
-	buffer           *anomalyusecase.AlertBuffer
-	blocker          anomalydomain.Blocker
-	gcStop           chan struct{}
-	autoBlockGCStop  chan struct{}
-	blockStoreCloser io.Closer
-	baselineCloser   io.Closer
-	// tenantWindowCloser/tenantBaselineCloser drain
-	// PostgresTenantWindowStore/PostgresTenantBaselineStore on shutdown,
-	// nil when tenant_anomaly isn't both enabled and postgres_storage-backed.
-	tenantWindowCloser   io.Closer
-	tenantBaselineCloser io.Closer
+	detector        *anomalyusecase.Detector
+	buffer          *anomalyusecase.AlertBuffer
+	blocker         anomalydomain.Blocker
+	gcStop          chan struct{}
+	autoBlockGCStop chan struct{}
 }
 
 // buildAnomalyStack constructs the detector, alert buffer, auto-block
-// surface, baseline store, and their GC tickers/closers from config. Fatal
-// (os.Exit) on any store-open failure — the same fail-fast the inline
-// composition-root code had. Call only when the anomaly_detection flag is on.
-func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageEnabled bool) anomalyStack {
+// surface, and baseline store from config. Every Postgres-backed store
+// here (block/baseline/tenant-window/tenant-baseline) uses pgPool, the
+// ONE pool runServe opens once and closes once -- none of them owns or
+// closes a connection of its own anymore. Fatal (os.Exit) on any
+// store-open failure — the same fail-fast the inline composition-root
+// code had. Call only when the anomaly_detection flag is on.
+func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageEnabled bool, pgPool *sql.DB) anomalyStack {
 	var s anomalyStack
 
 	anomalyWriter, err := buildAnomalyWriter(cfg.Anomaly.Output)
@@ -2627,13 +2833,12 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 			// is visible to every replica on its next Check. Self-reaps
 			// expired rows in SQL, so no separate GC ticker is started
 			// (the in-memory StartBlockGC below is only for the map).
-			pbs, err := anomalyadapter.NewPostgresBlockStore(cfg.Audit.PostgresDSN, blockDuration, logger)
+			pbs, err := anomalyadapter.NewPostgresBlockStore(pgPool, blockDuration, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres block store", "error", err)
 				os.Exit(1)
 			}
 			s.blocker = pbs
-			s.blockStoreCloser = pbs
 			logger.Info("auto-block enabled (shared via postgres)", "block_duration_seconds", cfg.Anomaly.AutoBlock.BlockDurationSeconds)
 		} else {
 			bc := anomalyusecase.NewBlockChecker(heuristicCfg.AutoBlock, time.Now)
@@ -2664,6 +2869,8 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	var baselineStore *anomalyadapter.PostgresBaselineStore
 	var tenantWindowStorePg *anomalyadapter.PostgresTenantWindowStore
 	var tenantBaselineStorePg *anomalyadapter.PostgresTenantBaselineStore
+	var churnWindowStorePg *anomalyadapter.PostgresChurnWindowStore
+	var churnBaselineStorePg *anomalyadapter.PostgresChurnBaselineStore
 	if postgresStorageEnabled {
 		// Reuses deriveInstanceID -- the same hostname-based (random-
 		// suffix-on-failure) identity federation already derives for its
@@ -2679,42 +2886,62 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 		// otherwise give the same replica two different instance IDs
 		// across its two Postgres-backed stores.
 		anomalyInstanceID := deriveInstanceID(logger, "")
-		bs, err := anomalyadapter.NewPostgresBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+		bs, err := anomalyadapter.NewPostgresBaselineStore(pgPool, anomalyInstanceID, logger)
 		if err != nil {
 			logger.Error("failed to initialize postgres anomaly baseline store", "error", err)
 			os.Exit(1)
 		}
 		baselineStore = bs
-		s.baselineCloser = bs
 		logger.Info("anomaly baseline persistence backed by postgres (survives restarts)")
 
 		// tenant_anomaly's own two Postgres-backed stores, gated on both
 		// postgres_storage AND tenant_anomaly.enabled -- without the
 		// second check, an operator running postgres_storage for every
 		// other feature but not using tenant_anomaly would still get its
-		// two tables touched and two more connection pools opened.
+		// two tables touched for a feature they never enabled.
 		if cfg.Anomaly.TenantAnomaly.Enabled {
-			tws, err := anomalyadapter.NewPostgresTenantWindowStore(cfg.Audit.PostgresDSN, logger)
+			tws, err := anomalyadapter.NewPostgresTenantWindowStore(pgPool, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres tenant window store", "error", err)
 				os.Exit(1)
 			}
 			tenantWindowStorePg = tws
-			s.tenantWindowCloser = tws
 
-			tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(cfg.Audit.PostgresDSN, anomalyInstanceID, logger)
+			tbs, err := anomalyadapter.NewPostgresTenantBaselineStore(pgPool, anomalyInstanceID, logger)
 			if err != nil {
 				logger.Error("failed to initialize postgres tenant baseline store", "error", err)
 				os.Exit(1)
 			}
 			tenantBaselineStorePg = tbs
-			s.tenantBaselineCloser = tbs
 			logger.Info("tenant_anomaly aggregate state backed by postgres (shared across replicas)")
+		}
+
+		// identity_churn's own two Postgres-backed stores, gated on both
+		// postgres_storage AND identity_churn.enabled -- same reasoning
+		// as tenant_anomaly's pair just above.
+		if cfg.Anomaly.IdentityChurn.Enabled {
+			cws, err := anomalyadapter.NewPostgresChurnWindowStore(pgPool, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres identity_churn window store", "error", err)
+				os.Exit(1)
+			}
+			churnWindowStorePg = cws
+
+			cbs, err := anomalyadapter.NewPostgresChurnBaselineStore(pgPool, anomalyInstanceID, logger)
+			if err != nil {
+				logger.Error("failed to initialize postgres identity_churn baseline store", "error", err)
+				os.Exit(1)
+			}
+			churnBaselineStorePg = cbs
+			logger.Info("identity_churn aggregate state backed by postgres (shared across replicas)")
 		}
 	} else {
 		logger.Warn("anomaly baselines are in-process only; a restart resets every identity's history -- enable features.postgres_storage to persist across restarts")
 		if cfg.Anomaly.TenantAnomaly.Enabled {
 			logger.Warn("tenant_anomaly is in-process only; a coordinated attack split across replicas by a load balancer may evade detection -- enable features.postgres_storage to share aggregate state across the fleet")
+		}
+		if cfg.Anomaly.IdentityChurn.Enabled {
+			logger.Warn("identity_churn is in-process only; a coordinated disposable-identity rotation split across replicas by a load balancer may evade detection -- enable features.postgres_storage to share aggregate state across the fleet")
 		}
 	}
 
@@ -2746,6 +2973,21 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	default:
 		s.detector = anomalyusecase.NewDetectorWithTenantStores(heuristicCfg, anomalyWriter, s.buffer, s.blocker, onAnomalyWriteErr, time.Now, nil, nil, nil)
 	}
+	// WithChurnStores composes independently of whichever
+	// NewDetectorWithTenantStores branch just ran above -- see its own
+	// doc comment for why this is a setter, not a fourth combinatorial
+	// constructor. Only called when churnWindowStorePg is actually
+	// non-nil: passing a nil *PostgresChurnWindowStore straight through
+	// as the churnWindowStore interface parameter would produce a
+	// non-nil interface wrapping a nil pointer (the exact typed-nil
+	// hazard the switch above already dodges for the tenant pair),
+	// breaking Detector's own "!= nil" checks. Leaving both fields at
+	// their zero value (nil interfaces) when identity_churn is off, or
+	// postgres_storage is off, reproduces today's in-memory-only
+	// behavior exactly.
+	if churnWindowStorePg != nil {
+		s.detector = s.detector.WithChurnStores(churnWindowStorePg, churnBaselineStorePg)
+	}
 
 	if err := s.detector.LoadBaselines(); err != nil {
 		logger.Error("failed to load persisted anomaly baselines", "error", err)
@@ -2753,6 +2995,10 @@ func buildAnomalyStack(logger *slog.Logger, cfg *config.Config, postgresStorageE
 	}
 	if err := s.detector.LoadTenantBaselines(); err != nil {
 		logger.Error("failed to load persisted tenant anomaly baselines", "error", err)
+		os.Exit(1)
+	}
+	if err := s.detector.LoadChurnBaselines(); err != nil {
+		logger.Error("failed to load persisted identity_churn baselines", "error", err)
 		os.Exit(1)
 	}
 
@@ -2859,7 +3105,15 @@ func startScheduledExportJob(logger *slog.Logger, cfg *config.Config, featureFla
 	}
 }
 
-func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig) (auditdomain.Writer, io.Closer) {
+// pgPool is the ONE shared connection pool opened once in runServe (see
+// pgpool.Open there) when postgres_storage is on, nil otherwise -- every
+// Postgres-backed adapter this function (and its siblings below) builds
+// uses it instead of opening its own pool. Its lifecycle belongs to
+// runServe, not to any adapter this function returns -- the io.Closer
+// this function used to return for the postgres case is gone along with
+// PostgresWriter's own Close method; runServe closes pgPool once, after
+// every feature built from it has stopped.
+func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config.AuditConfig, pgPool *sql.DB) auditdomain.Writer {
 	postgresStorageEnabled := featureFlags.Enabled("postgres_storage")
 
 	if cfg.Output != "" && postgresStorageEnabled {
@@ -2872,15 +3126,72 @@ func buildAuditSink(logger *slog.Logger, featureFlags flags.Provider, cfg config
 	}
 
 	if postgresStorageEnabled {
-		pw, err := auditadapter.NewPostgresWriter(cfg.PostgresDSN)
+		pw, err := auditadapter.NewPostgresWriter(pgPool)
 		if err != nil {
 			logger.Error("failed to initialize postgres audit writer", "error", err)
 			os.Exit(1)
 		}
-		return pw, pw
+		return pw
 	}
 
-	return buildAuditWriter(logger, cfg.Output), nil
+	return buildAuditWriter(logger, cfg.Output)
+}
+
+// newOIDCBootstrapperFromConfig builds either a single-provider
+// *credentialadapter.OIDCBootstrapper (cfg.OIDC) or a
+// *credentialadapter.MultiOIDCBootstrapper (cfg.OIDCProviders, when
+// non-empty -- config.validate() already rejects setting both), and
+// returns it as the common credentialdomain.Bootstrapper + io.Closer
+// shape both call sites (runServe's real wiring, validate-config's
+// soft-fail check) need, so neither has to duplicate this branch.
+func newOIDCBootstrapperFromConfig(cfg config.CredentialConfig) (credentialdomain.Bootstrapper, io.Closer, error) {
+	if len(cfg.OIDCProviders) > 0 {
+		providers := make([]credentialadapter.OIDCProviderConfig, len(cfg.OIDCProviders))
+		for i, p := range cfg.OIDCProviders {
+			providers[i] = credentialadapter.OIDCProviderConfig{
+				Issuer: p.Issuer, JWKSURI: p.JWKSURI, Audience: p.Audience,
+				IdentityClaim: p.IdentityClaim, TenantClaim: p.TenantClaim,
+			}
+		}
+		b, err := credentialadapter.NewMultiOIDCBootstrapper(providers)
+		if err != nil {
+			return nil, nil, err
+		}
+		return b, b, nil
+	}
+	b, err := credentialadapter.NewOIDCBootstrapper(cfg.OIDC.Issuer, cfg.OIDC.JWKSURI, cfg.OIDC.Audience, cfg.OIDC.IdentityClaim, cfg.OIDC.TenantClaim)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b, b, nil
+}
+
+// newJWTIssuerVerifierFromConfig builds the JWTIssuerVerifier signing
+// this deployment's access tokens: AWS KMS-backed
+// (credentialadapter.NewKMSSigner, when cfg.KMS.KeyID is set --
+// config.validate() already rejects setting this alongside
+// SigningKeyFile) or the existing local-PEM-file/generate-fresh path
+// otherwise. Both call sites (runServe's real wiring, validate-config's
+// soft-fail check for the KMS case) share this so the branch isn't
+// duplicated.
+func newJWTIssuerVerifierFromConfig(ctx context.Context, cfg config.CredentialConfig, accessTokenTTL time.Duration) (*credentialadapter.JWTIssuerVerifier, error) {
+	if cfg.KMS.KeyID == "" {
+		return credentialadapter.NewJWTIssuerVerifier(cfg.SigningKeyFile, cfg.PreviousSigningKeyFiles, accessTokenTTL)
+	}
+	var optFns []func(*awsconfig.LoadOptions) error
+	if cfg.KMS.Region != "" {
+		optFns = append(optFns, awsconfig.WithRegion(cfg.KMS.Region))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("load aws config for kms: %w", err)
+	}
+	kmsClient := kms.NewFromConfig(awsCfg)
+	signer, err := credentialadapter.NewKMSSigner(ctx, kmsClient, cfg.KMS.KeyID)
+	if err != nil {
+		return nil, fmt.Errorf("initialize kms signer: %w", err)
+	}
+	return credentialadapter.NewJWTIssuerVerifierWithSigner(signer, cfg.PreviousSigningKeyFiles, accessTokenTTL)
 }
 
 // deriveInstanceID returns override if non-empty (an operator-supplied
@@ -2975,6 +3286,9 @@ func anomalyHeuristicConfig(cfg config.AnomalyConfig, driftJitterSecret []byte) 
 			Enabled:          cfg.IdentityChurn.Enabled,
 			RateMultiplier:   cfg.IdentityChurn.RateMultiplier,
 			MinNewIdentities: cfg.IdentityChurn.MinNewIdentities,
+			CUSUMEnabled:     cfg.IdentityChurn.CUSUMEnabled,
+			K:                cfg.IdentityChurn.K,
+			H:                cfg.IdentityChurn.H,
 		},
 	}
 }

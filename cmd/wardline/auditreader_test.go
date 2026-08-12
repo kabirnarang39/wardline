@@ -15,7 +15,7 @@ import (
 func TestNewAuditReader_StdoutOutputIsRejected(t *testing.T) {
 	logger := discardLogger()
 	featureFlags := flags.NewStaticProvider(nil)
-	_, _, err := newAuditReader(logger, featureFlags, config.AuditConfig{Output: "stdout"}, "infer-policy")
+	_, _, _, err := newAuditReader(logger, featureFlags, config.AuditConfig{Output: "stdout"}, "infer-policy")
 	if err == nil {
 		t.Fatal("expected an error for audit.output: stdout, got nil")
 	}
@@ -31,9 +31,12 @@ func TestNewAuditReader_FileOutputReturnsJSONLReaderForThatPath(t *testing.T) {
 	logger := discardLogger()
 	featureFlags := flags.NewStaticProvider(nil)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	reader, jsonlReader, err := newAuditReader(logger, featureFlags, config.AuditConfig{Output: path}, "export-evidence")
+	reader, jsonlReader, closer, err := newAuditReader(logger, featureFlags, config.AuditConfig{Output: path}, "export-evidence")
 	if err != nil {
 		t.Fatalf("newAuditReader: %v", err)
+	}
+	if closer != nil {
+		t.Error("expected a nil closer for the JSONL path -- each Query call opens and closes its own file handle")
 	}
 	if jsonlReader == nil {
 		t.Fatal("expected a non-nil *auditadapter.JSONLReader for a file-path audit.output")
@@ -46,7 +49,7 @@ func TestNewAuditReader_FileOutputReturnsJSONLReaderForThatPath(t *testing.T) {
 func TestNewAuditReader_PostgresStorageOn_BadDSNFailsFast(t *testing.T) {
 	logger := discardLogger()
 	featureFlags := flags.NewStaticProvider(map[string]bool{"postgres_storage": true})
-	_, _, err := newAuditReader(logger, featureFlags, config.AuditConfig{PostgresDSN: "not-a-valid-dsn"}, "infer-policy")
+	_, _, _, err := newAuditReader(logger, featureFlags, config.AuditConfig{PostgresDSN: "not-a-valid-dsn"}, "infer-policy")
 	if err == nil {
 		t.Fatal("expected an error for a malformed postgres DSN, got nil")
 	}

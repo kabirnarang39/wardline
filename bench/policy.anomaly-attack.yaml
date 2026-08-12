@@ -1,0 +1,15 @@
+# Deny rule first: first-match-wins (internal/features/policy/usecase/matcher.go),
+# so attack-agent's calls to restricted_tool are real policy denials
+# (feeding the deny-rate-spike heuristic with genuine deny decisions,
+# not synthetic 403s) while every other tool -- including every
+# never-before-seen name the novel-tool burst throws at it -- is
+# allowed.
+default: deny
+
+rules:
+  - identity: attack-agent
+    tool: "restricted_tool"
+    effect: deny
+  - identity: attack-agent
+    tool: "*"
+    effect: allow

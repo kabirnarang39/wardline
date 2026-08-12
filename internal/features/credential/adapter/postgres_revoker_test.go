@@ -12,7 +12,21 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/credential/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
+
+// openTestPool opens a pool the same way cmd/wardline/main.go does (via
+// pgpool.Open, shared across every Postgres-backed feature in production)
+// -- test callers get the identical Open+Ping+pool-config path real
+// traffic goes through, not a bespoke test-only shortcut.
+func openTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTestPool: %v", err)
+	}
+	return db
+}
 
 // testSchema isolates this package's Postgres tests from every other
 // package's (internal/features/audit/adapter and cmd/wardline both run
@@ -65,11 +79,12 @@ func TestPostgresRevoker_RevokeThenIsRevokedRoundTrips(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	if err := r.Revoke("", "agent-abc123", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Revoke: %v", err)
@@ -84,11 +99,12 @@ func TestPostgresRevoker_UnrevokedIdentityIsNotRevoked(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	if r.IsRevoked("", "never-revoked") {
 		t.Error("expected an identity with no revocation entry to not be revoked")
@@ -99,11 +115,12 @@ func TestPostgresRevoker_ExpiredRevocationSelfHeals(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	if err := r.Revoke("", "agent-abc123", time.Now().Add(-time.Minute)); err != nil { // already expired
 		t.Fatalf("Revoke: %v", err)
@@ -118,46 +135,42 @@ func TestPostgresRevoker_TableCreationIsIdempotent(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r1, err := adapter.NewPostgresRevoker(dsn, nil)
+	db1 := openTestPool(t, dsn)
+	defer func() { _ = db1.Close() }()
+	_, err := adapter.NewPostgresRevoker(db1, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r1.Close() }()
 
-	r2, err := adapter.NewPostgresRevoker(dsn, nil)
+	_, err = adapter.NewPostgresRevoker(db1, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresRevoker (should be idempotent): %v", err)
-	}
-	defer func() { _ = r2.Close() }()
-}
-
-func TestNewPostgresRevoker_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresRevoker("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", nil)
-	if err == nil {
-		t.Fatal("expected an error constructing a revoker against an unreachable database")
 	}
 }
 
 // TestPostgresRevoker_CrossInstanceRevocationPropagates is the actual HA
-// scenario: two separate *PostgresRevoker instances (simulating two
-// replicas) against the same DSN -- a revocation made through one is seen
-// by the other, proven against a real shared database, not just the same
-// in-process struct.
+// scenario: two separate *PostgresRevoker instances, each with its own
+// connection pool (simulating two replicas, each running the ONE shared
+// pool pgpool.Open builds for its own process) against the same DSN -- a
+// revocation made through one is seen by the other, proven against a real
+// shared database, not just the same in-process struct.
 func TestPostgresRevoker_CrossInstanceRevocationPropagates(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	replicaA, err := adapter.NewPostgresRevoker(dsn, nil)
+	dbA := openTestPool(t, dsn)
+	defer func() { _ = dbA.Close() }()
+	replicaA, err := adapter.NewPostgresRevoker(dbA, nil)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	defer func() { _ = replicaA.Close() }()
 
-	replicaB, err := adapter.NewPostgresRevoker(dsn, nil)
+	dbB := openTestPool(t, dsn)
+	defer func() { _ = dbB.Close() }()
+	replicaB, err := adapter.NewPostgresRevoker(dbB, nil)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
-	defer func() { _ = replicaB.Close() }()
 
 	if err := replicaA.Revoke("", "agent-abc123", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Revoke: %v", err)
@@ -172,11 +185,12 @@ func TestPostgresRevoker_RevokeAgainstClosedPoolReturnsError(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	if err := r.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -192,11 +206,12 @@ func TestPostgresRevoker_IsRevoked_QueryErrorIsLoggedAndFailsOpen(t *testing.T) 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	r, err := adapter.NewPostgresRevoker(dsn, logger)
+	db := openTestPool(t, dsn)
+	r, err := adapter.NewPostgresRevoker(db, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	if err := r.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -215,11 +230,12 @@ func TestPostgresRevoker_ScopedRevokeDoesNotAffectOtherTenant(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	now := time.Now()
 	if err := r.Revoke("acme", "alice-pgtest", now.Add(time.Hour)); err != nil {
@@ -238,11 +254,12 @@ func TestPostgresRevoker_WildcardRevokeAffectsEveryTenant(t *testing.T) {
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	now := time.Now()
 	if err := r.Revoke("", "bob-pgtest", now.Add(time.Hour)); err != nil {
@@ -278,11 +295,12 @@ func TestPostgresRevoker_LegacyBareIdentityRowStillDeniesEveryTenant(t *testing.
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	now := time.Now()
 	insertLegacyBareIdentityRow(t, dsn, "carol-pgtest", now.Add(time.Hour))
@@ -318,11 +336,12 @@ func TestPostgresRevoker_LengthPrefixKeyEncodingAvoidsSeparatorCollision(t *test
 	dsn := testDSN(t)
 	dropRevokedIdentitiesTable(t, dsn)
 
-	r, err := adapter.NewPostgresRevoker(dsn, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	now := time.Now()
 	if err := r.Revoke("a\x1f1", "b-pgtest", now.Add(time.Hour)); err != nil {
@@ -344,11 +363,12 @@ func TestPostgresRevoker_IsRevoked_NotFoundIsNeverLogged(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	r, err := adapter.NewPostgresRevoker(dsn, logger)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	r, err := adapter.NewPostgresRevoker(db, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresRevoker: %v", err)
 	}
-	defer func() { _ = r.Close() }()
 
 	if r.IsRevoked("", "never-revoked") {
 		t.Error("expected an identity with no revocation entry to not be revoked")

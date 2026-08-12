@@ -217,6 +217,71 @@ func TestCorrelator_EmittedAlert_InstanceIDsSortedAndFirstSeenIsEarliestSighting
 	}
 }
 
+// TestCorrelator_SameFingerprintDifferentTenants_NeverCorrelateTogether
+// is this task's actual security proof: two different tenants'
+// identically-named identities hash to the SAME fingerprint (Fingerprint
+// is identity-only), so without Tenant folded into the correlation key,
+// one instance sighting acme's "alice" and another sighting
+// widgets-inc's "alice" would incorrectly look like the same identity
+// correlated across 2 instances. They must not.
+func TestCorrelator_SameFingerprintDifferentTenants_NeverCorrelateTogether(t *testing.T) {
+	var mu sync.Mutex
+	var alerts []domain.CorrelatedAlert
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+
+	c := usecase.NewCorrelator(
+		domain.FederationConfig{MinInstancesForCorrelation: 2, CorrelationWindowSeconds: 300},
+		func(a domain.CorrelatedAlert) {
+			mu.Lock()
+			defer mu.Unlock()
+			alerts = append(alerts, a)
+		},
+		func() time.Time { return now },
+	)
+
+	c.Ingest("instance-a", domain.AnomalySummary{Fingerprint: "fp-alice", Tenant: "acme", Kind: anomalydomain.KindRateSpike, Count: 1, WindowStart: now, WindowEnd: now.Add(time.Minute)})
+	c.Ingest("instance-b", domain.AnomalySummary{Fingerprint: "fp-alice", Tenant: "widgets-inc", Kind: anomalydomain.KindRateSpike, Count: 1, WindowStart: now, WindowEnd: now.Add(time.Minute)})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert -- the same fingerprint sighted in 2 DIFFERENT tenants is not cross-instance correlation of one identity, got %d: %+v", len(alerts), alerts)
+	}
+}
+
+// TestCorrelator_SameFingerprintSameTenant_StillCorrelates proves the
+// positive case still works: the same (tenant, fingerprint) sighted by
+// 2 distinct instances correlates exactly as before, and the emitted
+// alert carries that tenant.
+func TestCorrelator_SameFingerprintSameTenant_StillCorrelates(t *testing.T) {
+	var mu sync.Mutex
+	var alerts []domain.CorrelatedAlert
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+
+	c := usecase.NewCorrelator(
+		domain.FederationConfig{MinInstancesForCorrelation: 2, CorrelationWindowSeconds: 300},
+		func(a domain.CorrelatedAlert) {
+			mu.Lock()
+			defer mu.Unlock()
+			alerts = append(alerts, a)
+		},
+		func() time.Time { return now },
+	)
+
+	summary := domain.AnomalySummary{Fingerprint: "fp-alice", Tenant: "acme", Kind: anomalydomain.KindRateSpike, Count: 1, WindowStart: now, WindowEnd: now.Add(time.Minute)}
+	c.Ingest("instance-a", summary)
+	c.Ingest("instance-b", summary)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(alerts) != 1 {
+		t.Fatalf("expected exactly 1 alert for the same (tenant, fingerprint) sighted by 2 instances, got %d", len(alerts))
+	}
+	if alerts[0].Tenant != "acme" {
+		t.Errorf("expected the emitted alert to carry the tenant, got %q", alerts[0].Tenant)
+	}
+}
+
 func TestCorrelator_DifferentFingerprints_NeverMerge(t *testing.T) {
 	var mu sync.Mutex
 	var alerts []domain.CorrelatedAlert

@@ -36,6 +36,41 @@ out: even when every identity comes from the IdP via `oidc`, config
 validation still requires this path to be set (it's simply unused by the
 OIDC bootstrapper itself).
 
+### More than one IdP: `oidc_providers`
+
+`credential.oidc` (above) configures exactly one issuer. For more than
+one — a real multi-tenant deployment where different tenants federate
+through different IdPs — use `credential.oidc_providers` instead (mutually
+exclusive with `oidc`; setting both is a config error):
+
+```yaml
+credential:
+  identities_file: "credentials.yaml"
+  bootstrap_source: "oidc"
+  oidc_providers:
+    - issuer: "https://acme.okta.com/"
+      audience: "wardline"
+      tenant_claim: "tenant"          # acme's tokens carry their own tenant claim
+    - issuer: "https://login.microsoftonline.com/widgets-inc/v2.0"
+      audience: "wardline"
+      tenant_claim: "tid"             # widgets-inc's IdP names its tenant claim differently
+```
+
+Each entry is independently verified — its own JWKS (or discovery, same
+`jwks_uri`-optional rule as the single-provider form above), its own
+`audience`, its own `identity_claim`/`tenant_claim`. An incoming ID
+token is routed to the right provider by its own `iss` claim before
+verification — the same issuer-based routing every real multi-tenant
+SSO gateway uses (Auth0's multi-organization routing, Okta's multi-IdP
+routing rules, Azure AD B2C's identity-provider selection): the router
+only reads that one claim to pick which provider's `Authenticate` runs
+next, and that provider still fully re-verifies the token's signature
+against its own real JWKS and re-checks the issuer itself — a token
+whose `iss` claim doesn't match the key that actually signed it is
+rejected exactly as it would be without multi-provider routing at all.
+Two providers may not declare the same issuer (ambiguous routing,
+rejected at config-validate time, not a runtime coin flip).
+
 `Authenticate` verifies the token's signature against `jwks_uri` (keys
 cached and refreshed every 15 minutes), checks `iss`/`aud`/`exp`, then
 reads `identity_claim` (`sub` by default) and `tenant_claim` for the
@@ -43,6 +78,21 @@ resolved identity and tenant. Any failure — bad signature, wrong
 issuer/audience, expired token, or a missing/empty tenant claim — is a
 generic `401`, the same non-enumerable-failure posture as a rejected
 preshared secret.
+
+A token whose `kid` isn't in the cached JWKS (an IdP rotated its signing
+key since the last 15-minute refresh — real IdPs add a new key well
+before removing the old one, exactly the overlap window [Microsoft's own
+Azure AD key-rollover
+guidance](https://learn.microsoft.com/en-us/entra/identity-platform/active-directory-signing-key-rollover)
+describes handling this way) triggers one forced, rate-limited JWKS
+refresh and a single retry before falling back to the generic `401` —
+not a bare rejection until the next scheduled refresh. The rate limit
+(at most one forced refresh per 30 seconds, across every concurrent
+caller) bounds the cost so a flood of tokens signed with a genuinely
+unknown key can't turn every rejection into its own request against the
+IdP. `aud` is accepted whether the token encodes it as a single string
+or an array containing wardline's configured audience alongside others
+(RFC 7519 §4.1.3 permits both forms; real IdPs use each).
 
 `wardline validate-config` attempts to construct the OIDC bootstrapper
 when `bootstrap_source: oidc` — the same construction `wardline serve`
@@ -55,14 +105,28 @@ exit) within that bound rather than hanging.
 
 ## Known limitations
 
-- **No OIDC discovery document fetching** — `issuer`, `jwks_uri`, and
-  `audience` must be configured explicitly; nothing is resolved from
-  `/.well-known/openid-configuration`.
-- **One IdP at a time** — a single `credential.oidc` block; no
-  multiple-issuer or issuer-to-tenant mapping.
+- `issuer` and `audience` must be configured explicitly. `jwks_uri` is
+  optional — leave it unset and Wardline resolves it at startup from
+  `issuer`'s own `/.well-known/openid-configuration` discovery document
+  (standard OIDC discovery, every major IdP implements it), validating
+  the document's own `issuer` field matches before trusting its
+  `jwks_uri`. Set `jwks_uri` explicitly to skip discovery entirely — an
+  IdP with a non-standard or unreachable discovery endpoint, or an
+  operator who prefers to pin the value.
 - Cross-tenant credential-revoke scoping falls back to requiring a
   global `ClusterRoleBinding` grant for every revoke when this
   bootstrap source is active — and the same fallback also applies to the
   preshared-secret bootstrap source whenever a target identity name is
   registered in more than one tenant — see [RBAC](/features/rbac/)'s
   known limitations.
+- This bootstrap source's real-load testing (see
+  [Benchmarks](/advanced/benchmarks/)) was proven against a
+  spec-compliant mock IdP built for that testing pass — real OIDC
+  discovery, real JWKS fetch and signature verification, real
+  issuer/audience checks — not against a specific vendor's OIDC
+  implementation (Okta, Entra ID, Auth0, etc.). Validating against
+  *your* actual IdP before go-live remains an operator step; this
+  feature's correctness against the OIDC spec itself is proven, but a
+  given vendor's own quirks (clock skew tolerance, non-standard claim
+  names, token lifetime conventions) are not something a mock can
+  stand in for.

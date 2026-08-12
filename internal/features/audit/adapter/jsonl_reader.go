@@ -36,6 +36,23 @@ func NewJSONLReader(path string) *JSONLReader {
 var _ domain.Reader = (*JSONLReader)(nil)
 
 func (r *JSONLReader) Query(ctx context.Context, from, to time.Time) ([]domain.Entry, error) {
+	// Every line's own timestamp was serialized with no fractional-second
+	// component (see JSONLWriter, format "2006-01-02T15:04:05Z07:00"), so
+	// it round-trips through time.Parse with zero nanoseconds -- but a
+	// caller's from/to are ordinary time.Time values with full precision
+	// (the scheduled-export job's own boundaries are literal time.Now()
+	// calls). Comparing a truncated stored value against a full-precision
+	// boundary silently drops any entry whose real write instant shares a
+	// wall-clock second with `from` but precedes its sub-second offset --
+	// on every single scheduled-export tick, not just at startup.
+	// Truncating both boundaries down to the second here aligns them with
+	// what the data itself can express, and keeps consecutive [from, to)
+	// windows contiguous and non-overlapping (each tick's `to` becomes the
+	// next tick's `from`, so truncating both consistently can't create a
+	// gap or a double-count between them).
+	from = from.Truncate(time.Second)
+	to = to.Truncate(time.Second)
+
 	f, err := os.Open(r.path)
 	if err != nil {
 		return nil, fmt.Errorf("open audit file %s: %w", r.path, err)
