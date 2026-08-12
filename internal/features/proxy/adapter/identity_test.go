@@ -105,3 +105,66 @@ func TestBearerIdentity_AuthenticatorFailurePropagates(t *testing.T) {
 		t.Errorf("expected the Authenticator's error to propagate, got %v", err)
 	}
 }
+
+// TestBearerIdentity_FallsBackToSessionCookie is the actual point of
+// the browser-native login flow: a browser navigation can't attach a
+// custom Authorization header, but DOES send a cookie automatically --
+// SessionCookieName is read as a fallback token source, run through the
+// exact same Authenticator.
+func TestBearerIdentity_FallsBackToSessionCookie(t *testing.T) {
+	req := httptest.NewRequest("GET", "/dashboard/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "session-jwt"})
+
+	auth := NewBearerIdentity(fakeAuthenticator{identity: "alice", tenant: "acme"})
+	identity, gotTenant, err := auth.Authenticate(req)
+	if err != nil || identity != "alice" || gotTenant != "acme" {
+		t.Fatalf("got (%q, %q, %v), want (\"alice\", \"acme\", nil)", identity, gotTenant, err)
+	}
+}
+
+// TestBearerIdentity_AuthorizationHeaderTakesPriorityOverCookie proves
+// the header is checked FIRST -- an API caller that sends both (e.g. a
+// stale cookie from an earlier browser session, plus a fresh header)
+// is authenticated via the header, matching the doc comment's
+// "unchanged for every existing API caller" claim, not a
+// cookie-wins-arbitrarily behavior.
+func TestBearerIdentity_AuthorizationHeaderTakesPriorityOverCookie(t *testing.T) {
+	req := httptest.NewRequest("GET", "/dashboard/", nil)
+	req.Header.Set("Authorization", "Bearer header-jwt")
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "cookie-jwt"})
+
+	var seenToken string
+	auth := NewBearerIdentity(fakeAuthenticatorCapture{capture: &seenToken})
+	if _, _, err := auth.Authenticate(req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seenToken != "header-jwt" {
+		t.Errorf("expected the Authorization header's token to win, got %q", seenToken)
+	}
+}
+
+// TestBearerIdentity_EmptySessionCookieFailsClosed pins a genuine edge
+// case: LoginHandler.HandleLogout sets this exact cookie name with an
+// empty Value (before the browser has actually purged it, e.g. between
+// the Set-Cookie response and the next request in some clients/tests)
+// -- an empty token must never reach Authenticator.Authenticate, which
+// has no contract for what an empty bearerToken means.
+func TestBearerIdentity_EmptySessionCookieFailsClosed(t *testing.T) {
+	req := httptest.NewRequest("GET", "/dashboard/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: ""})
+
+	auth := NewBearerIdentity(fakeAuthenticator{identity: "should-not-be-used"})
+	_, _, err := auth.Authenticate(req)
+	if err == nil {
+		t.Fatal("expected an error for an empty session cookie value")
+	}
+}
+
+type fakeAuthenticatorCapture struct {
+	capture *string
+}
+
+func (f fakeAuthenticatorCapture) Authenticate(bearerToken string) (string, string, error) {
+	*f.capture = bearerToken
+	return "identity", "tenant", nil
+}

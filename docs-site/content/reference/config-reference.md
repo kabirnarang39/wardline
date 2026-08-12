@@ -52,6 +52,12 @@ this shape (`internal/platform/config/config.go`).
 | `oidc.issuer` / `.jwks_uri` / `.audience` / `.identity_claim` / `.tenant_claim` | string×5 | Single-IdP OIDC bootstrap. `jwks_uri` optional (resolved via discovery when unset). See [SSO](/features/sso/). |
 | `oidc_providers` | list | Multi-IdP OIDC bootstrap — a list of the same 5 fields `oidc` above has, one entry per issuer, routed by the token's own `iss` claim. Mutually exclusive with `oidc`. See [SSO](/features/sso/)'s "More than one IdP" section. |
 
+## `dashboard`
+
+| Field | Type | Purpose |
+|---|---|---|
+| `allow_insecure_session_cookie` | bool | Default false (Secure). Set true only for a genuinely plaintext-HTTP deployment (local dev, loopback-only) — a Secure cookie is never sent over plain HTTP. See [Web Dashboard](/features/web-dashboard/)'s login flow. |
+
 ## `rbac`
 
 | Field | Type | Purpose |

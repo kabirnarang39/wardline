@@ -679,6 +679,14 @@ func runServe(logger *slog.Logger, args []string) {
 	var jwksHandler *credentialadapter.JWKSHandler
 	var oidcCloser io.Closer
 	var mtlsHeader string
+	// issuanceForLogin/accessTTLForLogin are hoisted out of the
+	// credentialIssuanceEnabled block below (which declares its own
+	// locally-scoped issuance/accessTokenTTL) so the webUIEnabled
+	// block further down can wire LoginHandler -- the browser-native
+	// dashboard login flow needs the exact same IssuanceService.
+	// Bootstrap path /credentials/token itself uses, not a second one.
+	var issuanceForLogin *credentialusecase.IssuanceService
+	var accessTTLForLogin time.Duration
 	if credentialIssuanceEnabled {
 		var bootstrapper credentialdomain.Bootstrapper
 		switch cfg.Credential.BootstrapSource {
@@ -768,6 +776,7 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 
 		issuance := credentialusecase.NewIssuanceService(bootstrapper, issuerVerifier, refreshStore, refreshTokenTTL)
+		issuanceForLogin, accessTTLForLogin = issuance, accessTokenTTL
 		verification := credentialusecase.NewVerificationService(issuerVerifier, revoker)
 		revocation := credentialusecase.NewRevocationService(revoker, refreshStore)
 		refresh := credentialusecase.NewRefreshService(refreshStore, revoker, issuerVerifier, refreshTokenTTL, time.Now)
@@ -1105,6 +1114,20 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
+
+		// Browser-native login: only meaningful when there's an
+		// IssuanceService to exchange a secret/ID-token for an access
+		// token in the first place. Deliberately mounted OUTSIDE
+		// dashboardRoute's own rbacEnabled RequirePermission wrap above
+		// -- a caller with no session yet must be able to reach the
+		// login form itself, or rbac's own gate would make logging in
+		// impossible.
+		if issuanceForLogin != nil {
+			loginHandler := credentialadapter.NewLoginHandler(issuanceForLogin, accessTTLForLogin, cfg.Dashboard.AllowInsecureSessionCookie)
+			extraRoutes["/dashboard/login"] = http.HandlerFunc(loginHandler.HandleLogin)
+			extraRoutes["/dashboard/logout"] = http.HandlerFunc(loginHandler.HandleLogout)
+			logger.Info("dashboard browser login enabled", "path", "/dashboard/login")
+		}
 	}
 	// Registered unconditionally, unlike /dashboard/ above -- mirrors
 	// handleAnomalies/handleFederationCorrelated/handleBlocked's nil-source
