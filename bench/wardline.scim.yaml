@@ -1,0 +1,16 @@
+# Isolates scim's Bulk-operations and filter-query paths under load.
+# scim's HTTP surface is self-contained (its own mux, not the proxy
+# pipeline), so policy_file/upstream barely matter here -- present only
+# because they're always required by config validation.
+listen: ":38411"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.scim.jsonl"
+
+features:
+  scim: true
+
+scim:
+  bearer_token_env: "WARDLINE_BENCH_SCIM_TOKEN"
