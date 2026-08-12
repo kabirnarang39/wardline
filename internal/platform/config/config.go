@@ -236,6 +236,28 @@ type CredentialConfig struct {
 
 // RBACConfig configures Kubernetes-shaped RBAC. Only validated (and only
 // meaningful) when the rbac feature flag is on.
+// DashboardConfig configures the web_ui feature's browser-facing login
+// flow. Only meaningful when features.web_ui and
+// features.credential_issuance are both on.
+type DashboardConfig struct {
+	// AllowInsecureSessionCookie, when true, omits the Secure attribute
+	// from the browser login session cookie
+	// (proxyadapter.SessionCookieName) -- required for a genuinely
+	// plaintext-HTTP deployment (local dev, a loopback-only setup),
+	// since a Secure cookie is never sent by the browser over plain
+	// HTTP. Default false (Secure) is correct for the expected
+	// production posture: a TLS-terminating ingress/mesh in front of
+	// Wardline, which never terminates TLS itself (see mTLS/SPIFFE
+	// Bootstrap's own doc comment on that architectural stance) -- the
+	// browser's own connection to that ingress is HTTPS even though
+	// Wardline's own listener behind it is plain HTTP, so this is a
+	// genuine explicit opt-OUT of the safer default, never inferred
+	// from r.TLS (nil in that correct posture too, since TLS terminates
+	// upstream of Wardline) or a client-spoofable header like
+	// X-Forwarded-Proto.
+	AllowInsecureSessionCookie bool `yaml:"allow_insecure_session_cookie"`
+}
+
 type RBACConfig struct {
 	ConfigFile string `yaml:"config_file"`
 }
@@ -427,6 +449,7 @@ type Config struct {
 	Tracing         TracingConfig       `yaml:"tracing"`
 	Credential      CredentialConfig    `yaml:"credential"`
 	RBAC            RBACConfig          `yaml:"rbac"`
+	Dashboard       DashboardConfig     `yaml:"dashboard"`
 	Scim            ScimConfig          `yaml:"scim"`
 	Anomaly         AnomalyConfig       `yaml:"anomaly"`
 	Federation      FederationConfig    `yaml:"federation"`

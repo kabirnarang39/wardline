@@ -141,32 +141,25 @@ traffic reaches Wardline — browsers don't send that header themselves,
 but an intermediary that does makes every request the browser makes
 already carry it, including these two.
 
-It is **not** sufficient when `features.credential_issuance` is on and
-you are not loopback: identity there is a bearer token
-(`Authorization: Bearer <jwt>`, obtained via `POST /credentials/token`),
-and a plain browser tab has no built-in mechanism to attach that header
-to its own requests the way it automatically attaches cookies. This
-applies to *every* dashboard route when `features.rbac` is also on
-(the entire `/dashboard/` mount, not just these two buttons, requires a
-resolvable identity holding `dashboard:view` in that case — see
-[RBAC](/features/rbac/)) — and unlike `/credentials/revoke` above,
-**`/dashboard/` itself has no loopback exception at all**:
-`rbacadapter.RequirePermission` denies an unresolved identity identically
-whether the request comes from `127.0.0.1`/`::1` or a LAN address. So in
-the `rbac` + `credential_issuance` combination, a first-time operator
-opening a bare browser tab to `/dashboard/` should expect the whole
-dashboard to be unreachable — **loopback included**, not just non-loopback
-access — not just these two buttons. Reach it instead through something
-that can attach the bearer token for you (a reverse proxy/mesh sidecar
-that injects it, a browser extension that adds the header, or API tooling
-calling `/dashboard/api/*` and `/credentials/revoke` directly) rather
-than a bare browser session. This is an accurate description of how
-`rbac`'s dashboard gate has always worked (predates this redesign's
-visual changes entirely — see [RBAC](/features/rbac/)'s own "every
-dashboard request must resolve an identity" language, which likewise has
-no loopback exception); it is not new behavior, but is easy to miss the
-first time you turn both flags on together, so it's called out here
-explicitly.
+When `features.credential_issuance` is on, identity is a bearer token
+(`Authorization: Bearer <jwt>`), and a plain browser tab has no
+built-in mechanism to attach that header to its own requests the way it
+automatically attaches cookies. **`GET /dashboard/login` closes this
+gap**: a browser-native sign-in form (paste the same bootstrap secret
+or OIDC ID token `POST /credentials/token` accepts) that exchanges it
+for the exact same access token through the exact same
+`IssuanceService.Bootstrap` path, then delivers it as an httpOnly,
+`SameSite=Strict` session cookie (`POST /dashboard/login`) instead of a
+JSON body — the browser then sends that cookie automatically on every
+subsequent request, including these two buttons, the rest of
+`/dashboard/`, and (once `features.rbac` is also on)
+`rbacadapter.RequirePermission`'s own identity resolution, since all of
+these already went through the same `IdentityAuthenticator` that now
+checks the cookie as a fallback whenever no `Authorization` header is
+present. `POST /dashboard/logout` clears it. Session lifetime is
+exactly `credential.access_token_ttl_seconds` (default 15m) — there is
+no refresh-token cookie or silent renewal yet, so re-login when it
+expires; see "Known limitations" below.
 
 ## Policy, Status
 
@@ -200,15 +193,15 @@ does not change this. This is why `web_ui` defaults to off.
 
 - The recent-activity chart on Overview reflects the bounded audit ring
   buffer, not the durable audit trail — see the chart caveat above.
-- There is no browser-native way to deliver a bearer token
-  (`features.credential_issuance` on) to `/dashboard/` itself, or to
-  Blocked's Unblock, or to Credentials' Revoke from non-loopback — see
-  "Auth requirement for mutations" above. Credentials' Revoke is the one
-  exception with a loopback path around this; `/dashboard/` (once
-  `features.rbac` is also on) and Blocked's Unblock have no loopback
-  exception at all, so for those two the gap applies from loopback too, not
-  just non-loopback access. A dedicated token-entry/login flow would close
-  this gap; none exists today.
+- **`GET`/`POST /dashboard/login` and `POST /dashboard/logout` now
+  deliver a bearer token to the browser** (`features.credential_issuance`
+  on) — see "Auth requirement for mutations" above. Session lifetime is
+  exactly the access token's own TTL (`credential.access_token_ttl_seconds`,
+  default 15m): no refresh-token cookie or silent renewal yet, so an
+  expired session requires signing in again through `/dashboard/login`,
+  not a transparent background refresh — a deliberately bounded scope
+  for this cycle (a real, separate feature: rotating a refresh-token
+  cookie plus an auto-refresh flow), not silently incomplete.
 - Federation's correlated-alerts view is not tenant-scoped (see
   [RBAC](/features/rbac/)'s known limitations) — it correlates on an
   identity fingerprint computed locally, independent of tenant.
