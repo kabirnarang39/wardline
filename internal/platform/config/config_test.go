@@ -728,6 +728,37 @@ audit:
 	}
 }
 
+// TestLoad_OIDCBootstrapDoesNotRequireIdentitiesFile is the regression
+// test for the bug the OIDC E2E/load-testing pass surfaced
+// (docs-site/content/advanced/benchmarks.md): oidc's serve-time branch
+// (cmd/wardline/main.go) never reads cfg.Credential.IdentitiesFile at
+// all -- an OIDC ID token's own claims are the entire identity source --
+// yet validate() unconditionally required it whenever
+// features.credential_issuance was true, forcing every OIDC-only
+// operator to author and maintain a dummy, wholly unused identities
+// file. Only presharedsecret/mtls (the default) still require it --
+// see TestLoad_CredentialIssuanceEnabledMissingIdentitiesFile above.
+func TestLoad_OIDCBootstrapDoesNotRequireIdentitiesFile(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    jwks_uri: "https://idp.example.com/jwks"
+    audience: "wardline"
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("expected no error for oidc bootstrap with no identities_file, got: %v", err)
+	}
+}
+
 // TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience covers
 // credential.bootstrap_source: "oidc" -- config_test.go is package
 // config_test (an external test package), so this can't call
