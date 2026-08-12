@@ -4,6 +4,51 @@ import { mountIcons } from './icons.js';
 const POLL_INTERVAL_MS = 2000;
 const MAX_CLIENT_ROWS = 500;
 
+// showConfirm/showAlert replace window.confirm()/window.alert() for every
+// dashboard mutation (Unblock, Revoke, Approve/Deny's failure path) -- a
+// native dialog is the one visibly un-branded moment in an otherwise
+// consistently themed dashboard, and it blocks the whole tab (including
+// any automated tooling driving the page). Both resolve/return once the
+// single shared overlay element is dismissed; only one of either kind is
+// ever open at a time, matching how window.confirm/alert are themselves
+// strictly modal.
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('confirm-modal');
+    document.getElementById('confirm-modal-message').textContent = message;
+    const cancelBtn = document.getElementById('confirm-modal-cancel');
+    const confirmBtn = document.getElementById('confirm-modal-confirm');
+    const cleanup = (result) => {
+      overlay.hidden = true;
+      cancelBtn.removeEventListener('click', onCancel);
+      confirmBtn.removeEventListener('click', onConfirm);
+      resolve(result);
+    };
+    const onCancel = () => cleanup(false);
+    const onConfirm = () => cleanup(true);
+    cancelBtn.addEventListener('click', onCancel);
+    confirmBtn.addEventListener('click', onConfirm);
+    overlay.hidden = false;
+    confirmBtn.focus();
+  });
+}
+
+function showAlert(message) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('alert-modal');
+    document.getElementById('alert-modal-message').textContent = message;
+    const okBtn = document.getElementById('alert-modal-ok');
+    const onOk = () => {
+      overlay.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      resolve();
+    };
+    okBtn.addEventListener('click', onOk);
+    overlay.hidden = false;
+    okBtn.focus();
+  });
+}
+
 // FEATURE_INFO gives the Status view's feature grid a human-readable name +
 // real, accurate one-line description for every flag this build actually
 // supports (see cmd/wardline/main.go's featureFlags.Enabled(...) call
@@ -647,12 +692,12 @@ async function pollBlocked() {
 }
 
 async function confirmUnblock(identity, tenant) {
-  if (!window.confirm(`Unblock "${identity}" in tenant "${tenant}"? This clears the automated block before it expires.`)) {
+  if (!(await showConfirm(`Unblock "${identity}" in tenant "${tenant}"? This clears the automated block before it expires.`))) {
     return;
   }
   const result = await unblockIdentity(identity, tenant);
   if (!result.ok) {
-    window.alert(`Could not unblock: ${result.message}`);
+    await showAlert(`Could not unblock: ${result.message}`);
     return;
   }
   pollBlocked();
@@ -724,7 +769,7 @@ async function pollApprovals() {
 async function decideApprovalAction(id, action) {
   const result = await decideApproval(id, action);
   if (!result.ok) {
-    window.alert(`Could not ${action}: ${result.message}`);
+    await showAlert(`Could not ${action}: ${result.message}`);
     return;
   }
   pollApprovals();
@@ -1030,7 +1075,7 @@ function wireCredentials() {
       result.style.color = 'var(--status-critical)';
       return;
     }
-    if (!window.confirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`)) {
+    if (!(await showConfirm(`Revoke the credential for "${identity}"? This immediately invalidates its access and refresh tokens.`))) {
       return;
     }
     btn.disabled = true;
