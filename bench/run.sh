@@ -665,4 +665,60 @@ if [ "$COMBO2_STATUS" -ne 0 ]; then
 fi
 
 echo
+echo "###################################################################"
+echo "# 21. HA: 2 replicas sharing one Postgres pool, same load -- no    #"
+echo "#     double-counting/race in the shared budget or audit trail     #"
+echo "###################################################################"
+if [ -z "${WARDLINE_TEST_POSTGRES_DSN:-}" ]; then
+  echo "WARDLINE_TEST_POSTGRES_DSN not set -- skipping (same real-Postgres gating as scenario 12)"
+else
+  HACHECK="$OUT/hacheck"
+  go build -o "$HACHECK" ./bench/hacheck
+  "$HACHECK" reset "$WARDLINE_TEST_POSTGRES_DSN" ha-bench-agent
+
+  HA_CONFIG_A="$OUT/wardline.ha-replica-a.yaml"
+  HA_CONFIG_B="$OUT/wardline.ha-replica-b.yaml"
+  sed -e "s|\${HA_LISTEN}|:38424|g" -e "s|\${WARDLINE_TEST_POSTGRES_DSN}|$WARDLINE_TEST_POSTGRES_DSN|g" \
+    ./bench/wardline.ha-replica.yaml.tmpl > "$HA_CONFIG_A"
+  sed -e "s|\${HA_LISTEN}|:38425|g" -e "s|\${WARDLINE_TEST_POSTGRES_DSN}|$WARDLINE_TEST_POSTGRES_DSN|g" \
+    ./bench/wardline.ha-replica.yaml.tmpl > "$HA_CONFIG_B"
+
+  "$BIN" serve --config "$HA_CONFIG_A" >"$OUT/server.ha-a.log" 2>&1 & SRV_HA_A=$!
+  "$BIN" serve --config "$HA_CONFIG_B" >"$OUT/server.ha-b.log" 2>&1 & SRV_HA_B=$!
+  PIDS+=("$SRV_HA_A" "$SRV_HA_B")
+  wait_healthy 38424
+  wait_healthy 38425
+
+  # Same identity, same ceiling (1000/window), hammered concurrently
+  # against BOTH replicas at once -- the shared Postgres row (not each
+  # replica's own local view) is what decides admission, so the
+  # combined allowed count across both must equal the ceiling exactly,
+  # not double it (independent per-replica counting) or drift from it
+  # (a race in the shared UPSERT).
+  attack ha-replica-a 38424 ha-bench-agent &
+  HA_PID_A=$!
+  attack ha-replica-b 38425 ha-bench-agent &
+  HA_PID_B=$!
+  wait "$HA_PID_A" "$HA_PID_B"
+
+  kill "$SRV_HA_A" "$SRV_HA_B" 2>/dev/null || true
+  wait "$SRV_HA_A" "$SRV_HA_B" 2>/dev/null || true
+
+  # vegeta's "Requests [total, rate, throughput]  7500, 500.07, ..." line
+  # -- the total is the first comma-separated number after the bracketed
+  # header, field 5 once whitespace-split, with a trailing comma.
+  HA_A_TOTAL=$(grep "^Requests" "$OUT/ha-replica-a.txt" | awk '{print $5}' | tr -d ',')
+  HA_B_TOTAL=$(grep "^Requests" "$OUT/ha-replica-b.txt" | awk '{print $5}' | tr -d ',')
+  HA_TOTAL_SENT=$((HA_A_TOTAL + HA_B_TOTAL))
+
+  "$HACHECK" check "$WARDLINE_TEST_POSTGRES_DSN" ha-bench-agent "$HA_TOTAL_SENT" 1000
+  HA_STATUS=$?
+
+  if [ "$HA_STATUS" -ne 0 ]; then
+    echo "HA scenario FAILED (double-counting or dropped audit entries across replicas) -- see $OUT/server.ha-*.log" >&2
+    exit 1
+  fi
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="

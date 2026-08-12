@@ -18,3 +18,10 @@ rules:
 
   # bench-denied-agent has no rule at all, so every call falls through to
   # "default: deny" -- this is the deny-path benchmark's identity.
+
+  # ha-bench-agent is the HA scenario's own identity (bench/run.sh,
+  # wardline.ha-replica.yaml.tmpl) -- kept distinct from bench-agent so
+  # its budget/audit rows are unambiguous to query and verify against.
+  - identity: ha-bench-agent
+    tool: "*"
+    effect: allow

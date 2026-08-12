@@ -1,0 +1,23 @@
+# Template shared by both HA replicas -- only listen port differs
+# (sed'd in by bench/run.sh). Both replicas point at the SAME Postgres
+# DSN and the SAME budget ceiling for the SAME identity
+# (ha-bench-agent): the whole point of this scenario is proving the
+# shared row (not each replica's own local view) is what admission
+# decisions are made against under real concurrent multi-replica load
+# -- see bench/run.sh's HA scenario for how the combined admitted
+# count is verified against the ceiling exactly, and the shared audit
+# trail's row count is verified against total requests sent.
+listen: "${HA_LISTEN}"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+features:
+  postgres_storage: true
+  budget_enforcement: true
+
+audit:
+  postgres_dsn: "${WARDLINE_TEST_POSTGRES_DSN}"
+
+budget:
+  requests_per_window: 1000
+  window_seconds: 60
