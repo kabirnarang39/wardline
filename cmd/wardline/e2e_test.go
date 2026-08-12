@@ -26,6 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -1625,6 +1629,141 @@ audit:
 	}
 	if gotTrustedHeader != "" {
 		t.Errorf("expected the upstream to never see the trusted mtls header, got %q", gotTrustedHeader)
+	}
+}
+
+// newE2EJWKSServer serves a JWKS containing priv's public key over a real
+// HTTP server (not the fake clock/in-process adapter test —
+// internal/features/credential/adapter/oidc_test.go already covers that
+// level), for the oidc bootstrap source's real-binary end-to-end proof.
+// Mirrors adapter.newTestJWKSServer's shape.
+func newE2EJWKSServer(t *testing.T, priv *rsa.PrivateKey, kid string) *httptest.Server {
+	t.Helper()
+	pub, err := jwk.PublicKeyOf(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.KeyIDKey, kid); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		t.Fatal(err)
+	}
+	set := jwk.NewSet()
+	if err := set.AddKey(pub); err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+}
+
+// signE2EIDToken signs a JWKS-verifiable ID token, expiring in ttl (use a
+// negative ttl to mint an already-expired token for the edge-case test
+// below).
+func signE2EIDToken(t *testing.T, priv *rsa.PrivateKey, kid, issuer, audience, sub, tenantValue string, ttl time.Duration) string {
+	t.Helper()
+	signingKey, err := jwk.Import(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signingKey.Set(jwk.KeyIDKey, kid); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := jwt.NewBuilder().
+		Issuer(issuer).
+		Audience([]string{audience}).
+		Subject(sub).
+		Claim("tenant", tenantValue).
+		IssuedAt(time.Now()).
+		Expiration(time.Now().Add(ttl)).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), signingKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(signed)
+}
+
+// TestServeEndToEnd_OIDCBootstrap proves the oidc bootstrap source end to
+// end against a real running wardline serve: a real HTTP JWKS server
+// stands in for the IdP (no live IdP needed, unlike the comment on
+// e2e_tenant_isolation_test.go's SSO test explains why that one uses
+// SCIM instead) — a valid ID token bootstraps a working bearer token, an
+// expired one is rejected, and a token signed for the wrong audience is
+// rejected too, all as real HTTP responses from the real binary, not
+// unit-level Authenticate() calls (see oidc_test.go for those).
+func TestServeEndToEnd_OIDCBootstrap(t *testing.T) {
+	key, err := rsa.GenerateKey(crand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksSrv := newE2EJWKSServer(t, key, "e2e-key")
+	defer jwksSrv.Close()
+
+	const issuer = "https://idp.e2e-test.example.com/"
+	const audience = "wardline"
+
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "alice"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, fmt.Sprintf(`features:
+  credential_issuance: true
+credential:
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "%s"
+    jwks_uri: "%s"
+    audience: "%s"`, issuer, jwksSrv.URL, audience))
+
+	// Happy path: a valid ID token bootstraps a real bearer token that
+	// proxies an allowed call.
+	validToken := signE2EIDToken(t, key, "e2e-key", issuer, audience, "alice", "acme", time.Hour)
+	tokenResp := postCredentialsToken(t, listenAddr, validToken)
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 bootstrapping a valid OIDC ID token, got %d (stderr: %s)", tokenResp.StatusCode, stderr.String())
+	}
+	var tokenBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("invalid token response: %v", err)
+	}
+	_ = tokenResp.Body.Close()
+	if tokenBody.Token == "" {
+		t.Fatal("expected a non-empty bearer token")
+	}
+	allowedResp := postToolCallWithBearer(t, listenAddr, tokenBody.Token, "read_file")
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an allowed call with a bootstrapped bearer token, got %d (stderr: %s)", allowedResp.StatusCode, stderr.String())
+	}
+
+	// Deny path: wrong audience.
+	wrongAudienceToken := signE2EIDToken(t, key, "e2e-key", issuer, "someone-else", "alice", "acme", time.Hour)
+	wrongAudResp := postCredentialsToken(t, listenAddr, wrongAudienceToken)
+	if wrongAudResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an ID token with the wrong audience, got %d (stderr: %s)", wrongAudResp.StatusCode, stderr.String())
+	}
+
+	// Edge case: expired ID token.
+	expiredToken := signE2EIDToken(t, key, "e2e-key", issuer, audience, "alice", "acme", -time.Hour)
+	expiredResp := postCredentialsToken(t, listenAddr, expiredToken)
+	if expiredResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an expired ID token, got %d (stderr: %s)", expiredResp.StatusCode, stderr.String())
+	}
+
+	// A raw X-Wardline-Identity header alone must still not work, same
+	// regression guard as the other bootstrap sources.
+	legacyHeaderResp := postToolCall(t, listenAddr, "alice", "read_file")
+	if legacyHeaderResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a raw X-Wardline-Identity header with credential_issuance on, got %d", legacyHeaderResp.StatusCode)
 	}
 }
 
