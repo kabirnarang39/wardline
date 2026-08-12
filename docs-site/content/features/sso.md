@@ -79,6 +79,21 @@ issuer/audience, expired token, or a missing/empty tenant claim — is a
 generic `401`, the same non-enumerable-failure posture as a rejected
 preshared secret.
 
+A token whose `kid` isn't in the cached JWKS (an IdP rotated its signing
+key since the last 15-minute refresh — real IdPs add a new key well
+before removing the old one, exactly the overlap window [Microsoft's own
+Azure AD key-rollover
+guidance](https://learn.microsoft.com/en-us/entra/identity-platform/active-directory-signing-key-rollover)
+describes handling this way) triggers one forced, rate-limited JWKS
+refresh and a single retry before falling back to the generic `401` —
+not a bare rejection until the next scheduled refresh. The rate limit
+(at most one forced refresh per 30 seconds, across every concurrent
+caller) bounds the cost so a flood of tokens signed with a genuinely
+unknown key can't turn every rejection into its own request against the
+IdP. `aud` is accepted whether the token encodes it as a single string
+or an array containing wardline's configured audience alongside others
+(RFC 7519 §4.1.3 permits both forms; real IdPs use each).
+
 `wardline validate-config` attempts to construct the OIDC bootstrapper
 when `bootstrap_source: oidc` — the same construction `wardline serve`
 itself does at startup. The underlying JWKS client
