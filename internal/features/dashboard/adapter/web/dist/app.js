@@ -49,7 +49,12 @@ function pollerFailed(name, err) {
   if (err && err.status === 404) {
     if (!disabledPollers.has(name)) {
       disabledPollers.add(name);
-      console.error(`${name} poll failed (feature not enabled on this server, no further retries):`, err);
+      // console.info, not console.error: this is the expected, permanent
+      // "operator didn't turn the feature on" state (see disabledPollers'
+      // own doc comment above), not something wrong -- logging it as an
+      // error would show up red in devtools next to genuinely actionable
+      // errors for someone debugging something unrelated.
+      console.info(`${name} poll failed (feature not enabled on this server, no further retries):`, err);
     }
     return;
   }
@@ -749,7 +754,7 @@ function renderJobBudget() {
 
   tbody.innerHTML = entries.map((e) => `
     <tr>
-      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td class="key-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
       <td>${escapeHTML(String(e.Count))}</td>
     </tr>
   `).join('');
@@ -789,7 +794,7 @@ function renderCostBudget() {
 
   tbody.innerHTML = entries.map((e) => `
     <tr>
-      <td class="reason-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
+      <td class="key-cell" title="${escapeHTML(e.Key)}">${escapeHTML(e.Key)}</td>
       <td>${escapeHTML(String(e.Total))}</td>
     </tr>
   `).join('');
@@ -1512,6 +1517,25 @@ function formatUptime(totalSeconds) {
   return `${h}h ${m}m ${s}s`;
 }
 
+// VALID_VIEWS mirrors every .nav-item's data-view value in index.html.
+// Kept as an explicit list rather than derived from the DOM at call
+// time so viewFromHash (used before the DOM is guaranteed ready, and
+// on every popstate) never depends on query timing.
+const VALID_VIEWS = [
+  'overview', 'activity', 'anomalies', 'blocked', 'approvals', 'federation',
+  'policy', 'rbac', 'budget', 'job-budget', 'cost-budget', 'credentials',
+  'status', 'reload-log', 'compliance',
+];
+
+// viewFromHash resolves the current #/<view> URL fragment to a valid
+// view name, defaulting to 'overview' for an empty, malformed, or
+// unrecognized fragment -- the same fail-safe-to-a-known-good-state
+// posture every other unrecognized-input path in this dashboard takes.
+function viewFromHash() {
+  const name = location.hash.replace(/^#\/?/, '');
+  return VALID_VIEWS.includes(name) ? name : 'overview';
+}
+
 function switchView(name) {
   document.querySelectorAll('.view').forEach((el) => {
     el.hidden = el.id !== `view-${name}`;
@@ -1607,10 +1631,21 @@ function renderComplianceManifest(m) {
     : '<li>No anomalies in this range.</li>';
 }
 
+// wireNav wires each sidebar button to switch views AND keep the URL's
+// #/<view> fragment in sync (pushState, so browser back/forward moves
+// between views like any other real navigation) -- without this, a
+// bookmarked or shared link to a specific view, or a page refresh,
+// always landed back on Overview regardless of which view the URL
+// fragment named, because nothing ever read or wrote location.hash.
 function wireNav() {
   document.querySelectorAll('.nav-item').forEach((btn) => {
-    btn.addEventListener('click', () => switchView(btn.dataset.view));
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.view;
+      if (location.hash !== `#/${name}`) history.pushState(null, '', `#/${name}`);
+      switchView(name);
+    });
   });
+  window.addEventListener('popstate', () => switchView(viewFromHash()));
 }
 
 function wireFilters() {
@@ -1714,6 +1749,11 @@ function init() {
   wireTopbar();
   wireThemeToggle();
   document.getElementById('needs-review-cta').addEventListener('click', () => switchView('anomalies'));
+  // Restores whatever view a #/<view> URL fragment names (a deep link,
+  // a bookmark, a refresh) -- a no-op for the common empty-hash case,
+  // since index.html's markup already shows Overview by default.
+  const initialView = viewFromHash();
+  if (initialView !== 'overview') switchView(initialView);
   loadStatus();
   pollAudit();
   pollAnomalies();
