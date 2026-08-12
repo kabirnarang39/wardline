@@ -89,12 +89,12 @@ func usage() {
 // a naming collision.
 func runTaintSession(addr, identity, session string, iterations int) (ok, failed int64) {
 	for range iterations {
-		readStatus := call(addr, identity, session, "web_fetch", "")
+		readStatus := call(addr, identity, session, "web_fetch")
 		if readStatus != http.StatusOK {
 			failed++
 			continue
 		}
-		writeStatus := call(addr, identity, session, "delete_file", "")
+		writeStatus := call(addr, identity, session, "delete_file")
 		if writeStatus != http.StatusForbidden {
 			failed++
 			continue
@@ -113,11 +113,11 @@ func runTaintSession(addr, identity, session string, iterations int) (ok, failed
 // call after that is held again (202, single-use consumed).
 func runApprovalSession(addr, identity, session string, iterations int) (ok, failed int64) {
 	for range iterations {
-		if call(addr, identity, session, "web_fetch", "") != http.StatusOK {
+		if call(addr, identity, session, "web_fetch") != http.StatusOK {
 			failed++
 			continue
 		}
-		if call(addr, identity, session, "delete_file", "") != http.StatusAccepted {
+		if call(addr, identity, session, "delete_file") != http.StatusAccepted {
 			failed++
 			continue
 		}
@@ -130,11 +130,11 @@ func runApprovalSession(addr, identity, session string, iterations int) (ok, fai
 			failed++
 			continue
 		}
-		if call(addr, identity, session, "delete_file", "") != http.StatusOK {
+		if call(addr, identity, session, "delete_file") != http.StatusOK {
 			failed++
 			continue
 		}
-		if call(addr, identity, session, "delete_file", "") != http.StatusAccepted {
+		if call(addr, identity, session, "delete_file") != http.StatusAccepted {
 			failed++
 			continue
 		}
@@ -143,7 +143,7 @@ func runApprovalSession(addr, identity, session string, iterations int) (ok, fai
 	return ok, failed
 }
 
-func call(addr, identity, session, tool, extraHeader string) int {
+func call(addr, identity, session, tool string) int {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
 	if err != nil {
