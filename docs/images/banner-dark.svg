@@ -5,26 +5,29 @@
       <stop offset="100%" stop-color="#3FB950"/>
     </linearGradient>
     <clipPath id="wl-bar-clip-dark">
-      <rect x="20" y="26" width="12" height="80" rx="3"/>
+      <rect x="150" y="26" width="12" height="80" rx="3"/>
     </clipPath>
   </defs>
 
   <!-- The mark: the same vertical gradient bar the dashboard header and
        login page actually use (see internal/features/dashboard/adapter/
        web/dist/style.css's .brand-mark), one real identity across the
-       product and this README, not a second logo invented for GitHub. -->
-  <rect x="20" y="26" width="12" height="80" rx="3" fill="url(#wl-bar-dark)"/>
+       product and this README, not a second logo invented for GitHub.
+       Content block is shifted +130 from the viewBox's left edge so its
+       actual ink (bar through subtitle, x~148-410) sits centered in the
+       560-wide viewBox instead of hugging the left third of it. -->
+  <rect x="150" y="26" width="12" height="80" rx="3" fill="url(#wl-bar-dark)"/>
 
   <!-- A signal passing through the bar, looping: the same idea the
        product enforces on every call, something always moving
        through the check, top to bottom, never invisible. -->
   <g clip-path="url(#wl-bar-clip-dark)">
-    <rect x="18" y="26" width="16" height="20" fill="#F8FAFC" opacity="0">
+    <rect x="148" y="26" width="16" height="20" fill="#F8FAFC" opacity="0">
       <animate attributeName="y" values="16;96" dur="2.8s" begin="0s" repeatCount="indefinite"/>
       <animate attributeName="opacity" values="0;0.6;0.6;0" keyTimes="0;0.15;0.75;1" dur="2.8s" begin="0s" repeatCount="indefinite"/>
     </rect>
   </g>
 
-  <text x="50" y="84" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="700" letter-spacing="-2" fill="#F8FAFC">wardline</text>
-  <text x="53" y="112" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="13" letter-spacing="0.6" fill="#8B95A1">control plane for AI agents</text>
+  <text x="180" y="84" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="700" letter-spacing="-2" fill="#F8FAFC">wardline</text>
+  <text x="183" y="112" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="13" letter-spacing="0.6" fill="#8B95A1">control plane for AI agents</text>
 </svg>
