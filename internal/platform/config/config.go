@@ -710,8 +710,17 @@ func (c *Config) validate() error {
 		}
 	}
 	if c.Features["credential_issuance"] {
-		if c.Credential.IdentitiesFile == "" {
-			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true")
+		// identities_file backs a static identity registry -- required
+		// for presharedsecret (the secret->identity map itself) and mtls
+		// (the spiffe_id->identity map, see LoadMTLSBootstrapper), but
+		// oidc has no static registry to speak of: an identity and its
+		// tenant are learned entirely from the ID token's own claims at
+		// the moment it authenticates (see main.go's oidc bootstrap
+		// branch, which never reads cfg.Credential.IdentitiesFile at
+		// all). Requiring it unconditionally forced every OIDC-only
+		// operator to maintain a dummy, wholly unused identities file.
+		if c.Credential.IdentitiesFile == "" && c.Credential.BootstrapSource != "oidc" {
+			problems = append(problems, "credential.identities_file must not be empty when features.credential_issuance is true (unless credential.bootstrap_source is \"oidc\")")
 		}
 		if c.Credential.KMS.KeyID != "" && c.Credential.SigningKeyFile != "" {
 			problems = append(problems, "credential.kms.key_id and credential.signing_key_file are mutually exclusive -- the signing key lives in exactly one place")
