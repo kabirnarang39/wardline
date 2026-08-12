@@ -162,6 +162,68 @@ func (h *LoginHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 // since errMsg's only current caller passes static strings but this
 // function's own contract must not silently become an XSS vector if
 // that ever changes.
+// loginPageStyle is the dashboard's own design system (self-hosted
+// fonts, --ink/--surface/--status-* tokens -- see
+// internal/features/dashboard/adapter/web/dist/style.css's v4 block),
+// duplicated as literal values rather than imported: this package
+// cannot import dashboard/adapter without violating the feature-slice
+// boundary (CLAUDE.md), and the font/asset URLs below are plain HTTP
+// references to files the dashboard's own spaHandler already serves at
+// /dashboard/fonts/*, not a Go-level dependency. Keep these values in
+// sync with style.css's :root and :root[data-theme="light"] blocks by
+// hand if that palette ever changes -- there is no single source of
+// truth shared between the two today.
+const loginPageStyle = `
+@font-face{font-family:'Space Grotesk';font-weight:500 700;font-display:swap;src:url(/dashboard/fonts/space-grotesk-variable.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Sans';font-weight:400 600;font-display:swap;src:url(/dashboard/fonts/ibm-plex-sans-variable.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-weight:400;font-display:swap;src:url(/dashboard/fonts/ibm-plex-mono-400.woff2) format('woff2')}
+:root{--ink:#0F1419;--surface:#181D23;--surface-raised:#20262E;--border:#2A3038;--text:#E4E7EB;--text-muted:#8B95A1;--status-ok:#3FB950;--status-critical:#F85149;--status-critical-soft:rgba(248,81,73,.14);--status-info:#58A6FF;--status-info-soft:rgba(88,166,255,.14);--radius-panel:6px;--radius-control:4px;--shadow-raised:0 8px 24px rgba(0,0,0,.4);--font-heading:'Space Grotesk',system-ui,sans-serif;--font-body:'IBM Plex Sans',system-ui,sans-serif;--font-data:'IBM Plex Mono',ui-monospace,monospace;--ease-out:cubic-bezier(.16,1,.3,1)}
+:root[data-theme="light"]{--ink:#F6F8FA;--surface:#FFFFFF;--surface-raised:#F0F2F5;--border:#D8DEE5;--text:#0F1419;--text-muted:#5B6B82;--status-ok:#1A7F37;--status-critical:#CF222E;--status-critical-soft:rgba(207,34,46,.08);--status-info:#0969DA;--status-info-soft:rgba(9,105,218,.10);--shadow-raised:0 8px 24px rgba(15,20,25,.16)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--ink);color:var(--text);font-family:var(--font-body);display:flex;align-items:center;justify-content:center;padding:24px}
+.theme-toggle{position:fixed;top:20px;right:20px;width:32px;height:32px;border-radius:var(--radius-control);border:1px solid var(--border);background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}
+.theme-toggle svg{width:15px;height:15px}
+.scene{width:100%;max-width:380px}
+.brand{display:flex;align-items:center;gap:9px;font-family:var(--font-heading);font-weight:700;font-size:19px;letter-spacing:-.01em;justify-content:center;margin-bottom:8px}
+.brand-mark{display:inline-block;width:8px;height:22px;border-radius:2px;background:linear-gradient(180deg,var(--status-info),var(--status-ok));animation:brand-blink 280ms var(--ease-out) 1}
+@keyframes brand-blink{0%{opacity:0}50%{opacity:1}75%{opacity:.3}100%{opacity:1}}
+@media (prefers-reduced-motion: reduce){.brand-mark{animation:none}}
+.tagline{text-align:center;color:var(--text-muted);font-size:13px;margin:0 0 32px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-panel);box-shadow:var(--shadow-raised);padding:28px 28px 24px}
+.card h1{font-family:var(--font-heading);font-size:16px;font-weight:600;margin:0 0 4px}
+.card .sub{color:var(--text-muted);font-size:13px;margin:0 0 22px;line-height:1.5}
+.field{margin-bottom:16px}
+label{display:block;font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}
+input[type="password"]{width:100%;background:var(--surface-raised);border:1px solid var(--border);border-radius:var(--radius-control);color:var(--text);font-family:var(--font-data);font-size:13.5px;padding:10px 12px;transition:border-color 120ms var(--ease-out)}
+input::placeholder{color:var(--text-muted);font-family:var(--font-body)}
+input:focus{outline:none;border-color:var(--status-info);box-shadow:0 0 0 3px var(--status-info-soft)}
+.hint{font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.5}
+button.submit{width:100%;background:var(--status-ok);color:#06170A;border:none;border-radius:var(--radius-control);font-family:var(--font-body);font-weight:600;font-size:14px;padding:10px;cursor:pointer;transition:filter 120ms var(--ease-out);margin-top:4px}
+button.submit:hover{filter:brightness(1.08)}
+button.submit:active{filter:brightness(.95)}
+button.submit:focus-visible{outline:2px solid var(--status-info);outline-offset:2px}
+.error-banner{display:flex;align-items:center;gap:8px;background:var(--status-critical-soft);border:1px solid var(--status-critical);color:var(--status-critical);border-radius:var(--radius-control);padding:9px 12px;font-size:12.5px;margin-bottom:18px}
+.error-banner svg{width:14px;height:14px;flex-shrink:0}
+.footer-note{text-align:center;color:var(--text-muted);font-size:11.5px;margin-top:20px;font-family:var(--font-data)}
+.footer-note code{background:var(--surface-raised);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+`
+
+// loginPageScript reads/writes the exact same localStorage key
+// app.js's own theme toggle uses ('wardline-theme') so a returning
+// user's theme choice carries over between the login page and the
+// dashboard behind it, rather than the login page always defaulting to
+// dark regardless of what they picked last time.
+const loginPageScript = `
+(function(){var t=localStorage.getItem('wardline-theme')||'dark';if(t==='light')document.documentElement.setAttribute('data-theme','light');})();
+document.querySelector('.theme-toggle').addEventListener('click',function(){
+  var next=document.documentElement.getAttribute('data-theme')==='light'?'dark':'light';
+  if(next==='light'){document.documentElement.setAttribute('data-theme','light')}else{document.documentElement.removeAttribute('data-theme')}
+  localStorage.setItem('wardline-theme',next);
+});
+`
+
 func (h *LoginHandler) serveLoginForm(w http.ResponseWriter, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if errMsg != "" {
@@ -169,24 +231,33 @@ func (h *LoginHandler) serveLoginForm(w http.ResponseWriter, errMsg string) {
 	}
 	var errBlock string
 	if errMsg != "" {
-		errBlock = `<p style="color:#b00020">` + html.EscapeString(errMsg) + `</p>`
+		errBlock = `<div class="error-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>` +
+			html.EscapeString(errMsg) + `</div>`
 	}
 	_, _ = w.Write([]byte(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Wardline — Sign in</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body{font-family:system-ui,sans-serif;max-width:360px;margin:10vh auto;padding:0 16px;color:#1a1a1a}
-h1{font-size:1.25rem}
-input{width:100%;box-sizing:border-box;padding:8px;margin:8px 0;font-size:1rem}
-button{width:100%;padding:8px;font-size:1rem;cursor:pointer}
-</style></head>
+<style>` + loginPageStyle + `</style></head>
 <body>
-<h1>Wardline</h1>
+<button class="theme-toggle" aria-label="Toggle theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+<div class="scene">
+<div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Wardline</span></div>
+<p class="tagline">Control-plane console</p>
+<div class="card">
+<h1>Sign in</h1>
+<p class="sub">Enter a bootstrap secret or an OIDC ID token issued for this instance.</p>
 ` + errBlock + `
 <form method="POST" action="/dashboard/login">
+<div class="field">
 <label for="secret">Bootstrap secret or OIDC ID token</label>
 <input type="password" id="secret" name="secret" autofocus required>
-<button type="submit">Sign in</button>
+<p class="hint">Exchanged once for a short-lived session — never stored, never logged.</p>
+</div>
+<button class="submit" type="submit">Sign in</button>
 </form>
+<div class="footer-note">wardline · /dashboard/login</div>
+</div>
+</div>
+<script>` + loginPageScript + `</script>
 </body></html>`))
 }
