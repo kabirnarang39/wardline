@@ -19,6 +19,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net"
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
@@ -73,21 +76,51 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: grpcload upstream <listen-addr>")
+	fmt.Fprintln(os.Stderr, "usage: grpcload upstream <listen-addr> [cert-file key-file ca-file]")
+	fmt.Fprintln(os.Stderr, "       (pass cert/key/ca to require mutual TLS -- for the grpc_upstream_tls + spiffe_workload_identity scenario)")
 	fmt.Fprintln(os.Stderr, "       grpcload load <target-addr> <identity> <concurrency> <duration> [bearer-token]")
 	fmt.Fprintln(os.Stderr, "       (pass bearer-token when the target has credential_issuance on -- it no longer trusts a bare identity metadata value)")
 	os.Exit(2)
 }
 
 func runUpstream(args []string) {
-	if len(args) != 1 {
+	if len(args) != 1 && len(args) != 4 {
 		usage()
 	}
 	lis, err := net.Listen("tcp", args[0])
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	srv := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(echoHandler))
+	var opts []grpc.ServerOption
+	if len(args) == 4 {
+		certFile, keyFile, caFile := args[1], args[2], args[3]
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Fatalf("load server cert/key: %v", err)
+		}
+		caPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			log.Fatalf("read ca file: %v", err)
+		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caPEM) {
+			log.Fatalf("no certificates parsed from %s", caFile)
+		}
+		tlsCfg := &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{cert},
+			ClientCAs:    caPool,
+			// Real mutual TLS, not server-only: wardline's presented
+			// SPIFFE SVID must chain to the same CA this upstream
+			// trusts -- proving the whole mTLS-to-upstream path, not
+			// just that the upstream happens to speak TLS.
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		}
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		log.Printf("grpcload upstream requiring mutual TLS (cert=%s ca=%s)", certFile, caFile)
+	}
+	opts = append(opts, grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(echoHandler))
+	srv := grpc.NewServer(opts...)
 	log.Printf("grpcload upstream echoing on %s", args[0])
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)

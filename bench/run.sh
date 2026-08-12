@@ -296,4 +296,34 @@ if [ "$ANOMALYATTACK_STATUS" -ne 0 ]; then
 fi
 
 echo
+echo "###################################################################"
+echo "# 9. gRPC transport with TLS on: spiffe_workload_identity + real   #"
+echo "#    mutual TLS to the upstream, under load                        #"
+echo "###################################################################"
+SPIFFEIDP="$OUT/spiffeidp"
+go build -o "$SPIFFEIDP" ./bench/spiffeidp
+SPIFFE_SOCKET="/tmp/wardline-bench-spiffe-workload.sock"
+UPSTREAM_CERT="$OUT/grpc-tls-upstream-cert.pem"
+UPSTREAM_KEY="$OUT/grpc-tls-upstream-key.pem"
+CA_CERT="$OUT/grpc-tls-ca-cert.pem"
+rm -f "$SPIFFE_SOCKET" # stale socket from a prior run -- see bench/spiffeidp's own os.Remove for why the server side also does this
+
+"$SPIFFEIDP" "$SPIFFE_SOCKET" "spiffe://bench.example.com/wardline" "spiffe://bench.example.com/upstream" \
+  "$UPSTREAM_CERT" "$UPSTREAM_KEY" "$CA_CERT" >"$OUT/spiffeidp.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 1 50); do [ -S "$SPIFFE_SOCKET" ] && break; sleep 0.1; done
+[ -S "$SPIFFE_SOCKET" ] || { echo "spiffeidp never created its workload API socket" >&2; exit 1; }
+
+"$GRPCLOAD" upstream :39403 "$UPSTREAM_CERT" "$UPSTREAM_KEY" "$CA_CERT" >"$OUT/grpc-tls-upstream.log" 2>&1 & PIDS+=($!)
+sleep 0.3
+
+"$BIN" serve --config ./bench/wardline.grpc-tls.yaml >"$OUT/server.grpc-tls.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38409
+sleep 0.5 # grpc_listen starts alongside the HTTP listener, same reason scenario 2's grpc run has this
+
+"$GRPCLOAD" load "localhost:38410" bench-agent "$GRPC_CONCURRENCY" "$DURATION" | tee "$OUT/grpc-tls.txt"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
