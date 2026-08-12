@@ -140,7 +140,15 @@ and by two *different* mechanisms depending on which button you press:
   from the `dashboard:view` permission the rest of the Blocked view
   relies on to render at all. A caller who can see the Blocked table
   (holds `dashboard:view`) but lacks `credential:revoke` gets a clean
-  `403` clicking Unblock, same posture as Credentials' Revoke.
+  `403` clicking Unblock, same posture as Credentials' Revoke. **This
+  means Unblock only works at all when `features.rbac` is also on** —
+  `credential:revoke` is an RBAC permission, so with `rbac` off there is
+  no authorizer to check it against and the button's own request gets a
+  generic `404`, not a `403`. Verified live: `anomaly_detection` +
+  `web_ui` with `rbac` off renders the Blocked table (and the button)
+  fine, but clicking Unblock always 404s. Turn `rbac` on if you need
+  Unblock to actually work — the table itself, and every other
+  dashboard view, functions the same either way.
 
 **A sharp edge worth knowing before you rely on either button:**
 neither button's own client-side code attaches a credential of its
