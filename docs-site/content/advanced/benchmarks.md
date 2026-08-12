@@ -51,6 +51,8 @@ and `bench/grpcload upstream` for gRPC.
 | mtls allow path (bootstrapped bearer token) | 500 req/s | 100% | 0.39ms | 1.15ms | 2.63ms |
 | Anomaly detection: attack-shaped burst (novel-tool + deny-rate spike) | max (50 workers) | **auto_block fired** — ~50,000 req/s sustained during the burst | 1.0ms | 2.5ms | 4.0ms |
 | gRPC transport, TLS on (spiffe_workload_identity + real mutual TLS to upstream) | max (50 workers) | 100%, 0 errors | 0.91ms | 1.61ms | 2.09ms — **51,520 req/s throughput** |
+| SCIM filter query (`GET /scim/v2/Users?filter=...`) | 500 req/s | 100% | 0.27ms | 0.45ms | 0.88ms |
+| **SCIM Bulk create (5 ops/request)** | max (50 workers) | **100%, 0 errors** | 0.69ms | 3.15ms | 5.01ms — **49,689 bulk-req/s (248,445 Create ops/s)** |
 | RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
 | RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 
