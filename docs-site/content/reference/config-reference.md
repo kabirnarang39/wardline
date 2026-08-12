@@ -16,6 +16,7 @@ this shape (`internal/platform/config/config.go`).
 | `policy_backend` | string | `yaml` (default), `opa`, or `cedar`. |
 | `grpc_listen` | string | `host:port` for the gRPC listener — required when `features.grpc_transport` is true. See [gRPC Transport](/features/grpc-transport/). |
 | `grpc_upstream` | string | Upstream gRPC target (`host:port`, plaintext) — required when `features.grpc_transport` is true. |
+| `grpc_upstream_tls` | bool | Dial the gRPC upstream over TLS instead of plaintext. Default false. See [gRPC Transport](/features/grpc-transport/). |
 | `shutdown_delay_seconds` | int | How long a replica keeps serving requests normally after receiving SIGTERM/SIGINT before it begins its own drain sequence. Zero (the default) preserves current shutdown behavior exactly: draining begins the instant the signal arrives. An in-process substitute for a Kubernetes `preStop` hook — see [High Availability](/deployment/high-availability/). |
 | `features` | map[string]bool | Feature flags — see each feature's own page. |
 
@@ -34,6 +35,8 @@ this shape (`internal/platform/config/config.go`).
 |---|---|---|
 | `requests_per_window` | int | See [Budget Enforcement](/features/budget-enforcement/). |
 | `window_seconds` | int | Window length in seconds. |
+| `tenants.<name>.requests_per_window` / `.window_seconds` | int×2 | Per-tenant override of the two global fields above, keyed by tenant name. A tenant absent from this map uses the global default unchanged. Only one level deep — a nested `tenants.acme.tenants.*` is silently ignored, not an error. |
+| `tools.<name>.requests_per_window` / `.window_seconds` | int×2 | Per-tool override, same shape and same one-level-deep caveat as `tenants` above. |
 
 ## `tracing`
 
@@ -48,12 +51,16 @@ this shape (`internal/platform/config/config.go`).
 |---|---|---|
 | `identities_file` | string | Path to the identities file. |
 | `signing_key_file` | string | Optional PEM RSA key path — see [HA Deployment](/deployment/high-availability/). Mutually exclusive with `kms.key_id`. |
+| `previous_signing_key_files` | list of string | PEM RSA private keys whose public halves are accepted for verification only — the key-rotation window. Empty (default) means no rotation in progress. |
+| `access_token_ttl_seconds` | int | How long an issued access token is valid for. 0 (default) uses 900s (15m). Negative is a validation error. |
+| `refresh_token_ttl_seconds` | int | How long an issued refresh token remains redeemable. 0 (default) uses 86400s (24h). Negative is a validation error. |
 | `kms.key_id` / `.region` | string×2 | AWS KMS-backed signing key instead of a local PEM file — the private key never leaves KMS. `region` optional (defaults to the AWS SDK's own region resolution). Mutually exclusive with `signing_key_file`. See [HA Deployment](/deployment/high-availability/). |
 | `bootstrap_source` | string | `presharedsecret` (default), `oidc`, or `mtls`. See [SSO](/features/sso/) and [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/). |
 | `oidc.issuer` / `.jwks_uri` / `.audience` / `.identity_claim` / `.tenant_claim` | string×5 | Single-IdP OIDC bootstrap. `jwks_uri` optional (resolved via discovery when unset). See [SSO](/features/sso/). |
 | `oidc_providers` | list | Multi-IdP OIDC bootstrap — a list of the same 5 fields `oidc` above has, one entry per issuer, routed by the token's own `iss` claim. Mutually exclusive with `oidc`. See [SSO](/features/sso/)'s "More than one IdP" section. |
 | `spiffe_workload.socket_path` | string | Unix socket of the local SPIFFE Workload API (a SPIRE agent). Optional — defaults to the `SPIFFE_ENDPOINT_SOCKET` env var when unset. Requires `features.spiffe_workload_identity`. See [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/#wardline-as-a-spiffe-workload-outbound). |
 | `spiffe_workload.upstream_peer_id` | string | The exact SPIFFE ID Wardline requires the gRPC upstream to present. Optional but recommended — without it, any SPIFFE-authenticated peer is accepted. |
+| `mtls.header` | string | The header name Wardline trusts to carry an already-verified SPIFFE ID from a terminating mTLS proxy/mesh. No default — required when `bootstrap_source: mtls`. See [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/). |
 
 ## `dashboard`
 
@@ -126,3 +133,43 @@ Only meaningful when `features.log_retention` is true. A single shared cadence f
 | Field | Type | Purpose |
 |---|---|---|
 | `check_interval_seconds` | int | How often the retention purge job runs. |
+
+## `taint`
+
+Only meaningful when `features.taint_tracking` is true. See [Taint Tracking](/features/taint-tracking/).
+
+| Field | Type | Purpose |
+|---|---|---|
+| `untrusted_sources` | list of string | Tool names whose invocation taints the calling (tenant, identity, session). |
+| `declassify_sources` | list of string | Tool names that clear an existing taint. |
+| `ttl_seconds` | int | How long a taint persists before expiring on its own. |
+| `session_window_seconds` | int | Fallback session-window width used when a call carries no session header. |
+| `session_header` | string | Header name carrying an explicit agent session ID. |
+
+## `approval`
+
+Only meaningful when `features.approval_workflow` is true. See [Approval Workflow](/features/approval-workflow/).
+
+| Field | Type | Purpose |
+|---|---|---|
+| `grant_ttl_seconds` | int | How long an approved grant remains valid before requiring re-approval. |
+
+## `job_budget`
+
+Only meaningful when `features.job_budget` is true. See [Job Budget](/features/job-budget/).
+
+| Field | Type | Purpose |
+|---|---|---|
+| `requests_per_job` | int | Per-job request ceiling. |
+| `session_window_seconds` | int | Fallback session-window width used when a call carries no `X-Wardline-Session` header. |
+
+## `job_cost_budget`
+
+Only meaningful when `features.job_cost_budget` is true. See [Cost Budget](/features/cost-budget/).
+
+| Field | Type | Purpose |
+|---|---|---|
+| `ceiling` | int | Per-job cost/token ceiling. |
+| `tool_costs` | map[string]int | Per-tool cost override, keyed by tool name. |
+| `default_cost` | int | Cost charged for a tool with no entry in `tool_costs`. |
+| `session_window_seconds` | int | Fallback session-window width, same role as `job_budget.session_window_seconds`. |

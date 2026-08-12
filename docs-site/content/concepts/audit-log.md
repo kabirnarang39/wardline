@@ -4,10 +4,11 @@ weight: 40
 ---
 
 Every decision Wardline makes (`allow`, `deny`, `throttled`,
-`passthrough`, `error`, `blocked`) is written as one structured JSON line to
-`audit.output` — `stdout` by default, or a file path, or (with
-`features.postgres_storage: true`) a Postgres table for durable,
-queryable storage shared across replicas.
+`passthrough`, `error`, `blocked`, `needs_approval`,
+`job_budget_exceeded`, `cost_budget_exceeded`) is written as one
+structured JSON line to `audit.output` — `stdout` by default, or a
+file path, or (with `features.postgres_storage: true`) a Postgres
+table for durable, queryable storage shared across replicas.
 
 Each entry carries: timestamp, identity, tenant, tool, decision, latency
 (ms), and — when applicable — a reason and a trace ID. This is the
