@@ -21,17 +21,23 @@
 
 ---
 
-**Wardline** is an open-source proxy that sits between your AI agents and everything they call (MCP servers, tools, gRPC upstreams) and enforces **identity, policy, budget, and audit** — with statistical anomaly detection that **blocks a compromised agent in real time**, no rule written for the attack and no human in the loop. One static Go binary; no database, IdP, or sidecar to start.
+Your AI agent has a thousand tools and no supervisor. The day it gets prompt-injected, jailbroken, or simply goes wrong, it starts calling things it never should — and you never wrote a rule for *that*, because you didn't see it coming.
+
+**Wardline** sits in front of every call your agents make — MCP servers, tools, gRPC upstreams — and enforces **identity, policy, budget, and audit**. Then it watches: statistical anomaly detection learns each agent's normal behavior and **blocks a compromised one in real time** — no rule written for the attack, no human in the loop. One static Go binary. No database, IdP, or sidecar to start.
+
+### See it happen
+
+A normal agent gets compromised mid-run. Wardline learns its baseline, catches the burst, and auto-blocks it — down to its previously-allowed calls — live:
 
 <div align="center">
   <img alt="Wardline auto-blocking a compromised agent" src="docs/images/wardline-demo.gif" width="800">
 </div>
 
 ```bash
-make demo   # spins up a mock MCP server + Wardline and runs the scenario above
+make demo   # runs exactly this, locally, in ~30s — mock MCP server + Wardline, zero setup
 ```
 
-The same run in the built-in read-only dashboard — the block, the anomaly that triggered it, and the policy behind it:
+Every decision lands in the built-in read-only dashboard — the block, the `ml_score` anomaly that triggered it, and the policy behind it:
 
 <div align="center">
   <img alt="Wardline dashboard: the blocked agent, its ml_score anomaly, and the policy" src="docs/images/wardline-dashboard-demo.webp" width="800">
@@ -47,25 +53,14 @@ Any caller — an AI agent, a CLI/IDE, or an app — reaches its MCP/gRPC upstre
 
 Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concepts/architecture/).
 
-## Key Features
+## What it does
 
-- **Real-time anomaly auto-block, abrupt *and* sustained**<br>
-  Seven self-baselining heuristics — rate spike, novel tool, deny-rate spike, a combined `ml_score` z-score, a CUSUM `drift_detection` control chart, cross-identity `tenant_anomaly` aggregation, and `identity_churn` (a burst of never-before-seen identities in one tenant) — all via Welford/CUSUM online statistics, no training data, no external model. `auto_block` *rejects* a flagged identity's calls for a bounded TTL, not a log line. `drift_detection` specifically closes the low-and-slow gap a per-window z-score test can't: the standard statistical-process-control technique (Montgomery's CUSUM, the "de facto workhorse" of sequential intrusion detection) for a slow, sustained ramp no single window looks anomalous on its own. `identity_churn` closes the gap `drift_detection`'s own `h_jitter_fraction` moving-target defense can't by construction: an attacker minting disposable identities to re-roll for a favorable per-identity jitter draw — measured directly, 0/30 throwaway identities individually caught by any per-identity heuristic, `identity_churn` flagged the burst. Real, measured recall numbers (not a marketing claim) in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark), including the honest residuals (a real, quantified mimicry ceiling, and identity_churn's own current in-memory-only scope) in [adversarial scenarios](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#adversarial-scenarios).
-
-- **Three policy backends, one binary**<br>
-  Static YAML, embedded OPA/Rego, and embedded AWS Cedar — switched by a single `policy_backend` config key, with no external process and no network hop.
-
-- **Identity & access**<br>
-  Short-lived RS256 JWT issuance with refresh tokens and JWKS rotation, OIDC / mTLS-SPIFFE bootstrap, Kubernetes-style RBAC, SCIM 2.0 provisioning, and end-to-end tenant isolation.
-
-- **Budget & rate control**<br>
-  Two-tier per-identity **and** per-tenant rate limits — both must clear for a call to proceed.
-
-- **Compliance & audit**<br>
-  Structured JSON audit trail, `wardline export-evidence` (checksummed, RSA-signable bundle for an auditor), configurable retention, and `wardline infer-policy` to generate a starter allow-list from observed traffic.
-
-- **Federation & observability**<br>
-  Cross-instance correlation over signed, pseudonymized anomaly summaries; OpenTelemetry tracing; a live web dashboard; and HA multi-replica deployment with shared state over Postgres.
+- **Real-time anomaly auto-block** — seven self-baselining heuristics (rate spike, novel tool, deny-rate spike, an `ml_score` z-score, a CUSUM drift chart for low-and-slow ramps, cross-tenant aggregation, and identity-churn) learn each agent online — no training data, no external model. A flagged agent is *rejected* for a bounded TTL, not just logged. Real measured recall and honest residuals in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
+- **Three policy backends, one binary** — YAML, embedded OPA/Rego, or embedded AWS Cedar, chosen by one config key. No external process, no network hop.
+- **Identity & access** — short-lived RS256 JWTs (refresh + JWKS rotation), OIDC / mTLS-SPIFFE bootstrap, Kubernetes-style RBAC, SCIM 2.0, end-to-end tenant isolation.
+- **Budget & rate control** — per-identity *and* per-tenant limits; both must clear for a call to pass.
+- **Compliance & audit** — structured JSON trail, signed evidence export for auditors, configurable retention, and `infer-policy` to bootstrap an allow-list from real traffic.
+- **Federation & observability** — cross-instance correlation over signed, pseudonymized summaries; OpenTelemetry tracing; Prometheus metrics; a live dashboard; Postgres-backed HA.
 
 ## Getting Started
 
@@ -126,6 +121,7 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 | Postgres storage + HA deployment | [HA](https://kabirnarang39.github.io/wardline/docs/deployment/high-availability/) |
 | Web dashboard | [Dashboard](https://kabirnarang39.github.io/wardline/docs/features/web-dashboard/) |
 | OpenTelemetry tracing | [Observability](https://kabirnarang39.github.io/wardline/docs/deployment/observability/) |
+| Prometheus metrics (`GET /metrics`) | [Observability](https://kabirnarang39.github.io/wardline/docs/deployment/observability/#prometheus-metrics) |
 | Taint tracking (untrusted-read gating) | [Taint tracking](https://kabirnarang39.github.io/wardline/docs/features/taint-tracking/) |
 | Approval workflow (needs_approval + approve-and-retry) | [Approval workflow](https://kabirnarang39.github.io/wardline/docs/features/approval-workflow/) |
 | Per-job budget ceiling (hard cap per tenant/identity/session job) | [Per-job budget ceiling](https://kabirnarang39.github.io/wardline/docs/features/job-budget/) |
@@ -133,7 +129,14 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 
 ## Performance
 
-Reproducible with `go test -bench`, not marketing numbers. `BenchmarkDecider_Decide` (default YAML backend, Apple Silicon): **~33 ns / 0 allocations** at 10 rules, ~2.4 µs at 1000 rules. `BenchmarkDetector_Publish` (same machine): **~255 ns/op** with the four original heuristics, **~299 ns/op** (+17%) with `drift_detection` (K/H jitter included), `tenant_anomaly`, and `identity_churn` all on — the full seven-heuristic stack still costs under 300ns per call, 5 allocations either way (`identity_churn` only runs its own logic on a genuine first sighting, near-zero marginal cost at steady-state identity cardinality). Verified race-free under real concurrent load, not just sequentially: `TestConcurrencyStress_ProductionLikeMultiTenantTraffic` runs 205 goroutines (5 tenants × 40 identities + 5 concurrent attackers) against one shared `Detector` under `go test -race`, no data race. The `ml_score` false-positive claim is regression-guarded by `TestDetector_MLScore_FalsePositiveRateOnSteadyTraffic` (asserts **0% false positives** on steady traffic, budget < 2%) and broadened to 0/6,000 windows across 20 seeds — unchanged with `drift_detection`, `tenant_anomaly`, and `identity_churn` also on — plus a real per-attack-shape recall curve (abrupt spike, low-and-slow, deny-rate spike, novel-tool enumeration) and an adversarial battery (distributed sybil, mimicry ceiling, burst-pause duty cycling, disposable-identity rotation) in the [anomaly detection recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
+Real `go test -bench` numbers, not marketing:
+
+- **Policy decision** — ~33 ns / 0 allocations at 10 rules (default YAML backend, Apple Silicon), ~2.4 µs at 1000 rules.
+- **Full seven-heuristic detector** — ~299 ns/op, 5 allocations, with `drift_detection`, `tenant_anomaly`, and `identity_churn` all on (~255 ns/op for the original four).
+- **Race-tested** — 205 concurrent goroutines (5 tenants × 40 identities + 5 attackers) against one shared `Detector` under `go test -race`, no data race.
+- **False positives** — `ml_score` holds **0 / 6,000 windows** across 20 seeds on steady traffic (budget < 2%).
+
+Per-attack-shape recall curve and the adversarial battery (sybil, mimicry ceiling, burst-pause, disposable-identity rotation) live in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
 
 ## Security
 
