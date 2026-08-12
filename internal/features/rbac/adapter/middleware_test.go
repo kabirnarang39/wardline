@@ -45,7 +45,7 @@ func TestRequirePermission_IdentityResolutionFailureReturns401(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, testLogger(), "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -61,7 +61,7 @@ func TestRequirePermission_UnauthorizedReturns403(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextCalled = true })
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger(), "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -80,7 +80,7 @@ func TestRequirePermission_AuthorizedCallsNext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger())
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, testLogger(), "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -101,7 +101,7 @@ func TestRequirePermission_ThreadsResolvedIdentityToChecker(t *testing.T) {
 	tenant := "acme"
 	perm := domain.PermissionDashboardView
 
-	h := adapter.RequirePermission(checker, fakeIdentityResolver{identity: resolvedIdentity, tenant: tenant}, perm, next, testLogger())
+	h := adapter.RequirePermission(checker, fakeIdentityResolver{identity: resolvedIdentity, tenant: tenant}, perm, next, testLogger(), "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -131,7 +131,7 @@ func TestRequirePermission_IdentityResolutionFailureLogsAndSetsHeaders(t *testin
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, logger)
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no token")}, domain.PermissionDashboardView, next, logger, "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -146,7 +146,7 @@ func TestRequirePermission_UnauthorizedLogsIdentityAndSetsHeaders(t *testing.T) 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, logger)
+	h := adapter.RequirePermission(&fakeChecker{verdict: false}, fakeIdentityResolver{identity: "alice"}, domain.PermissionDashboardView, next, logger, "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -157,5 +157,50 @@ func TestRequirePermission_UnauthorizedLogsIdentityAndSetsHeaders(t *testing.T) 
 	}
 	if !strings.Contains(logOut, "identity=alice") {
 		t.Errorf("expected the denial log line to include the resolved identity, got: %s", logOut)
+	}
+}
+
+func TestRequirePermission_BrowserNavRedirectsToLogin(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("next must not be called on an auth failure") })
+
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no session")}, domain.PermissionDashboardView, next, testLogger(), "/dashboard/login")
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect for a browser page navigation, got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/dashboard/login" {
+		t.Fatalf("expected redirect to /dashboard/login, got %q", loc)
+	}
+}
+
+func TestRequirePermission_APIRequestStill401WithRedirectConfigured(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("next must not be called on an auth failure") })
+
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no session")}, domain.PermissionDashboardView, next, testLogger(), "/dashboard/login")
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/overview", nil)
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a non-HTML (fetch/XHR) request, got %d", w.Code)
+	}
+}
+
+func TestRequirePermission_MutationNotRedirectedEvenWithHTMLAccept(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("next must not be called on an auth failure") })
+
+	h := adapter.RequirePermission(&fakeChecker{verdict: true}, fakeIdentityResolver{err: errors.New("no session")}, domain.PermissionDashboardView, next, testLogger(), "/dashboard/login")
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/blocked/unblock", nil)
+	req.Header.Set("Accept", "text/html")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a POST must 401, not 303 to the login page, got %d", w.Code)
 	}
 }
