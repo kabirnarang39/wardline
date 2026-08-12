@@ -64,6 +64,7 @@ and `bench/grpcload upstream` for gRPC.
 | Risk combo: rbac + scim + web_ui + postgres_storage (SCIM-derived binding + shared pool) | 500 req/s proxy, 100 req/s dashboard | 100% (proxy + viewer), 100% correctly denied (unbound) | 1.2ms | 2.4ms | 4.5ms |
 | Risk combo: taint + approval + job_budget + job_cost_budget (all four session-keyed) | 20 concurrent sessions × 10 cycles | 100% correct, no cross-feature interference | — | — | — |
 | **HA: 2 replicas, shared Postgres budget + audit, same load** | 500 req/s per replica (1,000 req/s combined) | **exactly 1,000/15,000 admitted** (matches the shared ceiling precisely — no double-counting) | 1.3ms | 3.0ms | 60ms |
+| **Soak: 30 min sustained, real wall-clock time** | 150 req/s (270,000 requests total) | **100%, 0 errors** | 0.81ms | 1.46ms | 2.19ms |
 | RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
 | RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 
@@ -119,3 +120,13 @@ BENCH_RATE=2000 BENCH_DURATION=30s BENCH_MAX_WORKERS=500 ./bench/run.sh
 
 Raw vegeta reports (`.bin`/`.txt`) and per-scenario server/audit/anomaly
 logs land under `bench/.out/`.
+
+The soak test (30-60 real minutes, watching for memory/goroutine
+growth) is a separate script, deliberately not part of `run.sh`'s own
+fast (~5 minute) suite:
+
+```bash
+./bench/soak.sh
+# or run the full hour:
+SOAK_DURATION_SECONDS=3600 ./bench/soak.sh
+```
