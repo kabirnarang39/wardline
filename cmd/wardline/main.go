@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux; only ever served when WARDLINE_DEBUG_PPROF is set -- see maybeStartDebugPprof
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -167,10 +168,39 @@ func main() {
 	}
 }
 
+// maybeStartDebugPprof starts a loopback-only net/http/pprof listener
+// when WARDLINE_DEBUG_PPROF names an address (e.g. "127.0.0.1:6060") --
+// an ops/debug utility, not an operator-facing feature, so it's an env
+// var rather than a config.yaml flag (see this repo's "Feature flags"
+// convention: the YAML flag system is for capabilities operators choose
+// to run, not process-internal debug tooling). Off by default; never
+// bind anything but loopback here, this is unauthenticated. Used by
+// bench/soak.sh to sample real heap/goroutine counts during a sustained
+// run rather than guessing from process RSS alone.
+func maybeStartDebugPprof(logger *slog.Logger) {
+	addr := os.Getenv("WARDLINE_DEBUG_PPROF")
+	if addr == "" {
+		return
+	}
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("WARDLINE_DEBUG_PPROF set but failed to listen; continuing without it", "addr", addr, "error", err)
+		return
+	}
+	logger.Warn("debug pprof endpoint enabled (unauthenticated, loopback-only) -- do not set WARDLINE_DEBUG_PPROF in production", "addr", addr)
+	go func() {
+		if err := http.Serve(lis, nil); err != nil { //nolint:gosec // loopback-only debug endpoint, gated behind an explicit env var
+			logger.Error("debug pprof listener exited", "error", err)
+		}
+	}()
+}
+
 func runServe(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "wardline.yaml", "path to config file")
 	_ = fs.Parse(args) // flag.ExitOnError exits the process on parse failure
+
+	maybeStartDebugPprof(logger)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
