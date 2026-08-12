@@ -136,3 +136,16 @@ above is unchanged and remains the documented architecture, not a gap.
   registered under more than one tenant — the same fallback the
   preshared-secret and OIDC bootstrap sources already have, see
   [RBAC](/features/rbac/)'s known limitations.
+- Both this feature (header-based mTLS bootstrap) and the outbound
+  SPIFFE workload identity above were real-load tested (see
+  [Benchmarks](/advanced/benchmarks/)) against a minimal, spec-shaped
+  Workload API server built for that testing pass — a real Unix
+  domain socket, real X.509-SVID issuance, real mutual TLS to a mock
+  upstream — not against a real SPIRE deployment (SPIRE server +
+  agent, join tokens, workload attestation). The gated, real-SPIRE-
+  agent tests already in this codebase
+  (`internal/features/credential/adapter/spiffe_workload_test.go`,
+  skipped unless `SPIFFE_ENDPOINT_SOCKET` is set) are what actually
+  exercises a real SPIRE agent; validating against your own SPIRE
+  deployment's specific attestation policy before go-live remains an
+  operator step.
