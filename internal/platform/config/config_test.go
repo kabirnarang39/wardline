@@ -728,6 +728,37 @@ audit:
 	}
 }
 
+// TestLoad_OIDCBootstrapDoesNotRequireIdentitiesFile is the regression
+// test for the bug the OIDC E2E/load-testing pass surfaced
+// (docs-site/content/advanced/benchmarks.md): oidc's serve-time branch
+// (cmd/wardline/main.go) never reads cfg.Credential.IdentitiesFile at
+// all -- an OIDC ID token's own claims are the entire identity source --
+// yet validate() unconditionally required it whenever
+// features.credential_issuance was true, forcing every OIDC-only
+// operator to author and maintain a dummy, wholly unused identities
+// file. Only presharedsecret/mtls (the default) still require it --
+// see TestLoad_CredentialIssuanceEnabledMissingIdentitiesFile above.
+func TestLoad_OIDCBootstrapDoesNotRequireIdentitiesFile(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    jwks_uri: "https://idp.example.com/jwks"
+    audience: "wardline"
+`)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("expected no error for oidc bootstrap with no identities_file, got: %v", err)
+	}
+}
+
 // TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience covers
 // credential.bootstrap_source: "oidc" -- config_test.go is package
 // config_test (an external test package), so this can't call
@@ -776,6 +807,157 @@ credential:
 	}
 	if cfg.Credential.OIDC.TenantClaim != "tenant" {
 		t.Errorf("expected tenant_claim to default to %q, got %q", "tenant", cfg.Credential.OIDC.TenantClaim)
+	}
+}
+
+// TestLoad_OIDCProviders_ValidMultiProviderConfigDefaultsClaims mirrors
+// TestLoad_OIDCBootstrapRequiresIssuerJWKSAudience's shape for the
+// oidc_providers list form: each entry gets its own identity_claim/
+// tenant_claim default, independently.
+func TestLoad_OIDCProviders_ValidMultiProviderConfigDefaultsClaims(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      jwks_uri: "https://idp-a.example.com/jwks.json"
+      audience: "wardline"
+    - issuer: "https://idp-b.example.com/"
+      jwks_uri: "https://idp-b.example.com/jwks.json"
+      audience: "wardline"
+      identity_claim: "email"
+      tenant_claim: "org"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if len(cfg.Credential.OIDCProviders) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(cfg.Credential.OIDCProviders))
+	}
+	if got := cfg.Credential.OIDCProviders[0].IdentityClaim; got != "sub" {
+		t.Errorf("provider 0: expected identity_claim to default to %q, got %q", "sub", got)
+	}
+	if got := cfg.Credential.OIDCProviders[0].TenantClaim; got != "tenant" {
+		t.Errorf("provider 0: expected tenant_claim to default to %q, got %q", "tenant", got)
+	}
+	if got := cfg.Credential.OIDCProviders[1].IdentityClaim; got != "email" {
+		t.Errorf("provider 1: expected identity_claim to stay %q (explicitly set), got %q", "email", got)
+	}
+	if got := cfg.Credential.OIDCProviders[1].TenantClaim; got != "org" {
+		t.Errorf("provider 1: expected tenant_claim to stay %q (explicitly set), got %q", "org", got)
+	}
+}
+
+// TestLoad_OIDCProviders_DuplicateIssuerRejected pins the same
+// unambiguous-routing requirement NewMultiOIDCBootstrapper itself
+// enforces, caught earlier at config-validate time with a clearer error.
+func TestLoad_OIDCProviders_DuplicateIssuerRejected(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      audience: "wardline"
+    - issuer: "https://idp-a.example.com/"
+      audience: "other"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for two oidc_providers entries with the same issuer")
+	}
+}
+
+// TestLoad_OIDCProviders_MutuallyExclusiveWithSingleOIDCBlock pins the
+// deliberate ambiguity rejection: setting both credential.oidc and
+// credential.oidc_providers leaves no well-defined answer for which one
+// wins, so validate() rejects it outright rather than picking silently.
+func TestLoad_OIDCProviders_MutuallyExclusiveWithSingleOIDCBlock(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  bootstrap_source: "oidc"
+  oidc:
+    issuer: "https://idp.example.com/"
+    audience: "wardline"
+  oidc_providers:
+    - issuer: "https://idp-a.example.com/"
+      audience: "wardline"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for setting both credential.oidc and credential.oidc_providers")
+	}
+}
+
+// TestLoad_KMSAndSigningKeyFileMutuallyExclusive pins credential.kms.key_id
+// and credential.signing_key_file as mutually exclusive -- the signing
+// key lives in exactly one place, never both.
+func TestLoad_KMSAndSigningKeyFileMutuallyExclusive(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  signing_key_file: "signing.pem"
+  kms:
+    key_id: "arn:aws:kms:us-east-1:123456789012:key/abcd-1234"
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected validation error for setting both credential.signing_key_file and credential.kms.key_id")
+	}
+}
+
+// TestLoad_KMSKeyIDAlone_ValidatesCleanly proves the KMS-only shape is
+// accepted by config validation on its own (the real KMS connectivity
+// check happens later, at construction, not here).
+func TestLoad_KMSKeyIDAlone_ValidatesCleanly(t *testing.T) {
+	path := writeTemp(t, `
+listen: ":8080"
+upstream: "http://localhost:9090"
+policy_file: "policy.yaml"
+audit:
+  output: stdout
+features:
+  credential_issuance: true
+credential:
+  identities_file: "creds.yaml"
+  kms:
+    key_id: "arn:aws:kms:us-east-1:123456789012:key/abcd-1234"
+    region: "us-east-1"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("expected valid config, got %v", err)
+	}
+	if cfg.Credential.KMS.KeyID == "" || cfg.Credential.KMS.Region != "us-east-1" {
+		t.Errorf("expected kms config to load through, got %+v", cfg.Credential.KMS)
 	}
 }
 

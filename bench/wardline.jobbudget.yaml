@@ -1,0 +1,19 @@
+# Isolates job_budget's ceiling under load: a deliberately tiny
+# per-job ceiling (no explicit X-Wardline-Session header, so every
+# request falls into the same default-session-window bucket) so
+# sustained overload at any real rate crosses it -- proves the ceiling
+# holds EXACTLY under real concurrency (InMemoryMeter.Increment's
+# single mutex has no race), same precision proof as
+# wardline.budget-throttle.yaml's window limiter.
+listen: ":38417"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.jobbudget.jsonl"
+
+features:
+  job_budget: true
+
+job_budget:
+  requests_per_job: 100

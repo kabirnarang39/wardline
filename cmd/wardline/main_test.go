@@ -8,12 +8,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	complianceadapter "github.com/kabirnarang39/wardline/internal/features/compliance/adapter"
 	compliancedomain "github.com/kabirnarang39/wardline/internal/features/compliance/domain"
@@ -1563,5 +1565,63 @@ func readBundleFile(t *testing.T, bundlePath, name string) []byte {
 			t.Fatalf("read %q from bundle: %v", name, err)
 		}
 		return data
+	}
+}
+
+// TestMaybeStartDebugPprof_UnsetDoesNothing proves the debug pprof
+// listener is a true opt-in: with WARDLINE_DEBUG_PPROF unset (the
+// default in every real deployment), the function returns immediately
+// and starts nothing.
+func TestMaybeStartDebugPprof_UnsetDoesNothing(t *testing.T) {
+	t.Setenv("WARDLINE_DEBUG_PPROF", "")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	maybeStartDebugPprof(logger) // must return immediately; no assertion beyond "doesn't hang or panic"
+}
+
+// TestMaybeStartDebugPprof_SetStartsLoopbackListener proves that with
+// WARDLINE_DEBUG_PPROF set to a real loopback address, a real
+// net/http/pprof endpoint becomes reachable -- bench/soak.sh depends on
+// this exact endpoint (/debug/pprof/goroutine, /debug/pprof/heap) to
+// sample real runtime stats during a sustained run, not process RSS
+// alone.
+func TestMaybeStartDebugPprof_SetStartsLoopbackListener(t *testing.T) {
+	// Reserve a free loopback port and release it immediately -- same
+	// pattern e2e_test.go's reserveAddr uses, reimplemented locally since
+	// that helper lives in package main_test (an external test package),
+	// not this file's package main.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("release reserved port: %v", err)
+	}
+	t.Setenv("WARDLINE_DEBUG_PPROF", addr)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	maybeStartDebugPprof(logger)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + addr + "/debug/pprof/goroutine?debug=1")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("debug pprof endpoint never became reachable at %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /debug/pprof/goroutine, got %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read pprof response: %v", err)
+	}
+	if !strings.Contains(string(body), "goroutine") {
+		t.Errorf("expected pprof goroutine dump to mention \"goroutine\", got: %s", body)
 	}
 }

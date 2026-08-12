@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Go module dependencies -- this session found real, reachable CVEs
+  # (grpc, x/text) via a one-off manual govulncheck run; this automates
+  # catching the next one instead of relying on someone remembering to
+  # re-run it.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  # GitHub Actions used in .github/workflows/*.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The distroless/static-debian12 base image in Dockerfile.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

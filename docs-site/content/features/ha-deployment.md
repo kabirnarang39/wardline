@@ -44,8 +44,13 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
   per-instance-persisted-not-merged shape. See [Anomaly
   Detection](/features/anomaly-detection/)'s own limitations section for
   the exact per-mechanism breakdown.
-- The dashboard's live audit view stays per-replica — no cluster-wide
-  aggregation yet.
+- **The dashboard's live audit view is cluster-wide when `postgres_storage`
+  is also on** — every replica's `PostgresWriter` inserts into the same
+  shared `audit_entries` table, so `GET /dashboard/api/audit` reads every
+  replica's traffic through `PostgresWriter.Since`, not just the replica
+  that happens to serve that dashboard request. Without `postgres_storage`,
+  the live view falls back to the in-memory ring buffer and stays
+  per-replica, same as before.
 - No automatic session/sticky-affinity load balancing is recommended as
   a workaround for the above — sticky sessions would reintroduce a
   single point of failure per identity.
@@ -54,6 +59,15 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
   verification-only during a rotation window (new tokens sign under the
   new key, old-key tokens keep verifying to their TTL), every token
   carries a `kid`, and `GET /credentials/jwks` publishes the active keys.
-  What's still out of scope is a **live cloud KMS integration**: the keys
-  are local PEM files, so an operator wanting KMS custody sources the PEM
-  bytes through their own secret pipeline.
+  **Live cloud KMS custody is also supported**: set `credential.kms.key_id`
+  (mutually exclusive with `signing_key_file`) to sign with an AWS KMS
+  asymmetric key instead of a local PEM file — the private key material
+  never leaves KMS/CloudHSM; every token issuance calls KMS's own `Sign`
+  API. `previous_signing_key_files` still works unchanged for the
+  verification-only rotation window when rotating in or out of KMS
+  custody, since verification only ever needs a public key, never the
+  private half. AWS credentials resolve via the SDK's standard default
+  chain (env vars, shared credentials file, IAM role) — never a static
+  key in Wardline's own config. GCP Cloud KMS and Azure Key Vault are a
+  sibling adapter away (same `crypto.Signer` extension point), not yet
+  shipped.

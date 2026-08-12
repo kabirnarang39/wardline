@@ -13,7 +13,21 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kabirnarang39/wardline/internal/features/budget/adapter"
+	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 )
+
+// openTestPool opens a pool the same way cmd/wardline/main.go does (via
+// pgpool.Open, shared across every Postgres-backed feature in production)
+// -- test callers get the identical Open+Ping+pool-config path real
+// traffic goes through, not a bespoke test-only shortcut.
+func openTestPool(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := pgpool.Open(dsn, 0)
+	if err != nil {
+		t.Fatalf("openTestPool: %v", err)
+	}
+	return db
+}
 
 const budgetTestSchema = "wardline_test_budget"
 
@@ -54,11 +68,12 @@ func TestPostgresLimiter_SequentialCallsAdmitUpToLimitThenDeny(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 3, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 3, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	for i := 0; i < 3; i++ {
@@ -88,11 +103,12 @@ func TestPostgresLimiter_WindowExpiryResets(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1, 200*time.Millisecond, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1, 200*time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	if v := l.Allow("agent-abc123", "acme", "read_file", now); !v.Allowed {
@@ -111,11 +127,12 @@ func TestPostgresLimiter_DifferentIdentitiesHaveIndependentBuckets(t *testing.T)
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	if v := l.Allow("alice", "acme", "read_file", now); !v.Allowed {
@@ -130,11 +147,12 @@ func TestPostgresLimiter_SameIdentityDifferentTenantsHaveIndependentBuckets(t *t
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	if v := l.Allow("alice", "acme", "read_file", now); !v.Allowed {
@@ -151,11 +169,12 @@ func TestPostgresLimiter_ConcurrentCallsNeverExceedLimit(t *testing.T) {
 
 	const limit = 10
 	const callers = 50
-	l, err := adapter.NewPostgresLimiter(dsn, limit, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, limit, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	var mu sync.Mutex
@@ -184,23 +203,16 @@ func TestPostgresLimiter_TableCreationIsIdempotent(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l1, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	_, err := adapter.NewPostgresLimiter(db, 10, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("first NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l1.Close() }()
 
-	l2, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, nil)
+	_, err = adapter.NewPostgresLimiter(db, 10, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("second NewPostgresLimiter (should be idempotent): %v", err)
-	}
-	defer func() { _ = l2.Close() }()
-}
-
-func TestNewPostgresLimiter_BadDSNFailsFast(t *testing.T) {
-	_, err := adapter.NewPostgresLimiter("postgres://baduser:badpass@127.0.0.1:1/nonexistent?sslmode=disable", 10, time.Minute, nil)
-	if err == nil {
-		t.Fatal("expected an error constructing a limiter against an unreachable database")
 	}
 }
 
@@ -211,11 +223,12 @@ func TestPostgresLimiter_AllowQueryErrorIsLoggedAndFailsOpen(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, logger)
+	db := openTestPool(t, dsn)
+	l, err := adapter.NewPostgresLimiter(db, 10, time.Minute, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	if err := l.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -247,12 +260,13 @@ func TestPostgresLimiter_ToolTierQueryErrorFailsOpen(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, logger)
+	db := openTestPool(t, dsn)
+	l, err := adapter.NewPostgresLimiter(db, 10, time.Minute, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
 	l.SetToolLimit("expensive_tool", 1, time.Minute)
-	if err := l.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -272,12 +286,13 @@ func TestPostgresLimiter_TenantTierQueryErrorFailsOpen(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, logger)
+	db := openTestPool(t, dsn)
+	l, err := adapter.NewPostgresLimiter(db, 10, time.Minute, logger)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
 	l.SetTenantLimit("acme", 1, time.Minute)
-	if err := l.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -294,11 +309,12 @@ func TestPostgresLimiter_Allow_NoLoggerDoesNotPanicOnQueryError(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 10, time.Minute, nil) // nil logger
+	db := openTestPool(t, dsn)
+	l, err := adapter.NewPostgresLimiter(db, 10, time.Minute, nil) // nil logger
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	if err := l.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -312,11 +328,12 @@ func TestPostgresLimiter_ToolLimitDeniesBeforeConsumingIdentityBudget(t *testing
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil) // generous identity limit
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil) // generous identity limit
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetToolLimit("expensive_tool", 1, time.Minute)
 
 	now := time.Now()
@@ -336,11 +353,12 @@ func TestPostgresLimiter_ToolLimitAppliesGloballyAcrossIdentities(t *testing.T) 
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetToolLimit("expensive_tool", 1, time.Minute)
 
 	now := time.Now()
@@ -361,11 +379,12 @@ func TestPostgresLimiter_TenantLimitDeniesBeforeIdentityCheck(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetTenantLimit("acme", 1, time.Minute)
 
 	now := time.Now()
@@ -384,11 +403,12 @@ func TestPostgresLimiter_TenantWithNoOverrideIsNeverChecked(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetTenantLimit("acme", 1, time.Minute)
 	// widgets-inc has NO override configured.
 
@@ -405,11 +425,12 @@ func TestPostgresLimiter_AllThreeTiersMustAllAdmit(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetTenantLimit("acme", 100, time.Minute)
 	l.SetToolLimit("read_file", 100, time.Minute)
 
@@ -424,11 +445,12 @@ func TestPostgresLimiter_ToolDenialDoesNotConsumeTenantOrIdentityBudget(t *testi
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 100, time.Minute, nil)
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 100, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetToolLimit("expensive_tool", 1, time.Minute)
 	l.SetTenantLimit("acme", 2, time.Minute)
 
@@ -463,17 +485,19 @@ func TestPostgresLimiter_CrossInstanceBudgetIsShared(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	replicaA, err := adapter.NewPostgresLimiter(dsn, 3, time.Minute, nil)
+	dbA := openTestPool(t, dsn)
+	defer func() { _ = dbA.Close() }()
+	replicaA, err := adapter.NewPostgresLimiter(dbA, 3, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("replicaA: %v", err)
 	}
-	defer func() { _ = replicaA.Close() }()
 
-	replicaB, err := adapter.NewPostgresLimiter(dsn, 3, time.Minute, nil)
+	dbB := openTestPool(t, dsn)
+	defer func() { _ = dbB.Close() }()
+	replicaB, err := adapter.NewPostgresLimiter(dbB, 3, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("replicaB: %v", err)
 	}
-	defer func() { _ = replicaB.Close() }()
 
 	now := time.Now()
 	// Alternate calls between the two replicas -- same identity/tenant,
@@ -504,11 +528,12 @@ func TestPostgresLimiter_SetDefaultLimit_UpdatesThresholdWithoutResettingCounter
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 2, time.Minute, nil) // 2 requests per minute
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 2, time.Minute, nil) // 2 requests per minute
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 
 	now := time.Now()
 	l.Allow("alice", "acme", "read_file", now)
@@ -537,11 +562,12 @@ func TestPostgresLimiter_ClearTenantLimit_RevertsToGlobalDefault(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1000, time.Minute, nil) // generous global default
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetTenantLimit("acme", 1, time.Minute)
 
 	now := time.Now()
@@ -566,11 +592,12 @@ func TestPostgresLimiter_ClearToolLimit_RevertsToGlobalDefault(t *testing.T) {
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1000, time.Minute, nil) // generous global default
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetToolLimit("expensive_tool", 1, time.Minute)
 
 	now := time.Now()
@@ -602,11 +629,12 @@ func TestPostgresLimiter_ClearTenantLimit_ThenReintroduce_StartsFreshNotFrozen(t
 	dsn := budgetTestDSN(t)
 	dropBudgetBucketsTable(t, dsn)
 
-	l, err := adapter.NewPostgresLimiter(dsn, 1000, time.Minute, nil) // generous global default
+	db := openTestPool(t, dsn)
+	defer func() { _ = db.Close() }()
+	l, err := adapter.NewPostgresLimiter(db, 1000, time.Minute, nil) // generous global default
 	if err != nil {
 		t.Fatalf("NewPostgresLimiter: %v", err)
 	}
-	defer func() { _ = l.Close() }()
 	l.SetTenantLimit("acme", 1, time.Minute)
 
 	now := time.Now()

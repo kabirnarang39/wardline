@@ -98,33 +98,17 @@ type PostgresBlockStore struct {
 	blockCalls uint64
 }
 
-// NewPostgresBlockStore opens a connection pool to dsn, creates the
-// blocked_identities table if it doesn't already exist, and pings the
-// connection -- a bad DSN or unreachable database fails here, at
-// construction time, not on the first Check. logger surfaces
-// Check/Block query failures that would otherwise be silent -- may be
-// nil (no method panics on a nil logger).
-func NewPostgresBlockStore(dsn string, blockDuration time.Duration, logger *slog.Logger) (*PostgresBlockStore, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), blockStoreTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
+// NewPostgresBlockStore creates the blocked_identities table on db if it
+// doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, not on the first Check. logger surfaces Check/Block query
+// failures that would otherwise be silent -- may be nil (no method
+// panics on a nil logger).
+func NewPostgresBlockStore(db *sql.DB, blockDuration time.Duration, logger *slog.Logger) (*PostgresBlockStore, error) {
 	createCtx, createCancel := context.WithTimeout(context.Background(), blockStoreTimeout)
 	defer createCancel()
 	if _, err := db.ExecContext(createCtx, createBlockedIdentitiesTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create blocked_identities table: %w", err)
 	}
 
@@ -235,11 +219,6 @@ func (s *PostgresBlockStore) reapExpired() {
 	if _, err := s.db.ExecContext(ctx, blockReapSQL, s.now()); err != nil && s.logger != nil {
 		s.logger.Warn("blocked_identities sweep failed; expired rows retried on next sweep", "error", err)
 	}
-}
-
-// Close releases the connection pool during graceful shutdown.
-func (s *PostgresBlockStore) Close() error {
-	return s.db.Close()
 }
 
 var _ domain.Blocker = (*PostgresBlockStore)(nil)

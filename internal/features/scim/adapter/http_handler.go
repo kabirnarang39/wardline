@@ -3,7 +3,6 @@ package adapter
 import (
 	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -76,6 +75,12 @@ func NewHandler(users UserProvisioner, groups GroupProvisioner, bearerToken stri
 	mux.HandleFunc("/scim/v2/Users/", h.handleUserItem)
 	mux.HandleFunc("/scim/v2/Groups", h.handleGroupsCollection)
 	mux.HandleFunc("/scim/v2/Groups/", h.handleGroupItem)
+	mux.HandleFunc("/scim/v2/Bulk", h.handleBulk)
+	mux.HandleFunc("/scim/v2/ServiceProviderConfig", h.handleServiceProviderConfig)
+	mux.HandleFunc("/scim/v2/ResourceTypes", h.handleResourceTypes)
+	mux.HandleFunc("/scim/v2/ResourceTypes/", h.handleResourceTypeItem)
+	mux.HandleFunc("/scim/v2/Schemas", h.handleSchemas)
+	mux.HandleFunc("/scim/v2/Schemas/", h.handleSchemaItem)
 	h.mux = mux
 	return h
 }
@@ -104,49 +109,8 @@ func (h *Handler) authenticated(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(h.bearerToken)) == 1
 }
 
-// parseEqFilter parses the narrow SCIM filter shape this handler
-// supports: `<attr> eq "<value>"` for exactly one named attribute --
-// the only filter real SCIM clients (Okta, Azure AD) send, to check
-// whether a User/Group already exists before creating one. This is a
-// deliberately bounded scope, not the start of a general SCIM filter
-// grammar (no "and"/"or", no other operators, no other fields).
-//
-// ok is false for an empty filter (no filtering requested -- the
-// caller's existing behavior). err is non-nil for anything else (a
-// different operator, a different attribute, malformed syntax) -- an
-// explicit 400 is safer than silently ignoring a filter the caller
-// expected to be honored.
-func parseEqFilter(rawFilter, wantAttr string) (value string, ok bool, err error) {
-	rawFilter = strings.TrimSpace(rawFilter)
-	if rawFilter == "" {
-		return "", false, nil
-	}
-	prefix := wantAttr + ` eq "`
-	if !strings.HasPrefix(rawFilter, prefix) || !strings.HasSuffix(rawFilter, `"`) {
-		return "", false, fmt.Errorf("unsupported filter expression")
-	}
-	// rawFilter == prefix exactly (e.g. `userName eq "`) satisfies both
-	// checks above using the SAME trailing quote as both the prefix's
-	// opening quote and the required closing quote -- an unterminated
-	// filter, not a valid empty-value one. Without this guard,
-	// TrimPrefix/TrimSuffix below both reduce to "", so this would
-	// silently answer ("", true, nil) -- a 200 with an empty list -- where
-	// scim.md promises a 400 for anything outside the supported shape.
-	if len(rawFilter) <= len(prefix) {
-		return "", false, fmt.Errorf("unsupported filter expression")
-	}
-	value = strings.TrimSuffix(strings.TrimPrefix(rawFilter, prefix), `"`)
-	// A prefix/suffix match alone doesn't rule out a second clause tacked
-	// on after the closing quote of an *earlier* clause, e.g.
-	// `userName eq "alice" and userName eq "bob"` also starts with the
-	// prefix and ends with `"`. Reject if the extracted value still
-	// contains filter syntax -- an embedded quote (another clause's
-	// quoted value) or " and "/" or " (combinators).
-	if strings.Contains(value, `"`) || strings.Contains(value, " and ") || strings.Contains(value, " or ") {
-		return "", false, fmt.Errorf("unsupported filter expression")
-	}
-	return value, true, nil
-}
+// (Filter parsing itself -- tokenizer, recursive-descent parser, AST
+// evaluator -- lives in filter.go: parseSCIMFilter/filterNode.)
 
 type userResource struct {
 	ID       string `json:"id,omitempty"`
@@ -168,9 +132,17 @@ func (h *Handler) handleUsersCollection(w http.ResponseWriter, r *http.Request) 
 			writeSCIMError(w, http.StatusConflict, "user already exists")
 			return
 		}
+		// RFC 7644 §3.3: a successful POST create response must include
+		// the new resource's Location. Set before writeJSON, which
+		// calls WriteHeader and locks in the header set -- Bulk's own
+		// dispatchBulkOperation (bulk.go) reads exactly this header to
+		// populate its per-operation "location" field, so a create
+		// without it silently loses Location on both the direct
+		// endpoint and every Bulk-batched create.
+		w.Header().Set("Location", "/scim/v2/Users/"+u.ID)
 		writeJSON(w, http.StatusCreated, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 	case http.MethodGet:
-		value, filtered, err := parseEqFilter(r.URL.Query().Get("filter"), "userName")
+		filter, filtered, err := parseSCIMFilter(r.URL.Query().Get("filter"))
 		if err != nil {
 			writeSCIMError(w, http.StatusBadRequest, err.Error())
 			return
@@ -178,7 +150,7 @@ func (h *Handler) handleUsersCollection(w http.ResponseWriter, r *http.Request) 
 		users := h.users.ListUsers()
 		out := make([]userResource, 0, len(users))
 		for _, u := range users {
-			if filtered && u.UserName != value {
+			if filtered && !filter.evaluate(map[string]any{"userName": u.UserName, "active": u.Active, "id": u.ID}) {
 				continue
 			}
 			out = append(out, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
@@ -291,9 +263,11 @@ func (h *Handler) handleGroupsCollection(w http.ResponseWriter, r *http.Request)
 			writeSCIMError(w, http.StatusConflict, "group already exists")
 			return
 		}
+		// See the matching comment in handleUsersCollection's POST path.
+		w.Header().Set("Location", "/scim/v2/Groups/"+g.ID)
 		writeJSON(w, http.StatusCreated, toGroupResource(g))
 	case http.MethodGet:
-		value, filtered, err := parseEqFilter(r.URL.Query().Get("filter"), "displayName")
+		filter, filtered, err := parseSCIMFilter(r.URL.Query().Get("filter"))
 		if err != nil {
 			writeSCIMError(w, http.StatusBadRequest, err.Error())
 			return
@@ -301,7 +275,7 @@ func (h *Handler) handleGroupsCollection(w http.ResponseWriter, r *http.Request)
 		groups := h.groups.ListGroups()
 		out := make([]groupResource, 0, len(groups))
 		for _, g := range groups {
-			if filtered && g.DisplayName != value {
+			if filtered && !filter.evaluate(map[string]any{"displayName": g.DisplayName, "id": g.ID}) {
 				continue
 			}
 			out = append(out, toGroupResource(g))

@@ -31,8 +31,9 @@ token, and the one just redeemed can never be used again.
 ## Known limitations
 
 - IdP-backed bootstrap is OIDC only (`credential.bootstrap_source:
-  oidc`, no discovery-document fetching) — see [SSO](/features/sso/).
-  No other IdP protocol (SAML, generic non-OIDC federation) is
+  oidc`, with optional discovery-document fetching — see
+  [SSO](/features/sso/)). No other IdP protocol (SAML, generic non-OIDC
+  federation) is
   supported, and mTLS/SPIFFE bootstrap (`credential.bootstrap_source:
   mtls`) trusts a single static header — see [mTLS/SPIFFE
   Bootstrap](/features/mtls-bootstrap/) for its trust-boundary
@@ -51,31 +52,30 @@ token, and the one just redeemed can never be used again.
 - Revocation state is per-process unless `postgres_storage` is also on
   (see [HA deployment](/features/ha-deployment/)).
 - **Revocation is keyed by `(tenant, identity)`, with one residual
-  wildcard gap.** Identity names are per-tenant-unique (two different
-  IdPs or two `credentials.yaml` entries can legitimately both provision
-  "alice", one per tenant); the revocation store
-  (`RevocationList`/`PostgresRevoker`, and the `Revoker.IsRevoked` call in
-  `VerificationService.Authenticate`) now scopes both the write and the
-  check to the target identity's own tenant, resolved at revoke time —
-  no Postgres schema migration needed (`PostgresRevoker` encodes
-  `(tenant, identity)` into its existing `identity` primary-key column
-  via a length-prefixed key rather than adding a column). The gap that
-  remains: when a target identity's tenant cannot be resolved at revoke
-  time, the revoke falls back to the pre-scoping wildcard behavior —
-  revoking every tenant's copy of that identity name at once, the same
-  as before this cycle's fix. This is not an OIDC-only gap: it's
-  reachable under **any** of the three bootstrap sources. With
-  `bootstrap_source: oidc`, tenant lookup always fails (no static
-  identity registry exists to look a target up in). With the
-  preshared-secret and mtls bootstrappers, lookup normally succeeds
-  from `credentials.yaml` — but fails the same way whenever the target
-  identity name (preshared-secret) or its mapped SPIFFE ID's identity
-  (mtls) is registered under two or more distinct tenants
-  (`Bootstrapper.TenantOf` and `MTLSBootstrapper.TenantOf` both
+  wildcard gap, narrowable by the caller.** Identity names are
+  per-tenant-unique (two different IdPs or two `credentials.yaml`
+  entries can legitimately both provision "alice", one per tenant); the
+  revocation store (`RevocationList`/`PostgresRevoker`, and the
+  `Revoker.IsRevoked` call in `VerificationService.Authenticate`) scopes
+  both the write and the check to the target identity's own tenant,
+  resolved at revoke time — no Postgres schema migration needed
+  (`PostgresRevoker` encodes `(tenant, identity)` into its existing
+  `identity` primary-key column via a length-prefixed key rather than
+  adding a column). When a target identity's tenant cannot be resolved
+  at revoke time (OIDC bootstrap source with no static registry, or an
+  identity name registered under two or more distinct tenants —
+  `Bootstrapper.TenantOf` and `MTLSBootstrapper.TenantOf` both
   deliberately fail closed to "unresolved" on that ambiguity, rather
-  than guessing which tenant's copy to scope to) — precisely the "two
-  `credentials.yaml` entries legitimately provision the same name"
-  scenario described above. A caller holding a global
-  `credential:revoke` grant (see [RBAC](/features/rbac/)) can trigger
-  this wildcard fallback under any bootstrap source, with no OIDC
-  involved.
+  than guessing which tenant's copy to scope to), reaching this branch
+  at all already requires the caller to hold a **global**
+  `credential:revoke` grant (see [RBAC](/features/rbac/) —
+  `newRevokeAuthorizer` denies a tenant-scoped caller outright when the
+  target's tenant can't be resolved). `POST /credentials/revoke` accepts
+  an optional `tenant` field in the request body for exactly this case:
+  a caller who already knows which tenant they mean can name it, and
+  the revoke is scoped to that one tenant instead of every tenant's
+  copy of the identity name. Omitting `tenant` preserves the old,
+  full-wildcard behavior unchanged — this is an added precision option,
+  not a required migration. The registry is still authoritative
+  whenever it *can* resolve a tenant: a client-supplied `tenant` is
+  ignored, never allowed to override a resolved value.

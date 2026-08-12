@@ -158,3 +158,54 @@ func TestSyncBinding_InactiveMemberNeverGrantedBinding(t *testing.T) {
 		t.Fatalf("expected inactive mallory granted no binding, got cluster=%+v scoped=%+v", cluster, scoped)
 	}
 }
+
+// TestCreateUser_UserNameReusableAfterDelete is the regression test for
+// the O(1) userNameToID index (bench/scimload's load-testing surfaced
+// CreateUser/CreateGroup's old O(n)-scan-under-a-single-mutex cost
+// visibly degrading with total resource count -- see
+// docs-site/content/advanced/benchmarks.md). The obvious bug an index
+// like this can introduce is exactly what this test guards: DeleteUser
+// forgetting to clean up its index entry, which would make a deleted
+// userName permanently unreusable ("conflict" forever) even though the
+// old linear-scan version would have allowed it back after the delete.
+func TestCreateUser_UserNameReusableAfterDelete(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	first, err := svc.CreateUser("alice", true)
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := svc.DeleteUser(first.ID); err != nil {
+		t.Fatalf("delete alice: %v", err)
+	}
+	second, err := svc.CreateUser("alice", true)
+	if err != nil {
+		t.Fatalf("expected \"alice\" to be reusable after delete, got: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("expected a fresh ID for the recreated user, got the deleted one's ID")
+	}
+	if _, ok := svc.GetUserByName("alice"); !ok {
+		t.Fatal("expected GetUserByName to find the recreated user")
+	}
+}
+
+// TestCreateGroup_DisplayNameReusableAfterDelete is CreateUser's
+// TestCreateUser_UserNameReusableAfterDelete equivalent for
+// groupNameToID / DeleteGroup.
+func TestCreateGroup_DisplayNameReusableAfterDelete(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	first, err := svc.CreateGroup("wardline:role-viewer", nil)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := svc.DeleteGroup(first.ID); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+	second, err := svc.CreateGroup("wardline:role-viewer", nil)
+	if err != nil {
+		t.Fatalf("expected \"wardline:role-viewer\" to be reusable after delete, got: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("expected a fresh ID for the recreated group, got the deleted one's ID")
+	}
+}

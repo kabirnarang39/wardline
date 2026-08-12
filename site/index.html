@@ -93,7 +93,7 @@
   <section id="assertions" class="assertions wrap">
     <header>
       <p class="index">03 / WHAT'S INSIDE</p>
-      <h2 class="display" style="font-size:clamp(32px,4vw,52px)">One baseline, eight optional features.</h2>
+      <h2 class="display" style="font-size:clamp(32px,4vw,52px)">One baseline, everything else opt-in.</h2>
       <p class="assertions-intro">The proxy + policy + audit baseline is always on. Everything else ships behind a feature flag, so new capability lands without destabilizing what's already running.</p>
     </header>
     <div class="check-table">
@@ -108,14 +108,19 @@
           <tr><td><a href="docs/features/budget-enforcement/">Budget enforcement</a></td><td>Per-identity spend limits</td><td><code>budget</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/anomaly-detection/">Anomaly detection</a></td><td>Rate-spike, novel-tool, deny-rate, ML z-score heuristics + auto-block</td><td><code>anomaly</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/sso/">SSO</a></td><td>OIDC-bootstrapped identity</td><td><code>credentials</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/features/mtls-bootstrap/">mTLS/SPIFFE bootstrap</a></td><td>Identity from a verified SPIFFE ID</td><td><code>credentials</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/mtls-bootstrap/">mTLS/SPIFFE bootstrap</a></td><td>Identity from a verified SPIFFE ID, both inbound and as Wardline's own outbound workload identity</td><td><code>credentials</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/scim/">SCIM</a></td><td>IdP-provisioned RBAC bindings</td><td><code>scim</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/features/web-dashboard/">Web dashboard</a></td><td>Read-only ops view of policy, audit, anomalies</td><td><code>web_ui</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/approval-workflow/">Approval workflow</a></td><td>A third policy outcome — hold a write for a human, then let one approved retry through</td><td><code>approval_workflow</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/taint-tracking/">Taint tracking</a></td><td>Marks a session as untrusted after an unverified read, gating the write that follows</td><td><code>taint_tracking</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/job-budget/">Job budget</a></td><td>Per-job request ceiling, independent of the per-identity budget above</td><td><code>job_budget</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/cost-budget/">Cost budget</a></td><td>Per-job cost/token ceiling with per-tool cost weighting</td><td><code>job_cost_budget</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/web-dashboard/">Web dashboard</a></td><td>In-browser ops console — policy editor, RBAC, budgets, audit, anomalies</td><td><code>web_ui</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/federation/">Federation</a></td><td>Cross-instance anomaly correlation over signed peers</td><td><code>federation</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/grpc-transport/">gRPC transport</a></td><td>Same control plane on a gRPC listener</td><td><code>grpc_transport</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/deployment/observability/">Tracing</a></td><td>OpenTelemetry OTLP spans</td><td><code>otel_tracing</code></td><td>shipped</td></tr>
-          <tr><td><a href="docs/features/compliance-evidence-export/">Compliance export</a></td><td>Checksum-verified, optionally signed evidence bundle</td><td><code>export-evidence</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/deployment/observability/">Tracing &amp; metrics</a></td><td>OpenTelemetry OTLP spans, and a Prometheus <code>/metrics</code> endpoint</td><td><code>otel_tracing</code>, <code>prometheus_metrics</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/compliance-evidence-export/">Compliance export</a></td><td>Checksum-verified, optionally signed evidence bundle — on demand or on a schedule, plus automatic log retention</td><td><code>export-evidence</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/features/policy-pack-marketplace/">Policy-pack marketplace</a></td><td>Embedded starter policy templates</td><td><code>policy-pack</code></td><td>shipped</td></tr>
+          <tr><td><a href="docs/features/auto-generated-policy/">Auto-generated policy</a></td><td>Infer a starter policy.yaml from real observed audit traffic</td><td><code>infer-policy</code></td><td>shipped</td></tr>
           <tr><td><a href="docs/deployment/high-availability/">HA deployment</a></td><td>Shared signing key, Postgres revocation, PDB</td><td><code>ha</code></td><td>shipped</td></tr>
         </tbody>
       </table>
@@ -133,7 +138,7 @@
       <ul class="feature-grid">
         <li><span class="tag">CLEAN ARCH</span><a href="https://github.com/kabirnarang39/wardline">domain → usecase → adapter, dependency rule inward</a></li>
         <li><span class="tag">OPEN/CLOSED</span><a href="docs/features/rbac/">policy backend is a pluggable interface — YAML, OPA, Cedar</a></li>
-        <li><span class="tag">FEATURE FLAGS</span><a href="docs/reference/configuration/">every feature beyond baseline ships gated, off by default</a></li>
+        <li><span class="tag">FEATURE FLAGS</span><a href="docs/reference/config-reference/">every feature beyond baseline ships gated, off by default</a></li>
         <li><span class="tag">HELM</span><a href="docs/deployment/high-availability/">probes, PDB, anti-affinity, graceful drain</a></li>
       </ul>
     </div>

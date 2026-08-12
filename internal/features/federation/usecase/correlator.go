@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kabirnarang39/wardline/internal/features/federation/domain"
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
 )
 
 // fingerprintState tracks, for one (fingerprint, kind) pair, which
@@ -26,16 +27,25 @@ type fingerprintState struct {
 // Correlator watches inbound AnomalySummary sightings (this instance's
 // own local anomalies flow through it too, via the same Ingest call
 // main.go wires -- see design doc) and emits a CorrelatedAlert when a
-// fingerprint has been sighted by enough distinct instances within the
-// configured correlation window. In-memory, mutex-guarded, GC'd by
-// StartCorrelatorGC -- no persistence this cycle.
+// (tenant, fingerprint) pair has been sighted by enough distinct
+// instances within the configured correlation window. In-memory,
+// mutex-guarded, GC'd by StartCorrelatorGC -- no persistence this cycle.
 type Correlator struct {
 	cfg     domain.FederationConfig
 	onAlert func(domain.CorrelatedAlert)
 	now     func() time.Time
 
-	mu    sync.Mutex
-	state map[string]map[string]*fingerprintState // fingerprint -> kind (as string) -> state
+	mu sync.Mutex
+	// state is keyed by tenant.Key(s.Tenant, s.Fingerprint), not
+	// Fingerprint alone -- see AnomalySummary's own doc comment on why:
+	// two different tenants' identically-named identities hash to the
+	// SAME fingerprint (Fingerprint is identity-only), so without the
+	// tenant folded into this key they'd incorrectly correlate as one
+	// condition. tenant.Key's length-prefixed composition (not a plain
+	// separator join) is what makes that safe regardless of what
+	// characters either string contains -- same reasoning as
+	// credential/adapter.postgresSafeKey's own doc comment.
+	state map[string]map[string]*fingerprintState // tenant.Key(tenant, fingerprint) -> kind (as string) -> state
 }
 
 func NewCorrelator(cfg domain.FederationConfig, onAlert func(domain.CorrelatedAlert), now func() time.Time) *Correlator {
@@ -69,10 +79,11 @@ func (c *Correlator) recordAndCheck(instanceID string, s domain.AnomalySummary) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	byKind, ok := c.state[s.Fingerprint]
+	stateKey := tenant.Key(s.Tenant, s.Fingerprint)
+	byKind, ok := c.state[stateKey]
 	if !ok {
 		byKind = make(map[string]*fingerprintState)
-		c.state[s.Fingerprint] = byKind
+		c.state[stateKey] = byKind
 	}
 	kindKey := string(s.Kind)
 	st, ok := byKind[kindKey]
@@ -116,6 +127,7 @@ func (c *Correlator) recordAndCheck(instanceID string, s domain.AnomalySummary) 
 	st.flaggedAt = now
 	return domain.CorrelatedAlert{
 		Fingerprint: s.Fingerprint,
+		Tenant:      s.Tenant,
 		Kind:        s.Kind,
 		InstanceIDs: distinct,
 		FirstSeen:   firstSeen,

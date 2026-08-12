@@ -17,8 +17,9 @@ policy-pack marketplace, HA deployment.
   documented on the [Budget Enforcement](/features/budget-enforcement/),
   [Anomaly Detection](/features/anomaly-detection/), and [HA
   Deployment](/features/ha-deployment/) pages. Federation's own
-  correlated-alerts view stays instance-scoped, not tenant-scoped (see
-  [RBAC](/features/rbac/)'s known limitations).
+  correlated-alerts view stays instance-scoped (see
+  [Federation](/features/federation/)'s known limitations) but is now
+  tenant-scoped, same as every other dashboard view.
 - **ML-based anomaly detection** — an `ml_score` combined-z-score
   heuristic augmenting the existing rule/statistics detectors, with an
   optional `auto_block`.
@@ -28,8 +29,9 @@ policy-pack marketplace, HA deployment.
   end to end: policy, budget, audit, anomaly detection, and the
   dashboard are all tenant-aware, not just RBAC's own authorization
   check. See [SSO](/features/sso/), [SCIM](/features/scim/), and
-  [RBAC](/features/rbac/)'s known limitations for what's still out of
-  scope (OIDC discovery, full SCIM 2.0 compliance).
+  [RBAC](/features/rbac/)'s known limitations for the current picture
+  (OIDC discovery and full SCIM 2.0 compliance — filter grammar, bulk
+  operations, discovery endpoints — both shipped since).
 - **Auto-generated sandbox policy** — `wardline infer-policy` reads the
   audit trail over an operator-chosen range and writes a starter
   `policy.yaml` allow-listing exactly the `(tenant, identity, tool)`
@@ -247,6 +249,104 @@ policy-pack marketplace, HA deployment.
   one. In-memory only this cycle — see [Anomaly
   Detection](/features/anomaly-detection/)'s "Adversarial scenarios" and
   "Known limitations".
+
+## v2.4 (shipped)
+
+A closure pass over known limitations across the project — each item
+below replaces a documented gap with a real, industry-standard fix, not
+a workaround; the math/security tradeoffs that can't be "fixed" without
+being dishonest (CUSUM's mimicry ceiling, no-live-policy-learning,
+shared-budget-bucket AND-semantics) were left exactly as documented,
+correctly.
+
+- **Credential revoke: tenant-scoped wildcard narrowing** — a revoke
+  whose target tenant can't be resolved still defaults to a wildcard
+  across every tenant's copy of that identity name, but a caller who
+  already holds the global grant that path requires can now pass an
+  explicit `tenant` to scope it to one. See [Credential
+  Issuance](/features/credential-issuance/).
+- **One shared Postgres connection pool** (`internal/platform/pgpool`)
+  across every Postgres-backed feature (audit, credential
+  revocation/refresh, budget, job/cost budget, SCIM, anomaly
+  baselines/blocks/tenant aggregates), replacing N independent
+  ~10-connection pools — closes the fail-open-under-load gap
+  `budget-enforcement.md` documented. See
+  `audit.postgres_max_open_conns`.
+- **`identity_churn` HA persistence + CUSUM extension** — Postgres-backed
+  cross-replica window-total merge and baseline persistence (mirroring
+  `tenant_anomaly`'s own HA extension), plus `cusum_enabled` closing the
+  slow-trickle gap a plain per-window count can't. See [Anomaly
+  Detection](/features/anomaly-detection/).
+- **OIDC discovery-document fetching** — `credential.oidc.jwks_uri` is
+  now optional, resolved from `/.well-known/openid-configuration` when
+  unset. See [SSO](/features/sso/).
+- **Multi-IdP SSO** (`credential.oidc_providers`) — more than one OIDC
+  issuer at once, routed by each token's own `iss` claim. See
+  [SSO](/features/sso/).
+- **Full SCIM 2.0 compliance** — a real filter grammar (tokenizer +
+  recursive-descent parser, every operator, `and`/`or`/`not`), bulk
+  operations (`POST /scim/v2/Bulk`), and the discovery triad
+  (`ServiceProviderConfig`/`ResourceTypes`/`Schemas`). See
+  [SCIM](/features/scim/).
+- **Dashboard config-file watcher** (`features.config_file_watch`) —
+  `fsnotify`-based, debounced, survives atomic replace-by-rename saves;
+  editing policy/rbac/budget config on disk now applies automatically.
+  See [Web Dashboard](/features/web-dashboard/).
+- **Dashboard browser-native login** — `GET`/`POST /dashboard/login`
+  exchanges a bootstrap secret or OIDC ID token for a session cookie
+  (httpOnly, `SameSite=Strict`), closing the gap where a browser
+  couldn't attach a bearer token to `/dashboard/`, Blocked's Unblock, or
+  Credentials' Revoke. See [Web Dashboard](/features/web-dashboard/).
+- **Cluster-wide dashboard live-audit view** — with `postgres_storage`
+  on, the Activity view and recent-activity chart read the same durable,
+  cluster-wide `audit_entries` table every replica writes into, not a
+  bounded per-replica in-memory ring buffer. See [HA
+  Deployment](/features/ha-deployment/).
+- **Tenant-scoped federation correlation** — `Tenant` now flows through
+  `AnomalySummary`/`CorrelatedAlert` and the correlation key itself, not
+  just the display: two different tenants' identically-named identities
+  (same pseudonymized fingerprint, since `Fingerprint` is identity-only)
+  no longer incorrectly correlate as one condition, and the
+  correlated-alerts view is tenant-scoped like every other dashboard
+  view. See [Federation](/features/federation/).
+- **AWS KMS-backed signing keys** (`credential.kms.key_id`) — the
+  private signing key never leaves KMS/CloudHSM; every token issuance
+  calls KMS's own `Sign` API via a `crypto.Signer` adapter, the same
+  extension point `jwx/v3` documents for "KMS-backed adapters". Mutually
+  exclusive with `signing_key_file`; existing rotation
+  (`previous_signing_key_files`) works unchanged rotating in or out of
+  KMS custody. GCP Cloud KMS and Azure Key Vault are a sibling adapter
+  away. See [HA Deployment](/features/ha-deployment/).
+- **SPIFFE Workload API client** (`features.spiffe_workload_identity`) —
+  Wardline fetches its own auto-rotating X.509-SVID from a local SPIRE
+  agent via `go-spiffe/v2`'s `workloadapi.X509Source`, and presents it
+  as the client certificate on its outbound gRPC-upstream mTLS
+  connection (`credential.spiffe_workload.upstream_peer_id` pins the
+  expected upstream identity). Closes the "no SPIFFE Workload API
+  client in Wardline itself" gap for the outbound direction; the
+  inbound `mtls` bootstrap source's header-based trust handoff is a
+  separate, deliberate design decision and is unchanged. See
+  [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/).
+
+## v2.5 (shipped)
+
+- **Docs beginner layer** — a plain-language "no context assumed"
+  section on the four pages a first-time reader actually lands on
+  (docs-site root, Getting Started, Concepts, Quickstart's opening),
+  explaining agent/proxy/MCP/identity/policy/budget/audit before the
+  existing precise content. Reference/config/CLI pages and every
+  feature's Known-limitations section are unchanged — full technical
+  precision stays for the SRE/security audience those pages are for.
+- **Production-scale benchmark suite** (`bench/`) — real sustained
+  concurrent load via vegeta and a purpose-built raw-gRPC load client
+  against the v0.1 baseline, the full feature stack, credential
+  issuance, and budget enforcement under overload. Found and fixed a
+  real ~5x throughput ceiling: `http.Transport`'s default
+  `MaxIdleConnsPerHost` of 2 was starving connection reuse to Wardline's
+  own upstream under concurrency; raising it
+  (`upstreamMaxIdleConnsPerHost`) took unbounded throughput from
+  ~4,100 to ~20,900 req/s with p99 latency falling by roughly half, 0
+  errors either side. See [Benchmarks](/advanced/benchmarks/).
 
 ## Future directions (not committed)
 

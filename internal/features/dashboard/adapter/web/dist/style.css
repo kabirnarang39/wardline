@@ -866,6 +866,15 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 .audit-table tbody tr:hover td { background: var(--surface-raised); }
 
 .audit-table td.reason-cell { white-space: normal; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
+/* Job/cost budget's opaque composite key (see jobKey/tenant.Key's
+   length-prefixed, unbroken-by-design composition) has no spaces to
+   wrap at -- reason-cell's white-space:normal only wraps prose, so
+   reusing it here just let the column stretch to fit the whole raw
+   string instead of truncating (text-overflow:ellipsis silently does
+   nothing without white-space:nowrap). Dimmed like tool-cell above: an
+   opaque id, not primary content -- full value is still in the title
+   attribute on hover. */
+.audit-table td.key-cell { white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-data); color: var(--text-muted); }
 .audit-table td.tool-cell { color: var(--text-muted); }
 /* Identity reads as a name, not a code token: sans-serif + full-strength
    text, matching the reference (tool stays mono/muted above). */
@@ -1663,3 +1672,71 @@ h1 { font-size: 19px; font-weight: 600; margin: 0; color: var(--text); }
 
 #budget-write-result { margin-top: 12px; font-size: 12.5px; font-weight: 600; }
 #budget-write-result[hidden] { display: none; }
+
+/* --- Confirm/alert modal (v4 tokens) ---
+   Replaces window.confirm()/window.alert() for Unblock, Revoke, and
+   Approve/Deny's failure path -- a native browser dialog is unstyled,
+   blocks the whole tab (including any automated testing driving the
+   page), and is the one visibly un-branded moment in an otherwise
+   consistently themed dashboard. showConfirm()/showAlert() in app.js
+   drive these two overlays. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-overlay[hidden] { display: none; }
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-raised);
+  padding: 20px 22px;
+  max-width: 420px;
+  width: calc(100% - 48px);
+}
+
+.modal-card p {
+  margin: 0 0 18px;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-btn {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.modal-btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+.modal-btn-secondary:hover { color: var(--text); border-color: var(--text-muted); }
+
+.modal-btn-primary {
+  background: var(--status-critical);
+  color: #1A0605;
+}
+.modal-btn-primary:hover { filter: brightness(1.08); }
+
+.modal-btn-primary:focus-visible,
+.modal-btn-secondary:focus-visible { outline: 2px solid var(--status-info); outline-offset: 2px; }

@@ -1,7 +1,7 @@
 ---
 title: "Web Dashboard"
 weight: 55
-summary: "The in-browser Overview/Activity/Anomalies/Blocked/Federation/Credentials/Policy/Status view."
+summary: "The in-browser dashboard: Overview, Activity, Anomalies, Blocked, Approvals, Federation, Policy, RBAC, Budget, Job/Cost Budget, Credentials, Status, Reload log, and Compliance."
 ---
 
 An in-browser, largely read-only view of what Wardline is doing right
@@ -12,11 +12,18 @@ features:
   web_ui: true
 ```
 
-Then visit `http://<listen-addr>/dashboard/`. Eight views, reached from
-the sidebar in this order: **Overview, Activity, Anomalies, Blocked,
-Federation, Credentials, Policy, Status**. Live views poll every 2
-seconds; Policy and Status are loaded once and reflect state as of
-startup / the last poll respectively.
+Then visit `http://<listen-addr>/dashboard/`. Views are reached from the
+sidebar, grouped the same way the sidebar itself groups them:
+**Overview**; **Activity, Anomalies, Blocked, Approvals, Federation**
+(observability); **Policy, RBAC, Budget, Job Budget, Cost Budget,
+Credentials** (configuration); **Status, Reload log, Compliance**
+(system). Several of these — RBAC, Budget, Job/Cost Budget, Approvals,
+Compliance — are covered on their own feature page rather than
+redescribed here; this page covers Overview, Activity/Anomalies/
+Federation, Blocked, Credentials, and Policy/Status, plus the
+cross-cutting auth/CSRF posture that applies to all of them. Live views
+poll every 2 seconds; Policy and Status are loaded once and reflect
+state as of startup / the last poll respectively.
 
 ## Overview
 
@@ -47,16 +54,20 @@ of sync with what those views show), a recent-activity bar chart, a
 a live pulse (requests/sec over the trailing 10 seconds, with a
 pause/resume toggle).
 
-**Chart caveat:** the recent-activity chart buckets **the last N
-buffered audit events only** — the same bounded, in-memory,
-resets-on-restart ring buffer (default capacity 1000) that the Activity
-view itself polls, not a query over the durable audit trail
-(`audit.output`'s JSONL file, or the `postgres_storage` table). On a
-busy instance that cycles through the buffer in minutes, the chart
-shows *recent* activity, not a full historical view — do not read it as
-"today's total traffic" once request volume exceeds the buffer's
-capacity. The chart's own caption states this plainly at runtime
-("Based on the last N buffered events — not a full historical view.");
+**Chart caveat:** without `features.postgres_storage`, the recent-activity
+chart buckets **the last N buffered audit events only** — the same
+bounded, in-memory, resets-on-restart ring buffer (default capacity
+1000) that the Activity view itself polls, not a query over the durable
+audit trail (`audit.output`'s JSONL file). On a busy instance that
+cycles through the buffer in minutes, the chart shows *recent* activity,
+not a full historical view — do not read it as "today's total traffic"
+once request volume exceeds the buffer's capacity. **With
+`features.postgres_storage` on, this caveat no longer applies**: the
+Activity view and this chart both read from the same durable,
+cluster-wide `audit_entries` table every replica writes into (see
+`PostgresWriter.Since`) — not a fixed-N in-memory window, and not
+per-replica. The chart's own subtitle states however many events the
+current poll actually returned, so it reads correctly either way;
 this is that caveat's source of truth, not a display bug.
 
 Overview polls at the same 2-second cadence as every other live view,
@@ -80,9 +91,13 @@ A live-updating table of identities currently under a time-bounded
 `anomaly.auto_block` — identity, tenant, reason, and expiry. Each row
 carries an **Unblock** button that clears the block early (`DELETE
 /dashboard/api/anomalies/blocked/{identity}`), after a confirm prompt.
-This is one of the dashboard's only two mutations (see Credentials
-below for the other) — see "Auth requirement for mutations" below for
-exactly who can press it successfully.
+Unblock and Credentials' Revoke below are two of several mutations the
+dashboard now exposes (reload, the policy/budget editors, and
+approval decisions are the others — see each feature's own page, and
+"CSRF" under Known limitations for the full current list) — they're
+covered together here because they share a distinctive dual-mechanism
+auth gate the others don't; see "Auth requirement for mutations" below
+for exactly who can press either one successfully.
 
 ## Credentials
 
@@ -125,7 +140,15 @@ and by two *different* mechanisms depending on which button you press:
   from the `dashboard:view` permission the rest of the Blocked view
   relies on to render at all. A caller who can see the Blocked table
   (holds `dashboard:view`) but lacks `credential:revoke` gets a clean
-  `403` clicking Unblock, same posture as Credentials' Revoke.
+  `403` clicking Unblock, same posture as Credentials' Revoke. **This
+  means Unblock only works at all when `features.rbac` is also on** —
+  `credential:revoke` is an RBAC permission, so with `rbac` off there is
+  no authorizer to check it against and the button's own request gets a
+  generic `404`, not a `403`. Verified live: `anomaly_detection` +
+  `web_ui` with `rbac` off renders the Blocked table (and the button)
+  fine, but clicking Unblock always 404s. Turn `rbac` on if you need
+  Unblock to actually work — the table itself, and every other
+  dashboard view, functions the same either way.
 
 **A sharp edge worth knowing before you rely on either button:**
 neither button's own client-side code attaches a credential of its
@@ -141,53 +164,50 @@ traffic reaches Wardline — browsers don't send that header themselves,
 but an intermediary that does makes every request the browser makes
 already carry it, including these two.
 
-It is **not** sufficient when `features.credential_issuance` is on and
-you are not loopback: identity there is a bearer token
-(`Authorization: Bearer <jwt>`, obtained via `POST /credentials/token`),
-and a plain browser tab has no built-in mechanism to attach that header
-to its own requests the way it automatically attaches cookies. This
-applies to *every* dashboard route when `features.rbac` is also on
-(the entire `/dashboard/` mount, not just these two buttons, requires a
-resolvable identity holding `dashboard:view` in that case — see
-[RBAC](/features/rbac/)) — and unlike `/credentials/revoke` above,
-**`/dashboard/` itself has no loopback exception at all**:
-`rbacadapter.RequirePermission` denies an unresolved identity identically
-whether the request comes from `127.0.0.1`/`::1` or a LAN address. So in
-the `rbac` + `credential_issuance` combination, a first-time operator
-opening a bare browser tab to `/dashboard/` should expect the whole
-dashboard to be unreachable — **loopback included**, not just non-loopback
-access — not just these two buttons. Reach it instead through something
-that can attach the bearer token for you (a reverse proxy/mesh sidecar
-that injects it, a browser extension that adds the header, or API tooling
-calling `/dashboard/api/*` and `/credentials/revoke` directly) rather
-than a bare browser session. This is an accurate description of how
-`rbac`'s dashboard gate has always worked (predates this redesign's
-visual changes entirely — see [RBAC](/features/rbac/)'s own "every
-dashboard request must resolve an identity" language, which likewise has
-no loopback exception); it is not new behavior, but is easy to miss the
-first time you turn both flags on together, so it's called out here
-explicitly.
+When `features.credential_issuance` is on, identity is a bearer token
+(`Authorization: Bearer <jwt>`), and a plain browser tab has no
+built-in mechanism to attach that header to its own requests the way it
+automatically attaches cookies. **`GET /dashboard/login` closes this
+gap**: a browser-native sign-in form (paste the same bootstrap secret
+or OIDC ID token `POST /credentials/token` accepts) that exchanges it
+for the exact same access token through the exact same
+`IssuanceService.Bootstrap` path, then delivers it as an httpOnly,
+`SameSite=Strict` session cookie (`POST /dashboard/login`) instead of a
+JSON body — the browser then sends that cookie automatically on every
+subsequent request, including these two buttons, the rest of
+`/dashboard/`, and (once `features.rbac` is also on)
+`rbacadapter.RequirePermission`'s own identity resolution, since all of
+these already went through the same `IdentityAuthenticator` that now
+checks the cookie as a fallback whenever no `Authorization` header is
+present. `POST /dashboard/logout` clears it. Session lifetime is
+exactly `credential.access_token_ttl_seconds` (default 15m) — there is
+no refresh-token cookie or silent renewal yet, so re-login when it
+expires; see "Known limitations" below.
 
 ## Policy, Status
 
 Policy shows the active policy backend and raw policy file content as
-currently loaded. It is not auto-detected from the file after edits;
-trigger `POST /dashboard/api/reload/policy` (gated by `config:edit` when
-`rbac` is on) or restart Wardline to refresh it. Status shows version,
-uptime, listen/upstream addresses, and which feature flags are on.
+currently loaded. With `features.config_file_watch` on, an edit to the
+policy file on disk applies automatically (see "Known limitations"
+below); otherwise trigger `POST /dashboard/api/reload/policy` (gated by
+`config:edit` when `rbac` is on) or restart Wardline to refresh it.
+Status shows version, uptime, listen/upstream addresses, and which
+feature flags are on.
 
 ## Security note
 
 The dashboard requires no authentication and every non-mutating route
 is read-only **by default** (unless `features.rbac` is on — see
 [RBAC](/features/rbac/); with it on, every dashboard request must
-resolve an identity holding `dashboard:view`, else `403`). The two
-exceptions are Blocked's Unblock and Credentials' Revoke, above — each
-is a real, security-relevant mutation, and each is independently gated
-by `credential:revoke` rather than the weaker `dashboard:view` a plain
-reader might hold. Neither can influence policy evaluation, budget
-accounting, or how a proxied call is decided going forward except
-through that one narrow, audited, explicitly-permissioned action. The
+resolve an identity holding `dashboard:view`, else `403`). Blocked's
+Unblock and Credentials' Revoke, above, are each independently gated by
+`credential:revoke` rather than the weaker `dashboard:view` a plain
+reader might hold — the same permission the dashboard's other mutations
+(reload, the policy/budget editors, approval decisions) gate behind
+`config:edit` instead, a distinct permission from either of these. No
+dashboard mutation can influence policy evaluation, budget accounting,
+or how a proxied call is decided going forward except through its own
+one narrow, audited, explicitly-permissioned action. The
 dashboard shares the exact same listener/port as the proxy itself, so
 anyone who can reach Wardline's proxy port — including every agent
 Wardline proxies calls for — can already read full audit reasons and
@@ -196,21 +216,44 @@ does not change this. This is why `web_ui` defaults to off.
 
 ## Known limitations
 
-- The recent-activity chart on Overview reflects the bounded audit ring
-  buffer, not the durable audit trail — see the chart caveat above.
-- There is no browser-native way to deliver a bearer token
-  (`features.credential_issuance` on) to `/dashboard/` itself, or to
-  Blocked's Unblock, or to Credentials' Revoke from non-loopback — see
-  "Auth requirement for mutations" above. Credentials' Revoke is the one
-  exception with a loopback path around this; `/dashboard/` (once
-  `features.rbac` is also on) and Blocked's Unblock have no loopback
-  exception at all, so for those two the gap applies from loopback too, not
-  just non-loopback access. A dedicated token-entry/login flow would close
-  this gap; none exists today.
-- Federation's correlated-alerts view is not tenant-scoped (see
-  [RBAC](/features/rbac/)'s known limitations) — it correlates on an
-  identity fingerprint computed locally, independent of tenant.
-- Policy, budget, and RBAC changes are not auto-detected from the file;
-  trigger a reload with `POST /dashboard/api/reload/{domain}` (gated by
-  the `config:edit` permission when `rbac` is on) after editing, or
-  restart Wardline. There is no filesystem watcher.
+- Without `features.postgres_storage`, the recent-activity chart on
+  Overview reflects the bounded audit ring buffer, not the durable
+  audit trail — see the chart caveat above. With `postgres_storage` on,
+  it reads the same durable, cluster-wide table the Activity view does.
+- **`GET`/`POST /dashboard/login` and `POST /dashboard/logout` now
+  deliver a bearer token to the browser** (`features.credential_issuance`
+  on) — see "Auth requirement for mutations" above. Session lifetime is
+  exactly the access token's own TTL (`credential.access_token_ttl_seconds`,
+  default 15m): no refresh-token cookie or silent renewal yet, so an
+  expired session requires signing in again through `/dashboard/login`,
+  not a transparent background refresh — a deliberately bounded scope
+  for this cycle (a real, separate feature: rotating a refresh-token
+  cookie plus an auto-refresh flow), not silently incomplete.
+- Federation's correlated-alerts view is now tenant-scoped like every
+  other dashboard view (see [Federation](/features/federation/)'s known
+  limitations for what's still instance-scoped: each Wardline instance
+  shows its own `Correlator`'s state, not a fleet-wide merged view).
+- **Policy, budget, and RBAC changes auto-apply on file edit when
+  `features.config_file_watch` is on** — an `fsnotify` watcher on the
+  main config file plus `policy_file`/`rbac.config_file` calls the same
+  reload closures `POST /dashboard/api/reload/{domain}` does,
+  debounced (300ms) so one logical save doesn't trigger several
+  reloads, and robust to an atomic replace-by-rename save (vim and
+  most editors' default) — it watches the enclosing directory, not the
+  file's own inode, which a rename-over-original save would otherwise
+  orphan. Off by default (a new capability beyond the v0.1 baseline);
+  without it, trigger a reload manually with `POST
+  /dashboard/api/reload/{domain}` (gated by the `config:edit`
+  permission when `rbac` is on) after editing, or restart Wardline.
+- **CSRF**: deliberately no separate anti-CSRF token. The session
+  cookie is `SameSite=Strict` (see "Auth requirement for mutations"
+  above), which OWASP's current guidance treats as a primary,
+  sufficient CSRF mitigation for a session with no cross-site-linking
+  use case to preserve — a cross-site page cannot make the browser
+  attach this cookie to a request at all, regardless of method. Every
+  mutating endpoint (`/dashboard/api/reload/*`, the policy/budget
+  editors, `/dashboard/api/anomalies/blocked/*` unblock,
+  `/dashboard/api/approvals/*` decisions) additionally requires
+  `POST`/`DELETE` (never triggerable by a bare link, image tag, or
+  prefetch) and its own explicit authorization check independent of
+  the cookie's mere presence.

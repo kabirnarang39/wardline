@@ -48,12 +48,17 @@ func (b *CorrelatedAlertBuffer) Add(a domain.CorrelatedAlert) {
 	b.entries = append(b.entries, entry)
 }
 
-// Since returns entries with ID > afterID, oldest first, capped to the
-// most recent limit of them (afterID=0 means "from the start"; limit <=
-// 0 means no cap). Identical restart-handling semantics to every other
+// Since returns entries with ID > afterID (optionally scoped to
+// tenantFilter, "" meaning unfiltered), oldest first, capped to the most
+// recent limit of them (afterID=0 means "from the start"; limit <= 0
+// means no cap). Identical restart-handling semantics to every other
 // ring buffer in this codebase: an afterID ahead of nextID is treated as
-// "from the start".
-func (b *CorrelatedAlertBuffer) Since(afterID int64, limit int) []CorrelatedAlertEntry {
+// "from the start". tenantFilter closes the gap RBAC's own known
+// limitations used to document: the correlated-alerts view can now be
+// tenant-scoped like every other dashboard view, matching
+// AuditSource/AnomalySource's own Since(afterID, limit, tenantFilter)
+// signature exactly.
+func (b *CorrelatedAlertBuffer) Since(afterID int64, limit int, tenantFilter string) []CorrelatedAlertEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -63,7 +68,7 @@ func (b *CorrelatedAlertBuffer) Since(afterID int64, limit int) []CorrelatedAler
 
 	out := make([]CorrelatedAlertEntry, 0, len(b.entries))
 	for _, e := range b.entries {
-		if e.ID > afterID {
+		if e.ID > afterID && (tenantFilter == "" || e.Tenant == tenantFilter) {
 			out = append(out, e)
 		}
 	}

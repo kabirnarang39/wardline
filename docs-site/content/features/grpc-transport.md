@@ -56,11 +56,33 @@ buckets, and audit trail:
   method is the budget/audit key. A denied or auto-blocked call returns a
   `PermissionDenied` gRPC status.
 
+## Mutual TLS to the upstream via SPIFFE
+
+`grpc_upstream_tls` on its own verifies against the system root pool
+only and dials with no client certificate — fine for a plaintext-mesh
+sidecar upstream, not enough for an upstream that itself requires
+mTLS. Turning on `features.spiffe_workload_identity` (see
+[mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/#wardline-as-a-spiffe-workload-outbound))
+makes Wardline fetch its own auto-rotating X.509-SVID from a local
+SPIRE agent and present it as the client certificate on this exact
+dial — no separate certificate file or manual rotation to manage:
+
+```yaml
+features:
+  grpc_transport: true
+  spiffe_workload_identity: true
+grpc_upstream_tls: true
+credential:
+  spiffe_workload:
+    upstream_peer_id: "spiffe://example.org/ns/prod/sa/upstream-service"
+```
+
+A private (non-system-root) CA for the upstream's own server
+certificate, independent of client-cert presentation, is still trusted
+by adding it to the container's trust store rather than through this
+flag.
+
 ## Out of scope for this cut
 
-- **Custom CA / client certificates for the upstream TLS dial** —
-  `grpc_upstream_tls` verifies against the system root pool only; a
-  private CA is trusted by adding it to the container's trust store, and
-  mutual-TLS client certs to the upstream are not configured here.
 - **Per-message policy evaluation** — one decision is made per RPC at
   stream start, mirroring the HTTP transport's one-decision-per-request.

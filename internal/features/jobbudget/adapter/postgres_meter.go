@@ -59,32 +59,15 @@ type PostgresMeter struct {
 	logger *slog.Logger
 }
 
-// NewPostgresMeter opens a connection pool to dsn, pings it, and creates
-// the job_budget_counters table if it doesn't already exist -- a bad DSN
-// or unreachable database fails here, at construction time, not on the
-// first Increment call. Pool limits mirror budget.PostgresLimiter's own
-// (see its NewPostgresLimiter): sql.Open doesn't itself connect, and an
-// unbounded pool under database/sql's defaults is the wrong default for
-// a proxy under load.
-func NewPostgresMeter(dsn string, logger *slog.Logger) (*PostgresMeter, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open postgres connection: %w", err)
-	}
-	pingCtx, cancel := context.WithTimeout(context.Background(), jobBudgetMeterTimeout)
+// NewPostgresMeter creates the job_budget_counters table on db if it
+// doesn't already exist. db is expected already open and pinged (see
+// pgpool.Open, called once in cmd/wardline/main.go and shared across
+// every Postgres-backed feature) -- a bad db fails here, at construction
+// time, not on the first Increment call.
+func NewPostgresMeter(db *sql.DB, logger *slog.Logger) (*PostgresMeter, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), jobBudgetMeterTimeout)
 	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-
-	ctx, cancel2 := context.WithTimeout(context.Background(), jobBudgetMeterTimeout)
-	defer cancel2()
 	if _, err := db.ExecContext(ctx, createJobBudgetTableSQL); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("create job_budget_counters table: %w", err)
 	}
 	return &PostgresMeter{db: db, logger: logger}, nil

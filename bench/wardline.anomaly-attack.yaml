@@ -1,0 +1,38 @@
+# Isolates anomaly_detection's full attack-response chain under real
+# concurrent load: rate_spike, novel_tool, and deny_rate_spike feed
+# ml_score's combined z-score, and auto_block blocks the offending
+# identity once ml_score clears score_threshold -- mirrors
+# TestServeEndToEnd_MLScoreAutoBlock's config (same thresholds), but
+# driven by bench/anomalyattack's concurrent workers instead of a
+# sequential test loop.
+listen: ":38408"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.anomaly-attack.yaml"
+
+audit:
+  output: "./bench/.out/audit.anomaly-attack.jsonl"
+
+features:
+  anomaly_detection: true
+
+anomaly:
+  output: "./bench/.out/anomaly.anomaly-attack.jsonl"
+  window_seconds: 3
+  rate_spike:
+    enabled: true
+    rate_multiplier: 3.0
+    min_calls: 10
+  novel_tool:
+    enabled: true
+  deny_rate_spike:
+    enabled: true
+    threshold: 0.5
+    min_calls: 5
+  ml_score:
+    enabled: true
+    score_threshold: 3.0
+    min_calls: 2
+  auto_block:
+    enabled: true
+    score_threshold: 3.0
+    block_duration_seconds: 30

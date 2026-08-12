@@ -89,7 +89,7 @@ func TestJWTIssuerVerifier_Verify_NoTenantClaimDefaultsToTenantDefault(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), iv.privateKey))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), iv.signer))
 	if err != nil {
 		t.Fatal(err)
 	}
