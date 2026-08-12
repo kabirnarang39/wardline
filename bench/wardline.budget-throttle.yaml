@@ -1,0 +1,18 @@
+# Isolates budget-enforcement's throttle path: a deliberately tiny window
+# so sustained load at any real-world rate crosses it, producing a steady
+# stream of HTTP 429s -- proves the limiter holds its line under load
+# rather than fail-open, and measures the cost of the throttled path
+# itself (rejected before reaching policy evaluation).
+listen: ":38403"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.budget.jsonl"
+
+features:
+  budget_enforcement: true
+
+budget:
+  requests_per_window: 100
+  window_seconds: 1

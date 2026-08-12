@@ -2,6 +2,7 @@
 /*.test
 *.out
 /demo/.out/
+/bench/.out/
 .DS_Store
 /docs/superpowers/
 /.superpowers/
