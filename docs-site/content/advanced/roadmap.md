@@ -328,6 +328,26 @@ correctly.
   separate, deliberate design decision and is unchanged. See
   [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/).
 
+## v2.5 (shipped)
+
+- **Docs beginner layer** — a plain-language "no context assumed"
+  section on the four pages a first-time reader actually lands on
+  (docs-site root, Getting Started, Concepts, Quickstart's opening),
+  explaining agent/proxy/MCP/identity/policy/budget/audit before the
+  existing precise content. Reference/config/CLI pages and every
+  feature's Known-limitations section are unchanged — full technical
+  precision stays for the SRE/security audience those pages are for.
+- **Production-scale benchmark suite** (`bench/`) — real sustained
+  concurrent load via vegeta and a purpose-built raw-gRPC load client
+  against the v0.1 baseline, the full feature stack, credential
+  issuance, and budget enforcement under overload. Found and fixed a
+  real ~5x throughput ceiling: `http.Transport`'s default
+  `MaxIdleConnsPerHost` of 2 was starving connection reuse to Wardline's
+  own upstream under concurrency; raising it
+  (`upstreamMaxIdleConnsPerHost`) took unbounded throughput from
+  ~4,100 to ~20,900 req/s with p99 latency falling by roughly half, 0
+  errors either side. See [Benchmarks](/advanced/benchmarks/).
+
 ## Future directions (not committed)
 
 A hosted cloud tier has been explicitly named as a possible future

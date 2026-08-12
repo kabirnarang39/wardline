@@ -1,0 +1,39 @@
+# Every feature a realistic production deployment runs together, with
+# headroom on budget/anomaly thresholds so the throughput/latency runs
+# measure per-request overhead, not artificial throttling -- that's what
+# wardline.budget-throttle.yaml is for.
+listen: ":38401"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.full.jsonl"
+
+features:
+  budget_enforcement: true
+  anomaly_detection: true
+  credential_issuance: true
+  grpc_transport: true
+
+budget:
+  requests_per_window: 1000000
+  window_seconds: 60
+
+credential:
+  identities_file: "./bench/credentials.bench.yaml"
+  bootstrap_source: "presharedsecret"
+
+anomaly:
+  output: "./bench/.out/anomaly.full.jsonl"
+  window_seconds: 60
+  rate_spike:
+    enabled: true
+    rate_multiplier: 100.0
+    min_calls: 1000000
+  ml_score:
+    enabled: true
+    score_threshold: 100.0
+    min_calls: 1000000
+
+grpc_listen: ":38402"
+grpc_upstream: "localhost:39401"

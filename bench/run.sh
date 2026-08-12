@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Wardline production-scale benchmark suite.
+#
+# Drives real, sustained concurrent load through a real `wardline serve`
+# process with vegeta (HTTP: https://github.com/tsenart/vegeta) and a
+# purpose-built raw-gRPC load client (bench/grpcload), covering:
+#
+#   - the v0.1 baseline hot path (proxy + policy + audit), allow and deny
+#   - the same path with every optional feature also on (budget,
+#     anomaly detection, credential issuance, gRPC transport), to show
+#     the delta each layer of the stack costs
+#   - credential issuance (token bootstrap) and Bearer-token verification
+#   - budget enforcement actually holding its line under sustained
+#     overload (throttled, not fail-open)
+#   - the gRPC transport's own passthrough path
+#   - unbounded max-throughput: what the proxy itself can sustain, not
+#     capped at BENCH_RATE, against a non-bottlenecking upstream
+#     (bench/httpupstream, a concurrent Go stand-in -- Python's
+#     single-threaded http.server saturates first and muddies the number)
+#
+# Run from the repo root: ./bench/run.sh
+# Requires: go, vegeta (go install github.com/tsenart/vegeta@latest)
+set -euo pipefail
+
+RATE="${BENCH_RATE:-500}"      # requests/sec per HTTP scenario
+DURATION="${BENCH_DURATION:-15s}"
+WORKERS="${BENCH_WORKERS:-50}"
+GRPC_CONCURRENCY="${BENCH_GRPC_CONCURRENCY:-50}"
+MAX_WORKERS="${BENCH_MAX_WORKERS:-300}"        # concurrency for the unbounded max-throughput scenario
+MAXRATE_DURATION="${BENCH_MAXRATE_DURATION:-10s}"
+
+OUT="./bench/.out"
+BIN="./wardline"
+GRPCLOAD="$OUT/grpcload"
+HTTPUPSTREAM="$OUT/httpupstream"
+
+mkdir -p "$OUT"
+
+command -v vegeta >/dev/null || {
+  echo "vegeta not found -- install with: go install github.com/tsenart/vegeta@latest" >&2
+  exit 1
+}
+
+PIDS=()
+cleanup() {
+  for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
+}
+trap cleanup EXIT
+
+echo "== building wardline, grpcload, and httpupstream =="
+go build -o "$BIN" ./cmd/wardline
+go build -o "$GRPCLOAD" ./bench/grpcload
+go build -o "$HTTPUPSTREAM" ./bench/httpupstream
+
+echo "== starting mock HTTP upstream (:39400) and mock gRPC upstream (:39401) =="
+"$HTTPUPSTREAM" 39400 >/dev/null 2>&1 & PIDS+=($!)
+"$GRPCLOAD" upstream :39401 >/dev/null 2>&1 & PIDS+=($!)
+sleep 0.3
+
+wait_healthy() {
+  local port="$1"
+  for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://localhost:$port/healthz" && return 0
+    sleep 0.2
+  done
+  echo "wardline on :$port never became healthy" >&2
+  exit 1
+}
+
+attack() {
+  local name="$1" port="$2" identity="$3"
+  printf 'POST http://localhost:%s/\n' "$port" | \
+    vegeta attack -header "X-Wardline-Identity: $identity" \
+      -header "Content-Type: application/json" \
+      -body ./bench/body.json \
+      -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+    tee "$OUT/$name.bin" | vegeta report | tee "$OUT/$name.txt"
+  echo
+}
+
+echo
+echo "############################################"
+echo "# 1. Baseline (v0.1: proxy + policy + audit) #"
+echo "############################################"
+"$BIN" serve --config ./bench/wardline.baseline.yaml >"$OUT/server.baseline.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38400
+
+echo "--- allow path ---"
+attack baseline-allow 38400 bench-agent
+echo "--- deny path ---"
+attack baseline-deny 38400 bench-denied-agent
+
+echo "--- allow path, unbounded max throughput (rate=0: fire as fast as $MAX_WORKERS workers can) ---"
+printf 'POST http://localhost:38400/\n' | \
+  vegeta attack -header "X-Wardline-Identity: bench-agent" \
+    -header "Content-Type: application/json" \
+    -body ./bench/body.json \
+    -rate=0 -max-workers="$MAX_WORKERS" -duration="$MAXRATE_DURATION" | \
+  tee "$OUT/baseline-allow-maxrate.bin" | vegeta report | tee "$OUT/baseline-allow-maxrate.txt"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "###########################################################"
+echo "# 2. Full stack (budget + anomaly + credential + gRPC on) #"
+echo "###########################################################"
+"$BIN" serve --config ./bench/wardline.full.yaml >"$OUT/server.full.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38401
+
+echo "--- credential issuance: POST /credentials/token throughput ---"
+printf 'POST http://localhost:38401/credentials/token\n' | \
+  vegeta attack -header "Content-Type: application/json" \
+    -body <(echo '{"secret":"bench-only-secret-do-not-use-in-production-0123456789"}') \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/full-credential-issuance.bin" | vegeta report | tee "$OUT/full-credential-issuance.txt"
+
+echo "--- allow path, full feature stack (Bearer token, credential_issuance is on so a raw X-Wardline-Identity header is no longer trusted) ---"
+TOKEN=$(curl -s -X POST http://localhost:38401/credentials/token \
+  -H "Content-Type: application/json" \
+  -d '{"secret":"bench-only-secret-do-not-use-in-production-0123456789"}' | jq -r .token)
+printf 'POST http://localhost:38401/\nAuthorization: Bearer %s\n' "$TOKEN" | \
+  vegeta attack -header "Content-Type: application/json" \
+    -body ./bench/body.json \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/full-allow.bin" | vegeta report | tee "$OUT/full-allow.txt"
+
+echo "--- gRPC transport passthrough (Bearer token, same reason as the HTTP allow path above) ---"
+sleep 0.5 # grpc_listen starts alongside the HTTP listener; healthz above only proves the latter is up
+"$GRPCLOAD" load "localhost:38402" bench-agent "$GRPC_CONCURRENCY" "$DURATION" "$TOKEN" | tee "$OUT/full-grpc.txt"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "############################################################"
+echo "# 3. Budget enforcement: 100 req/window/1s, load exceeds it #"
+echo "############################################################"
+"$BIN" serve --config ./bench/wardline.budget-throttle.yaml >"$OUT/server.budget.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38403
+
+attack budget-throttle 38403 bench-agent
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="

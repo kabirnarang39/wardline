@@ -112,6 +112,15 @@ func writeJSONRPCError(w http.ResponseWriter, status, code int, id json.RawMessa
 // upstream to start responding; MCP tool calls are fast, so 30s is generous.
 const upstreamResponseHeaderTimeout = 30 * time.Second
 
+// upstreamMaxIdleConnsPerHost overrides http.Transport's default of 2.
+// Wardline's whole job is fronting a small number of upstream hosts (often
+// exactly one) under concurrent load from many agents at once -- the
+// default starves that down to 2 pooled connections per host, so anything
+// past trivial concurrency pays a fresh dial+handshake per request instead
+// of reusing a keep-alive connection. 256 gives real headroom without
+// keeping open connections indefinitely (IdleConnTimeout still applies).
+const upstreamMaxIdleConnsPerHost = 256
+
 // maxRequestBodyBytes caps how much of the request body we'll read before
 // any policy check runs; MCP tool-call payloads are small JSON-RPC
 // envelopes, so 1 MiB is generous headroom, not a real limit in practice.
@@ -182,6 +191,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 	// ResponseHeaderTimeout is overridden.
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = upstreamResponseHeaderTimeout
+	tr.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
 	proxy.Transport = tr
 	return &Handler{
 		decider:          decider,

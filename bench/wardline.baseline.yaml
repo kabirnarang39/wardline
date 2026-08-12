@@ -1,0 +1,10 @@
+# v0.1 baseline only: proxy + policy + audit, no optional feature on.
+# This is the floor every other config's overhead is measured against.
+listen: ":38400"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.baseline.jsonl"
+
+features: {}
