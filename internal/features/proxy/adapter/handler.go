@@ -599,6 +599,26 @@ func readResponseSignal(resp *http.Response) proxyusecase.EffectSignal {
 	if resp.Body == nil {
 		return sig
 	}
+	// A streaming response body is never buffered here. MCP's Streamable
+	// HTTP transport (the spec's own 2025-03-26 revision) uses
+	// text/event-stream for progressive results -- a real tool call
+	// trickling small events over its whole (possibly long) duration.
+	// io.ReadAll below blocks until it either fills cap or the reader
+	// returns EOF, and an open SSE stream does neither until the tool
+	// call itself finishes: reading it here, before ReverseProxy starts
+	// copying the body to the client, would stall every byte of a real
+	// streaming response behind that block, defeating the entire reason
+	// a server chose to stream in the first place. The no-op/error
+	// signal isn't extractable from a streaming body without buffering
+	// it anyway, so skipping straight to the unconfirmed default is the
+	// same conservative tradeoff this function already accepts for a
+	// signal that falls past the 8 KiB prefix cap below -- not a special
+	// case invented for this, the existing one just needed to also cover
+	// "never reaches cap or EOF promptly" instead of only "reaches EOF
+	// promptly but the signal is past cap".
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		return sig
+	}
 	const cap = 8 << 10 // 8 KiB
 	prefix, err := io.ReadAll(io.LimitReader(resp.Body, cap))
 	if err != nil {
