@@ -401,4 +401,43 @@ wait "${DASH_PIDS[@]}"
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
 echo
+echo "###################################################################"
+echo "# 12. Postgres storage: audit + budget + anomaly all sharing the   #"
+echo "#     one connection pool, under real concurrent load              #"
+echo "###################################################################"
+if [ -z "${WARDLINE_TEST_POSTGRES_DSN:-}" ]; then
+  echo "WARDLINE_TEST_POSTGRES_DSN not set -- skipping (same real-Postgres gating cmd/wardline/e2e_test.go's TestServeEndToEnd_PostgresStorage uses)"
+else
+  PG_CONFIG="$OUT/wardline.postgres.yaml"
+  sed "s|\${WARDLINE_TEST_POSTGRES_DSN}|$WARDLINE_TEST_POSTGRES_DSN|g" ./bench/wardline.postgres.yaml.tmpl > "$PG_CONFIG"
+
+  "$BIN" serve --config "$PG_CONFIG" >"$OUT/server.postgres.log" 2>&1 & SRV=$!
+  PIDS+=("$SRV")
+  wait_healthy 38413
+
+  # Five distinct identities (bench/policy.postgres.yaml), not one --
+  # budget/anomaly each key their Postgres row by identity, so a single
+  # shared identity would serialize the WHOLE attack rate behind one
+  # row's lock (Postgres row-lock contention on an artificially hot
+  # key), not measure realistic concurrent load from many agents.
+  # $RATE split five ways, same total load as every other scenario's
+  # single-identity $RATE. Waited on by explicit PID, not a bare
+  # `wait` -- same reasoning as the dashboard scenario above.
+  PG_RATE=$((RATE / 5))
+  PG_PIDS=()
+  for i in 1 2 3 4 5; do
+    printf 'POST http://localhost:38413/\n' | \
+      vegeta attack -header "X-Wardline-Identity: pg-agent-$i" \
+        -header "Content-Type: application/json" \
+        -body ./bench/body.json \
+        -rate="$PG_RATE" -duration="$DURATION" -workers=10 | \
+      tee "$OUT/postgres-storage-allow-agent-$i.bin" | vegeta report | tee "$OUT/postgres-storage-allow-agent-$i.txt" &
+    PG_PIDS+=($!)
+  done
+  wait "${PG_PIDS[@]}"
+
+  kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
