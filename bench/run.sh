@@ -604,4 +604,65 @@ attack otel-allow 38421 bench-agent
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
 echo
+echo "###################################################################"
+echo "# 19. Risk combo #1: rbac + scim + web_ui + postgres_storage       #"
+echo "#     (SCIM-derived RBAC binding gates dashboard, shared pool)     #"
+echo "###################################################################"
+if [ -z "${WARDLINE_TEST_POSTGRES_DSN:-}" ]; then
+  echo "WARDLINE_TEST_POSTGRES_DSN not set -- skipping (same real-Postgres gating as scenario 12)"
+else
+  COMBO1_CONFIG="$OUT/wardline.combo-rbac-scim-postgres.yaml"
+  sed "s|\${WARDLINE_TEST_POSTGRES_DSN}|$WARDLINE_TEST_POSTGRES_DSN|g" ./bench/wardline.combo-rbac-scim-postgres.yaml.tmpl > "$COMBO1_CONFIG"
+  export WARDLINE_BENCH_COMBO_SCIM_TOKEN="bench-only-combo-scim-token-do-not-use-in-production"
+
+  "$BIN" serve --config "$COMBO1_CONFIG" >"$OUT/server.combo1.log" 2>&1 & SRV=$!
+  PIDS+=("$SRV")
+  wait_healthy 38422
+
+  echo "--- provisioning combo-viewer via SCIM (global role-viewer group) ---"
+  COMBO_USER_ID=$(curl -s -X POST "http://localhost:38422/scim/v2/Users" \
+    -H "Authorization: Bearer $WARDLINE_BENCH_COMBO_SCIM_TOKEN" \
+    -H "Content-Type: application/scim+json" \
+    -d '{"userName":"combo-viewer","active":true}' | jq -r .id)
+  curl -s -o /dev/null -X POST "http://localhost:38422/scim/v2/Groups" \
+    -H "Authorization: Bearer $WARDLINE_BENCH_COMBO_SCIM_TOKEN" \
+    -H "Content-Type: application/scim+json" \
+    -d "{\"displayName\":\"wardline:role-viewer\",\"members\":[{\"value\":\"$COMBO_USER_ID\"}]}"
+
+  echo "--- concurrent: real proxy traffic (feeding postgres audit) + dashboard access from the SCIM-provisioned viewer + an unbound identity ---"
+  attack combo1-proxy-traffic 38422 bench-agent &
+  COMBO1_PIDS=($!)
+  printf 'GET http://localhost:38422/dashboard/api/status\n' | \
+    vegeta attack -header "X-Wardline-Identity: combo-viewer" \
+      -rate=100 -duration="$DURATION" -workers=10 | \
+    tee "$OUT/combo1-scim-viewer-allowed.bin" | vegeta report | tee "$OUT/combo1-scim-viewer-allowed.txt" &
+  COMBO1_PIDS+=($!)
+  printf 'GET http://localhost:38422/dashboard/api/status\n' | \
+    vegeta attack -header "X-Wardline-Identity: combo-noaccess" \
+      -rate=100 -duration="$DURATION" -workers=10 | \
+    tee "$OUT/combo1-unbound-denied.bin" | vegeta report | tee "$OUT/combo1-unbound-denied.txt" &
+  COMBO1_PIDS+=($!)
+  wait "${COMBO1_PIDS[@]}"
+
+  kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+fi
+
+echo
+echo "###################################################################"
+echo "# 20. Risk combo #2: taint + approval + job_budget + cost_budget   #"
+echo "#     all keying state by the same (tenant, identity, session)     #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.combo-session-features.yaml >"$OUT/server.combo2.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38423
+"$SESSIONLOAD" approval localhost:38423 bench-agent 20 10
+COMBO2_STATUS=$?
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+if [ "$COMBO2_STATUS" -ne 0 ]; then
+  echo "risk-combo-2 scenario FAILED (session-keyed feature interference under load) -- see $OUT/server.combo2.log" >&2
+  exit 1
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
