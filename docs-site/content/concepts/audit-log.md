@@ -22,3 +22,15 @@ database rows don't silently disappear from a tenant-scoped view.
 backend as part of its request context — see
 [Policy Backends](/concepts/policy-backends/) — but are not themselves
 fields on the audit entry.)
+
+An allowed call's entry also carries an effect status — whether the
+upstream's own response confirms, contradicts, or leaves unconfirmed
+whether the call actually took effect (an MCP no-op result, a JSON-RPC
+error, or an opaque success are each classified differently). This is
+read from a bounded prefix of the upstream's response body, and is
+always `unconfirmed` for a streaming response (`Content-Type:
+text/event-stream`, MCP's own Streamable HTTP transport for
+progressive tool-call results) — a streaming body is deliberately never
+read here at all, so that a real, long-running streamed tool call is
+forwarded to the caller as it arrives rather than stalled behind an
+attempt to peek at it first.
