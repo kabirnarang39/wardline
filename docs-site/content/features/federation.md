@@ -77,3 +77,15 @@ peers:
   not negotiate or rotate it; treat it like any other shared secret.
 - **`min_instances_for_correlation` must be ≥ 2** — a value of 1 would
   "correlate" a single instance with itself, which is not correlation.
+- **A publish tick's data is not retried if the peer is unreachable at
+  that moment** — `Publisher` advances its read cursor past every alert
+  it read for a tick regardless of whether the send to any given peer
+  succeeded, so an anomaly that was only ever aggregated during a tick
+  where a peer happened to be down is never resent to that peer once it
+  recovers (the failure is logged loudly — `"federation publish
+  failed"` — never silent, but it is a real, permanent gap for that
+  specific alert/peer pair, not an eventual-consistency delay). The
+  local proxy hot path and this instance's own anomaly detection are
+  entirely unaffected by a peer being unreachable; only that peer's view
+  of the missed alert is incomplete. A subsequent anomaly on either side
+  correlates normally once both instances are healthy again.
