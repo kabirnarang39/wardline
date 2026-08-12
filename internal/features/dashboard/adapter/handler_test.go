@@ -78,7 +78,7 @@ type fakeFederationSource struct {
 	entries []federationusecase.CorrelatedAlertEntry
 }
 
-func (f *fakeFederationSource) Since(afterID int64, limit int) []federationusecase.CorrelatedAlertEntry {
+func (f *fakeFederationSource) Since(afterID int64, limit int, tenantFilter string) []federationusecase.CorrelatedAlertEntry {
 	return f.entries
 }
 

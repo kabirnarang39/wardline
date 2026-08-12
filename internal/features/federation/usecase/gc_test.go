@@ -23,7 +23,7 @@ func TestCorrelatorGC_DropsStateOlderThan2xInterval(t *testing.T) {
 	current = current.Add(21 * time.Minute) // > 2x interval later
 	usecase.GCCorrelatorOnce(c, current, interval)
 
-	if usecase.CorrelatorHasFingerprint(c, "old-fp") {
+	if usecase.CorrelatorHasFingerprint(c, "", "old-fp") {
 		t.Fatal("expected old-fp state to be dropped after 2x interval with no new sightings")
 	}
 }
@@ -42,7 +42,7 @@ func TestCorrelatorGC_KeepsRecentState(t *testing.T) {
 	current = current.Add(5 * time.Minute) // well within 2x interval
 	usecase.GCCorrelatorOnce(c, current, interval)
 
-	if !usecase.CorrelatorHasFingerprint(c, "fresh-fp") {
+	if !usecase.CorrelatorHasFingerprint(c, "", "fresh-fp") {
 		t.Fatal("expected fresh-fp state to survive a GC tick within 2x interval")
 	}
 }

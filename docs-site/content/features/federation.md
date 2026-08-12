@@ -61,9 +61,18 @@ peers:
 
 ## Known limitations
 
-- **The correlated-alerts view is instance-scoped, not tenant-scoped** —
-  it reflects fingerprints this instance has correlated, not a
-  per-tenant slice (see [RBAC](/features/rbac/)'s known limitations).
+- **The correlated-alerts view is instance-scoped** — it reflects
+  fingerprints THIS instance has correlated (each Wardline instance runs
+  its own `Correlator`, fed by peer summaries plus its own local
+  detections; there is no fleet-wide merged view across instances), not
+  a synced cross-instance one. It IS now tenant-scoped, though: `Tenant`
+  flows through `AnomalySummary`/`CorrelatedAlert` and the correlation
+  key itself (not just the display), so two different tenants'
+  identically-named identities — which hash to the same pseudonymized
+  fingerprint, since `Fingerprint` is identity-only — never incorrectly
+  correlate as one condition, and `GET
+  /dashboard/api/federation/correlated` honors the same tenant scoping
+  every other dashboard view does (see [RBAC](/features/rbac/)).
 - **`shared_secret_file` must be distributed out of band** — Wardline does
   not negotiate or rotate it; treat it like any other shared secret.
 - **`min_instances_for_correlation` must be ≥ 2** — a value of 1 would

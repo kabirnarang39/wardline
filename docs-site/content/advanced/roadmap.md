@@ -17,8 +17,9 @@ policy-pack marketplace, HA deployment.
   documented on the [Budget Enforcement](/features/budget-enforcement/),
   [Anomaly Detection](/features/anomaly-detection/), and [HA
   Deployment](/features/ha-deployment/) pages. Federation's own
-  correlated-alerts view stays instance-scoped, not tenant-scoped (see
-  [RBAC](/features/rbac/)'s known limitations).
+  correlated-alerts view stays instance-scoped (see
+  [Federation](/features/federation/)'s known limitations) but is now
+  tenant-scoped, same as every other dashboard view.
 - **ML-based anomaly detection** — an `ml_score` combined-z-score
   heuristic augmenting the existing rule/statistics detectors, with an
   optional `auto_block`.

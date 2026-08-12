@@ -49,6 +49,7 @@ type AnomalyEntry struct {
 type CorrelatedAlertEntry struct {
 	ID          int64    `json:"id"`
 	Fingerprint string   `json:"fingerprint"`
+	Tenant      string   `json:"tenant"`
 	Kind        string   `json:"kind"`
 	InstanceIDs []string `json:"instance_ids"`
 	FirstSeen   string   `json:"first_seen"`
