@@ -28,6 +28,7 @@ import (
 	jobbudgetdomain "github.com/kabirnarang39/wardline/internal/features/jobbudget/domain"
 	prdomain "github.com/kabirnarang39/wardline/internal/features/proxy/domain"
 	proxyusecase "github.com/kabirnarang39/wardline/internal/features/proxy/usecase"
+	"github.com/kabirnarang39/wardline/internal/platform/metrics"
 )
 
 // BudgetChecker is the subset of budgetusecase.Checker's behavior Handler
@@ -165,6 +166,14 @@ type Handler struct {
 	// a nil checker skips the per-job cost/token ceiling hard gate entirely
 	// (see ServeHTTP).
 	costBudgetChecker CostBudgetChecker
+
+	// metricsRecorder observes every completed request's decision and
+	// latency. nil-able like autoBlockChecker/jobBudgetChecker/
+	// costBudgetChecker above -- nil (what every existing test in this
+	// package passes) skips recording entirely; main.go passes
+	// metrics.NewDisabled() when features.prometheus_metrics is off and a
+	// real *metrics.PrometheusRecorder when it's on.
+	metricsRecorder metrics.Recorder
 }
 
 // autoBlockChecker is nil-able: the anomaly-detection feature it backs is
@@ -172,8 +181,8 @@ type Handler struct {
 // don't wire one up (including every existing test in this package) get the
 // pre-anomaly-detection behavior unchanged via the nil check in ServeHTTP.
 // trustedIdentityHeader is "" for every bootstrap source but mtls.
-func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string) *Handler {
-	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil, nil)
+func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, metricsRecorder metrics.Recorder) *Handler {
+	return NewHandlerWithApproval(decider, recorder, upstream, budgetChecker, tracer, identityAuth, logger, autoBlockChecker, trustedIdentityHeader, nil, "", nil, nil, metricsRecorder)
 }
 
 // NewHandlerWithApproval is NewHandler plus an ApprovalPort (wired only when
@@ -183,7 +192,7 @@ func NewHandler(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, 
 // JobBudgetChecker (wired only when job_budget is on; nil skips the hard
 // gate entirely), and a CostBudgetChecker (wired only when job_cost_budget
 // is on; nil skips its hard gate entirely).
-func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker, costBudgetChecker CostBudgetChecker) *Handler {
+func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecase.Recorder, upstream *url.URL, budgetChecker BudgetChecker, tracer trace.Tracer, identityAuth IdentityAuthenticator, logger *slog.Logger, autoBlockChecker AutoBlockChecker, trustedIdentityHeader string, approval ApprovalPort, sessionHeader string, jobBudgetChecker JobBudgetChecker, costBudgetChecker CostBudgetChecker, metricsRecorder metrics.Recorder) *Handler {
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	// Clone http.DefaultTransport rather than starting from a zero-value
 	// &http.Transport{} so we keep its dial/TLS-handshake timeouts, HTTP/2
@@ -209,6 +218,7 @@ func NewHandlerWithApproval(decider *proxyusecase.Decider, recorder *auditusecas
 		sessionHeader:         sessionHeader,
 		jobBudgetChecker:      jobBudgetChecker,
 		costBudgetChecker:     costBudgetChecker,
+		metricsRecorder:       metricsRecorder,
 	}
 }
 
@@ -565,6 +575,12 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	var traceID string
 	if sc := span.SpanContext(); sc.IsValid() {
 		traceID = sc.TraceID().String()
+	}
+	// metricsRecorder is nil-able like autoBlockChecker/jobBudgetChecker
+	// above -- every existing test in this package constructs a Handler
+	// without one.
+	if h.metricsRecorder != nil {
+		h.metricsRecorder.ObserveRequest(decision, h.now().Sub(start))
 	}
 	h.record(identity, tenant, tool, decision, reason, traceID, sessionID, start, effect, status)
 }

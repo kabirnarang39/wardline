@@ -47,7 +47,7 @@ func TestNewHandler_TunesMaxIdleConnsPerHost(t *testing.T) {
 	upstreamURL, _ := url.Parse("http://127.0.0.1:0")
 	recorder := auditusecase.NewRecorder(discardWriter{}, nil, nil)
 	decider := proxyusecase.NewDecider(allowEngine{})
-	h := NewHandler(decider, recorder, upstreamURL, allowBudget{}, noop.NewTracerProvider().Tracer(""), HeaderIdentity{}, transportTestLogger, nil, "")
+	h := NewHandler(decider, recorder, upstreamURL, allowBudget{}, noop.NewTracerProvider().Tracer(""), HeaderIdentity{}, transportTestLogger, nil, "", nil)
 
 	tr, ok := h.upstream.Transport.(*http.Transport)
 	if !ok {

@@ -84,6 +84,7 @@ import (
 	taintusecase "github.com/kabirnarang39/wardline/internal/features/taint/usecase"
 	"github.com/kabirnarang39/wardline/internal/platform/config"
 	"github.com/kabirnarang39/wardline/internal/platform/flags"
+	"github.com/kabirnarang39/wardline/internal/platform/metrics"
 	"github.com/kabirnarang39/wardline/internal/platform/pgpool"
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 	platformsession "github.com/kabirnarang39/wardline/internal/platform/session"
@@ -565,6 +566,7 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("failed to initialize tracing", "error", err)
 		os.Exit(1)
 	}
+	metricsRecorder, metricsHandler := buildMetricsRecorder(logger, featureFlags)
 
 	credentialIssuanceEnabled := featureFlags.Enabled("credential_issuance")
 	var identityAuth proxyadapter.IdentityAuthenticator = proxyadapter.HeaderIdentity{}
@@ -882,7 +884,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if costBudgetChecker != nil {
 		costBudgetPort = costBudgetChecker
 	}
-	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort)
+	handler := proxyadapter.NewHandlerWithApproval(decider, recorder, cfg.UpstreamURL, budgetChecker, tracingProvider.Tracer(), identityAuth, logger, autoBlockChecker, mtlsHeader, approvalPort, sessionHeader, jobBudgetPort, costBudgetPort, metricsRecorder)
 
 	startedAt := time.Now()
 
@@ -1262,6 +1264,11 @@ func runServe(logger *slog.Logger, args []string) {
 	// operator opts into with a flag.
 	extraRoutes["/healthz"] = healthHandler
 	extraRoutes["/readyz"] = healthHandler
+	// Gated on prometheus_metrics, unlike /healthz and /readyz above --
+	// metricsHandler is nil when the flag is off, but routeOrNotFound never
+	// invokes it in that case (returns 404), same guard as /scim/v2/* and
+	// /federation/summaries.
+	extraRoutes["/metrics"] = routeOrNotFound(featureFlags.Enabled("prometheus_metrics"), metricsHandler)
 	// Also unconditional, and deliberately independent of webUIEnabled:
 	// browsers request GET /favicon.ico from the origin root automatically
 	// on every page load, dashboard or not. Without a route registered
@@ -1576,6 +1583,19 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	}
 	logger.Info("otel tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "service_name", cfg.ServiceName)
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
+}
+
+// buildMetricsRecorder returns a disabled (no-op) Recorder unless
+// prometheus_metrics is on, in which case it builds a real
+// *metrics.PrometheusRecorder and its GET /metrics handler is registered by
+// the caller (see runServe's extraRoutes).
+func buildMetricsRecorder(logger *slog.Logger, featureFlags flags.Provider) (metrics.Recorder, http.Handler) {
+	if !featureFlags.Enabled("prometheus_metrics") {
+		return metrics.NewDisabled(), nil
+	}
+	logger.Info("prometheus metrics enabled", "path", "/metrics")
+	rec := metrics.NewPrometheus()
+	return rec, rec.Handler()
 }
 
 // postgresAuditSourceFunc adapts a plain function to
