@@ -1,0 +1,3 @@
+bindings:
+  - subject: bench-viewer
+    role: viewer
