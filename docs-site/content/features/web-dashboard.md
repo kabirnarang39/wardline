@@ -224,3 +224,15 @@ does not change this. This is why `web_ui` defaults to off.
   without it, trigger a reload manually with `POST
   /dashboard/api/reload/{domain}` (gated by the `config:edit`
   permission when `rbac` is on) after editing, or restart Wardline.
+- **CSRF**: deliberately no separate anti-CSRF token. The session
+  cookie is `SameSite=Strict` (see "Auth requirement for mutations"
+  above), which OWASP's current guidance treats as a primary,
+  sufficient CSRF mitigation for a session with no cross-site-linking
+  use case to preserve — a cross-site page cannot make the browser
+  attach this cookie to a request at all, regardless of method. Every
+  mutating endpoint (`/dashboard/api/reload/*`, the policy/budget
+  editors, `/dashboard/api/anomalies/blocked/*` unblock,
+  `/dashboard/api/approvals/*` decisions) additionally requires
+  `POST`/`DELETE` (never triggerable by a bare link, image tag, or
+  prefetch) and its own explicit authorization check independent of
+  the cookie's mere presence.
