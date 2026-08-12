@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
@@ -28,6 +29,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"google.golang.org/grpc"
 	"gopkg.in/yaml.v3"
 
@@ -1294,10 +1297,51 @@ func runServe(logger *slog.Logger, args []string) {
 	// transports share one policy engine, one budget, and one audit trail. A
 	// fatal Serve error shares the HTTP path's serveErr channel; graceful
 	// shutdown GracefulStops it alongside srv.Shutdown below.
+	// spiffeWorkloadIdentity is Wardline's own SPIFFE identity, fetched
+	// (and continuously auto-rotated) from a local SPIRE agent's
+	// Workload API -- nil unless features.spiffe_workload_identity is
+	// on. Built here, ahead of the gRPC transport block below, since
+	// grpc_upstream_tls is (for now) its only real-instance-touching
+	// consumer, but the identity itself is deliberately not scoped
+	// INSIDE that block: a future outbound consumer (federation's own
+	// peer HTTP client, say) can reuse the exact same identity without
+	// this feature flag caring which consumers exist yet.
+	var spiffeWorkloadIdentity *credentialadapter.SPIFFEWorkloadIdentity
+	if featureFlags.Enabled("spiffe_workload_identity") {
+		identity, err := credentialadapter.NewSPIFFEWorkloadIdentity(context.Background(), cfg.Credential.SPIFFEWorkload.SocketPath)
+		if err != nil {
+			logger.Error("failed to fetch spiffe workload identity", "error", err)
+			os.Exit(1)
+		}
+		spiffeWorkloadIdentity = identity
+		id, err := identity.ID()
+		if err != nil {
+			logger.Warn("spiffe workload identity fetched but its own SPIFFE ID could not be read", "error", err)
+		} else {
+			logger.Info("spiffe workload identity enabled", "spiffe_id", id.String())
+		}
+	}
+
 	var grpcServer *grpc.Server
 	var grpcUpstreamConn *grpc.ClientConn
 	if featureFlags.Enabled("grpc_transport") {
-		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream, cfg.GRPCUpstreamTLS)
+		var clientTLSConfig *tls.Config
+		if spiffeWorkloadIdentity != nil && cfg.GRPCUpstreamTLS {
+			authorizer := tlsconfig.AuthorizeAny()
+			if cfg.Credential.SPIFFEWorkload.UpstreamPeerID != "" {
+				peerID, err := spiffeid.FromString(cfg.Credential.SPIFFEWorkload.UpstreamPeerID)
+				if err != nil {
+					logger.Error("invalid credential.spiffe_workload.upstream_peer_id", "error", err)
+					os.Exit(1)
+				}
+				authorizer = tlsconfig.AuthorizeID(peerID)
+			} else {
+				logger.Warn("credential.spiffe_workload.upstream_peer_id is not set; the gRPC upstream mTLS connection accepts any SPIFFE-authenticated peer, not one pinned exact identity")
+			}
+			clientTLSConfig = spiffeWorkloadIdentity.ClientTLSConfig(authorizer)
+			logger.Info("grpc upstream dial presenting spiffe workload identity for mutual tls")
+		}
+		conn, err := grpcadapter.DialUpstream(cfg.GRPCUpstream, cfg.GRPCUpstreamTLS, clientTLSConfig)
 		if err != nil {
 			logger.Error("gRPC upstream dial failed", "error", err, "upstream", cfg.GRPCUpstream)
 			os.Exit(1)
@@ -1368,6 +1412,11 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 			if configWatchStop != nil {
 				close(configWatchStop)
+			}
+			if spiffeWorkloadIdentity != nil {
+				if err := spiffeWorkloadIdentity.Close(); err != nil {
+					logger.Error("spiffe workload identity shutdown failed", "error", err)
+				}
 			}
 			os.Exit(1)
 		}
@@ -1463,6 +1512,11 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	if configWatchStop != nil {
 		close(configWatchStop)
+	}
+	if spiffeWorkloadIdentity != nil {
+		if err := spiffeWorkloadIdentity.Close(); err != nil {
+			logger.Error("spiffe workload identity shutdown failed", "error", err)
+		}
 	}
 	if grpcUpstreamConn != nil {
 		if err := grpcUpstreamConn.Close(); err != nil {

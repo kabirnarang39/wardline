@@ -2,8 +2,14 @@ package adapter
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"sync"
 	"testing"
@@ -276,16 +282,89 @@ func TestDialUpstream_TLSFlagEngagesTransportSecurity(t *testing.T) {
 		return resp.payload, err
 	}
 
-	plain, err := DialUpstream(addr, false)
+	plain, err := DialUpstream(addr, false, nil)
 	require.NoError(t, err)
 	defer func() { _ = plain.Close() }()
 	got, err := invoke(plain)
 	require.NoError(t, err, "plaintext dial to a plaintext server should succeed")
 	assert.Equal(t, []byte("ping"), got)
 
-	secure, err := DialUpstream(addr, true)
+	secure, err := DialUpstream(addr, true, nil)
 	require.NoError(t, err) // NewClient dials lazily; the failure surfaces on the call
 	defer func() { _ = secure.Close() }()
 	_, err = invoke(secure)
 	require.Error(t, err, "TLS dial to a plaintext server must fail the handshake")
+}
+
+// TestDialUpstream_ClientTLSConfigOverridesDefault proves the
+// clientTLSConfig parameter actually replaces the default
+// system-root-verified config, not just gets ignored: the default
+// config rejects a self-signed server certificate, but a custom config
+// that explicitly trusts it succeeds -- the exact shape
+// SPIFFEWorkloadIdentity.ClientTLSConfig relies on (its own trust
+// decision, not the system root pool).
+func TestDialUpstream_ClientTLSConfigOverridesDefault(t *testing.T) {
+	cert := generateSelfSignedCert(t)
+
+	lis, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"h2"}})
+	require.NoError(t, err)
+	srv := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(echoHandler))
+	go func() { _ = srv.Serve(lis) }()
+	defer srv.Stop()
+	addr := lis.Addr().String()
+
+	invoke := func(conn *grpc.ClientConn) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return conn.Invoke(ctx, testMethod, &rawFrame{payload: []byte("ping")}, &rawFrame{})
+	}
+
+	// Default config: the self-signed cert isn't in the system root
+	// pool, so this must fail.
+	defaultConn, err := DialUpstream(addr, true, nil)
+	require.NoError(t, err)
+	defer func() { _ = defaultConn.Close() }()
+	require.Error(t, invoke(defaultConn), "expected the default system-root-verified config to reject a self-signed certificate")
+
+	// Custom config: explicitly trusts this exact certificate --
+	// clientTLSConfig must be the config actually used, not silently
+	// discarded in favor of the default.
+	pool := x509.NewCertPool()
+	pool.AddCert(mustParseCert(t, cert))
+	customConn, err := DialUpstream(addr, true, &tls.Config{RootCAs: pool})
+	require.NoError(t, err)
+	defer func() { _ = customConn.Close() }()
+	require.NoError(t, invoke(customConn), "expected the custom clientTLSConfig (which trusts this cert) to be honored, not overridden by the default")
+}
+
+func mustParseCert(t *testing.T, cert tls.Certificate) *x509.Certificate {
+	t.Helper()
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	require.NoError(t, err)
+	return parsed
+}
+
+// generateSelfSignedCert builds a fresh, valid-for-this-test-only
+// self-signed TLS certificate for 127.0.0.1 -- generated at test time
+// rather than a checked-in static PEM, so there's no future expiry to
+// silently start failing this test.
+func generateSelfSignedCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+	return tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  key,
+	}
 }

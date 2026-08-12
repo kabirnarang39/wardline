@@ -70,13 +70,60 @@ nobody intended to trust. A missing or empty header on an actual request
 is a generic `401`, the same non-enumerable-failure posture every other
 bootstrap source uses.
 
+## Wardline as a SPIFFE workload (outbound)
+
+The known limitation this section used to describe — "no SPIFFE Workload
+API client in Wardline itself" — is closed for the outbound direction.
+When `features.spiffe_workload_identity` is on, Wardline connects to a
+local SPIFFE Workload API (a SPIRE agent's Unix domain socket, the same
+one any sidecar in the mesh uses) via
+[`go-spiffe/v2`](https://github.com/spiffe/go-spiffe)'s `workloadapi.X509Source`,
+fetches its own X.509-SVID, and keeps it rotated automatically for the
+lifetime of the process — no restart needed when the SVID nears expiry.
+That identity is presented as the client certificate on Wardline's own
+outbound [gRPC transport](/features/grpc-transport/) connection to the
+upstream, so the upstream can verify *Wardline* the same way every other
+workload in a SPIFFE-native mesh verifies its peers:
+
+```yaml
+features:
+  spiffe_workload_identity: true
+  grpc_transport: true
+credential:
+  spiffe_workload:
+    socket_path: "unix:///run/spire/sockets/agent.sock"   # optional, defaults to the SPIFFE_ENDPOINT_SOCKET env var
+    upstream_peer_id: "spiffe://example.org/ns/prod/sa/upstream-service"   # optional but strongly recommended, see below
+grpc_upstream: "upstream.internal:8443"
+grpc_upstream_tls: true
+```
+
+`upstream_peer_id` pins the exact SPIFFE ID Wardline requires the
+upstream to present; without it, Wardline authorizes any
+SPIFFE-authenticated peer, which is weaker and logs a warning on
+startup naming the gap. This is unrelated to the inbound bootstrap
+header above: `spiffe_workload_identity` governs the identity Wardline
+*presents* when calling out; `bootstrap_source: "mtls"` governs how
+Wardline *accepts* an already-verified caller identity. Both can be on
+at once in a fully SPIFFE-native deployment.
+
+Wardline still never terminates TLS or parses an X.509 certificate for
+*inbound* HTTP traffic — that part of "Wardline never terminates TLS"
+above is unchanged and remains the documented architecture, not a gap.
+
 ## Known limitations
 
-- **No X.509 parsing, no SPIFFE Workload API client, no SPIRE agent
-  integration in Wardline itself** — by design (see "Wardline never
-  terminates TLS" above). This adapter bootstraps *callers* via an
-  already-verified SPIFFE identity; it does not make Wardline itself a
-  SPIFFE workload.
+- **No SPIRE agent bundled or managed by Wardline** — Wardline is a
+  Workload API *client* only, exactly like every other workload in a
+  SPIFFE deployment; running and provisioning the SPIRE agent/server
+  (or another SPIFFE-compliant Workload API implementation) is the
+  operator's infrastructure, same as this project doesn't bundle
+  Postgres or an OIDC provider either.
+- This inbound bootstrap adapter itself still never parses X.509 or
+  terminates TLS — by design (see "Wardline never terminates TLS"
+  above). It bootstraps *callers* via an already-verified SPIFFE
+  identity forwarded by the mesh; the outbound SPIFFE workload identity
+  described above is a separate, additive capability, not a change to
+  this adapter.
 - **No dynamic/live SPIFFE-ID-to-tenant mapping** — the static
   `credentials.yaml` allowlist mirrors the preshared-secret bootstrap
   source's model exactly; there's no pattern-based or trust-domain-based

@@ -52,6 +52,8 @@ this shape (`internal/platform/config/config.go`).
 | `bootstrap_source` | string | `presharedsecret` (default), `oidc`, or `mtls`. See [SSO](/features/sso/) and [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/). |
 | `oidc.issuer` / `.jwks_uri` / `.audience` / `.identity_claim` / `.tenant_claim` | string×5 | Single-IdP OIDC bootstrap. `jwks_uri` optional (resolved via discovery when unset). See [SSO](/features/sso/). |
 | `oidc_providers` | list | Multi-IdP OIDC bootstrap — a list of the same 5 fields `oidc` above has, one entry per issuer, routed by the token's own `iss` claim. Mutually exclusive with `oidc`. See [SSO](/features/sso/)'s "More than one IdP" section. |
+| `spiffe_workload.socket_path` | string | Unix socket of the local SPIFFE Workload API (a SPIRE agent). Optional — defaults to the `SPIFFE_ENDPOINT_SOCKET` env var when unset. Requires `features.spiffe_workload_identity`. See [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/#wardline-as-a-spiffe-workload-outbound). |
+| `spiffe_workload.upstream_peer_id` | string | The exact SPIFFE ID Wardline requires the gRPC upstream to present. Optional but recommended — without it, any SPIFFE-authenticated peer is accepted. |
 
 ## `dashboard`
 
