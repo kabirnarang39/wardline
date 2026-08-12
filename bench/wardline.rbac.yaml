@@ -1,0 +1,19 @@
+# Isolates rbac's role-binding-gated authorization decision under load:
+# one identity bound to "viewer" (dashboard:view), one entirely unbound.
+# Both hit the same dashboard API endpoint concurrently -- proves
+# CompositeAuthorizer's static-binding lookup holds its allow/deny line
+# exactly under real concurrent load, not just in the single-request e2e
+# proof (TestServeEndToEnd_RBACDashboard).
+listen: ":38407"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.rbac.jsonl"
+
+features:
+  web_ui: true
+  rbac: true
+
+rbac:
+  config_file: "./bench/rbac.bench.yaml"

@@ -250,4 +250,29 @@ printf 'POST http://localhost:38406/\nAuthorization: Bearer %s\n' "$MTLS_BEARER"
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
 echo
+echo "###################################################################"
+echo "# 7. RBAC: role-binding-gated dashboard authorization under load   #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.rbac.yaml >"$OUT/server.rbac.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38407
+
+attack_get_identity() {
+  local name="$1" port="$2" identity="$3"
+  printf 'GET http://localhost:%s/dashboard/api/status\n' "$port" | \
+    vegeta attack -header "X-Wardline-Identity: $identity" \
+      -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+    tee "$OUT/$name.bin" | vegeta report | tee "$OUT/$name.txt"
+  echo
+}
+
+echo "--- bench-viewer (bound to role viewer): dashboard access allowed ---"
+attack_get_identity rbac-allowed 38407 bench-viewer
+
+echo "--- bench-noaccess (unbound): dashboard access denied ---"
+attack_get_identity rbac-denied 38407 bench-noaccess
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
