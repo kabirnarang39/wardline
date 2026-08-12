@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	proxyadapter "github.com/kabirnarang39/wardline/internal/features/proxy/adapter"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
@@ -670,6 +673,107 @@ func assertAuditLogHasTraceID(t *testing.T, stdout *safeBuffer) {
 	}
 	if entry.TraceID == "00000000000000000000000000000000" {
 		t.Fatalf("expected a real trace_id, got an all-zeros placeholder: %s", entry.TraceID)
+	}
+}
+
+// TestServeEndToEnd_LoginCookieSecureByDefault is the regression test
+// for a real bug the security-review pass caught: main.go used to pass
+// cfg.Dashboard.AllowInsecureSessionCookie straight through to
+// NewLoginHandler's cookieSecure parameter, but the two booleans are
+// semantic opposites (AllowInsecureSessionCookie=true means "omit
+// Secure"; cookieSecure=true means "set Secure") -- un-negated, every
+// default deployment (the flag unset/false, the documented
+// TLS-terminating-ingress posture) shipped its session cookie WITHOUT
+// the Secure attribute, letting a network attacker on the same origin
+// capture it over plain HTTP. Proves both directions through the real
+// binary: the default config sets Secure, and
+// allow_insecure_session_cookie: true omits it.
+func TestServeEndToEnd_LoginCookieSecureByDefault(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: alice
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`, fmt.Sprintf(`features:
+  web_ui: true
+  credential_issuance: true
+credential:
+  identities_file: "%s"`, credentialsPath))
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.PostForm("http://"+addr+"/dashboard/login", url.Values{"secret": {"a-long-random-registration-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on successful login, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == proxyadapter.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("expected a wardline_session cookie in the login response")
+	}
+	if !cookie.Secure {
+		t.Error("expected the session cookie to carry the Secure attribute by default (allow_insecure_session_cookie unset) -- without it, the cookie is sent over plain HTTP too")
+	}
+}
+
+// TestServeEndToEnd_LoginCookieInsecureWhenOptedIn is
+// TestServeEndToEnd_LoginCookieSecureByDefault's other direction: an
+// operator who explicitly sets allow_insecure_session_cookie: true (a
+// genuinely plaintext-HTTP dev/loopback deployment, where a Secure
+// cookie would never even be sent by the browser) gets Secure omitted,
+// not silently defaulted back to secure in a way that would break their
+// setup.
+func TestServeEndToEnd_LoginCookieInsecureWhenOptedIn(t *testing.T) {
+	dir := t.TempDir()
+	credentialsPath := filepath.Join(dir, "credentials.yaml")
+	if err := os.WriteFile(credentialsPath, []byte(`
+identities:
+  - name: alice
+    secret: "a-long-random-registration-secret"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, _, stderr, _, _ := startWardline(t, "policy.yaml", `default: allow`, fmt.Sprintf(`features:
+  web_ui: true
+  credential_issuance: true
+credential:
+  identities_file: "%s"
+dashboard:
+  allow_insecure_session_cookie: true`, credentialsPath))
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.PostForm("http://"+addr+"/dashboard/login", url.Values{"secret": {"a-long-random-registration-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on successful login, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == proxyadapter.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("expected a wardline_session cookie in the login response")
+	}
+	if cookie.Secure {
+		t.Error("expected the session cookie to omit Secure when allow_insecure_session_cookie is true")
 	}
 }
 

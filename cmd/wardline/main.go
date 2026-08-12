@@ -1191,7 +1191,19 @@ func runServe(logger *slog.Logger, args []string) {
 		// login form itself, or rbac's own gate would make logging in
 		// impossible.
 		if issuanceForLogin != nil {
-			loginHandler := credentialadapter.NewLoginHandler(issuanceForLogin, accessTTLForLogin, cfg.Dashboard.AllowInsecureSessionCookie)
+			// Negated: AllowInsecureSessionCookie=true means "omit
+			// Secure" (an explicit opt-out for plaintext-HTTP dev/
+			// loopback setups), but NewLoginHandler's cookieSecure
+			// means the opposite -- true SETS Secure. Passing the
+			// config value straight through (as this used to) silently
+			// inverted the default: every out-of-the-box deployment
+			// (AllowInsecureSessionCookie unset/false, the documented
+			// TLS-terminating-ingress posture) shipped the session
+			// cookie WITHOUT Secure, and an operator who explicitly
+			// opted into insecure HTTP got Secure set instead, which
+			// silently breaks their own setup (browsers never send a
+			// Secure cookie over plain HTTP).
+			loginHandler := credentialadapter.NewLoginHandler(issuanceForLogin, accessTTLForLogin, !cfg.Dashboard.AllowInsecureSessionCookie)
 			extraRoutes["/dashboard/login"] = http.HandlerFunc(loginHandler.HandleLogin)
 			extraRoutes["/dashboard/logout"] = http.HandlerFunc(loginHandler.HandleLogout)
 			logger.Info("dashboard browser login enabled", "path", "/dashboard/login")
