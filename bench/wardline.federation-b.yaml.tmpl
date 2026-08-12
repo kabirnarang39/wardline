@@ -1,0 +1,32 @@
+# Federation instance B -- mirrors wardline.federation-a.yaml.tmpl,
+# peers.yaml (generated alongside) names instance A by its fixed bench
+# port instead.
+listen: ":38416"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.federation-b.jsonl"
+
+features:
+  web_ui: true
+  anomaly_detection: true
+  federation: true
+
+anomaly:
+  output: "./bench/.out/anomaly.federation-b.jsonl"
+  window_seconds: 3
+  rate_spike:
+    enabled: true
+    rate_multiplier: 2.0
+    min_calls: 5
+
+federation:
+  instance_id: "bench-instance-b"
+  peers_file: "${FEDERATION_PEERS_B}"
+  signing_key_file: "${FEDERATION_KEY_B}"
+  shared_secret_file: "${FEDERATION_SHARED_SECRET}"
+  publish_interval_seconds: 1
+  min_instances_for_correlation: 2
+  correlation_window_seconds: 300
+  gc_interval_seconds: 600

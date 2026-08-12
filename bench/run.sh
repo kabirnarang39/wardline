@@ -440,4 +440,95 @@ else
 fi
 
 echo
+echo "###################################################################"
+echo "# 13. Federation: two instances publishing/correlating under load  #"
+echo "###################################################################"
+FEDERATIONWAIT="$OUT/federationwait"
+go build -o "$FEDERATIONWAIT" ./bench/federationwait
+
+FEDERATION_KEY_A="$OUT/federation-a-private.pem"
+FEDERATION_PUB_A="$OUT/federation-a-public.pem"
+FEDERATION_KEY_B="$OUT/federation-b-private.pem"
+FEDERATION_PUB_B="$OUT/federation-b-public.pem"
+export FEDERATION_SHARED_SECRET="$OUT/federation-shared-secret"
+openssl genrsa -out "$FEDERATION_KEY_A" 2048 >/dev/null 2>&1
+openssl rsa -in "$FEDERATION_KEY_A" -pubout -out "$FEDERATION_PUB_A" >/dev/null 2>&1
+openssl genrsa -out "$FEDERATION_KEY_B" 2048 >/dev/null 2>&1
+openssl rsa -in "$FEDERATION_KEY_B" -pubout -out "$FEDERATION_PUB_B" >/dev/null 2>&1
+echo -n "bench-federation-shared-hmac-secret" > "$FEDERATION_SHARED_SECRET"
+
+export FEDERATION_PEERS_A="$OUT/federation-peers-a.yaml"
+export FEDERATION_PEERS_B="$OUT/federation-peers-b.yaml"
+cat > "$FEDERATION_PEERS_A" <<EOF
+peers:
+  - id: "bench-instance-b"
+    endpoint: "http://localhost:38416/federation/summaries"
+    public_key_file: "$FEDERATION_PUB_B"
+EOF
+cat > "$FEDERATION_PEERS_B" <<EOF
+peers:
+  - id: "bench-instance-a"
+    endpoint: "http://localhost:38415/federation/summaries"
+    public_key_file: "$FEDERATION_PUB_A"
+EOF
+export FEDERATION_KEY_A FEDERATION_KEY_B
+FED_CONFIG_A="$OUT/wardline.federation-a.yaml"
+FED_CONFIG_B="$OUT/wardline.federation-b.yaml"
+sed -e "s|\${FEDERATION_PEERS_A}|$FEDERATION_PEERS_A|g" \
+    -e "s|\${FEDERATION_KEY_A}|$FEDERATION_KEY_A|g" \
+    -e "s|\${FEDERATION_SHARED_SECRET}|$FEDERATION_SHARED_SECRET|g" \
+    ./bench/wardline.federation-a.yaml.tmpl > "$FED_CONFIG_A"
+sed -e "s|\${FEDERATION_PEERS_B}|$FEDERATION_PEERS_B|g" \
+    -e "s|\${FEDERATION_KEY_B}|$FEDERATION_KEY_B|g" \
+    -e "s|\${FEDERATION_SHARED_SECRET}|$FEDERATION_SHARED_SECRET|g" \
+    ./bench/wardline.federation-b.yaml.tmpl > "$FED_CONFIG_B"
+
+"$BIN" serve --config "$FED_CONFIG_A" >"$OUT/server.federation-a.log" 2>&1 & SRV_FED_A=$!
+"$BIN" serve --config "$FED_CONFIG_B" >"$OUT/server.federation-b.log" 2>&1 & SRV_FED_B=$!
+PIDS+=("$SRV_FED_A" "$SRV_FED_B")
+wait_healthy 38415
+wait_healthy 38416
+
+# Baseline windows (low, steady rate) then a real step-up in rate --
+# checkRateSpike (anomaly/usecase/detector.go) compares each window's
+# total against the PREVIOUS window's, so a sustained flat rate alone
+# never re-trips it; the step-up is what a real "load just spiked"
+# shape looks like, driven at each instance concurrently via real
+# HTTP load (vegeta), not a sequential Go test loop.
+federation_burst() {
+  local addr="$1"
+  printf 'POST http://%s/\n' "$addr" | \
+    vegeta attack -header "X-Wardline-Identity: bench-agent" \
+      -header "Content-Type: application/json" -body ./bench/body.json \
+      -rate=5 -duration=4s -workers=5 > /dev/null
+  printf 'POST http://%s/\n' "$addr" | \
+    vegeta attack -header "X-Wardline-Identity: bench-agent" \
+      -header "Content-Type: application/json" -body ./bench/body.json \
+      -rate=100 -duration="$DURATION" -workers=20 | \
+    tee "$OUT/federation-$2.bin" | vegeta report | tee "$OUT/federation-$2.txt"
+}
+federation_burst localhost:38415 instance-a &
+FED_PID_A=$!
+federation_burst localhost:38416 instance-b &
+FED_PID_B=$!
+wait "$FED_PID_A" "$FED_PID_B"
+
+# Correlation is necessarily eventually-consistent (each instance's own
+# publish ticker + a real HTTP round trip to the other) -- poll rather
+# than assert immediately, same pattern as
+# cmd/wardline/e2e_test.go's waitForCorrelatedAlertE2E.
+"$FEDERATIONWAIT" localhost:38415 20s bench-instance-a bench-instance-b
+FED_A_STATUS=$?
+"$FEDERATIONWAIT" localhost:38416 20s bench-instance-a bench-instance-b
+FED_B_STATUS=$?
+
+kill "$SRV_FED_A" "$SRV_FED_B" 2>/dev/null || true
+wait "$SRV_FED_A" "$SRV_FED_B" 2>/dev/null || true
+
+if [ "$FED_A_STATUS" -ne 0 ] || [ "$FED_B_STATUS" -ne 0 ]; then
+  echo "federation scenario FAILED (no correlated alert on one or both instances under load) -- see $OUT/server.federation-*.log" >&2
+  exit 1
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
