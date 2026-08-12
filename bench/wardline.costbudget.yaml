@@ -1,0 +1,18 @@
+# Isolates job_cost_budget's ceiling under load: a per-tool cost of 10
+# against a ceiling of 1000 admits exactly 100 calls before rejecting --
+# same precision proof as wardline.jobbudget.yaml, for the cost-weighted
+# ceiling instead of the flat per-request one.
+listen: ":38418"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.bench.yaml"
+
+audit:
+  output: "./bench/.out/audit.costbudget.jsonl"
+
+features:
+  job_cost_budget: true
+
+job_cost_budget:
+  ceiling: 1000
+  tool_costs:
+    bench-tool: 10

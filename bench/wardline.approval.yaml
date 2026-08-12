@@ -1,0 +1,21 @@
+# Isolates approval_workflow (composed with taint_tracking, its real
+# trigger source) under real concurrent load: bench/sessionload drives
+# many concurrent, distinct sessions, each needing its own pending
+# approval decided and its own single-use grant consumed correctly --
+# proving the operator surface and grant bookkeeping don't cross wires
+# between sessions under real concurrency.
+listen: ":38420"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.sessionload.rego"
+policy_backend: opa
+
+audit:
+  output: "./bench/.out/audit.approval.jsonl"
+
+features:
+  taint_tracking: true
+  approval_workflow: true
+
+taint:
+  untrusted_sources:
+    - web_fetch

@@ -1,0 +1,19 @@
+# Isolates taint_tracking's per-session isolation under real concurrent
+# load: bench/sessionload drives many concurrent, distinct sessions,
+# each doing its own untrusted-read-then-write sequence, proving no
+# cross-session leakage under real concurrency (see that program's own
+# doc comment for why vegeta's flat repeatable body can't express this).
+listen: ":38419"
+upstream: "http://localhost:39400"
+policy_file: "./bench/policy.sessionload.rego"
+policy_backend: opa
+
+audit:
+  output: "./bench/.out/audit.taint.jsonl"
+
+features:
+  taint_tracking: true
+
+taint:
+  untrusted_sources:
+    - web_fetch

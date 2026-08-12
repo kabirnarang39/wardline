@@ -531,4 +531,63 @@ if [ "$FED_A_STATUS" -ne 0 ] || [ "$FED_B_STATUS" -ne 0 ]; then
 fi
 
 echo
+echo "###################################################################"
+echo "# 14. Job budget: ceiling under load                               #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.jobbudget.yaml >"$OUT/server.jobbudget.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38417
+attack jobbudget-ceiling 38417 bench-agent
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "###################################################################"
+echo "# 15. Job cost budget: cost-weighted ceiling under load            #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.costbudget.yaml >"$OUT/server.costbudget.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38418
+printf 'POST http://localhost:38418/\n' | \
+  vegeta attack -header "X-Wardline-Identity: bench-agent" \
+    -header "Content-Type: application/json" \
+    -body <(echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"bench-tool"}}') \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/costbudget-ceiling.bin" | vegeta report | tee "$OUT/costbudget-ceiling.txt"
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "###################################################################"
+echo "# 16. Taint tracking: per-session isolation under concurrent load  #"
+echo "###################################################################"
+SESSIONLOAD="$OUT/sessionload"
+go build -o "$SESSIONLOAD" ./bench/sessionload
+"$BIN" serve --config ./bench/wardline.taint.yaml >"$OUT/server.taint.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38419
+"$SESSIONLOAD" taint localhost:38419 bench-agent 30 20
+TAINT_STATUS=$?
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+if [ "$TAINT_STATUS" -ne 0 ]; then
+  echo "taint scenario FAILED (cross-session leakage or incorrect gating under load) -- see $OUT/server.taint.log" >&2
+  exit 1
+fi
+
+echo
+echo "###################################################################"
+echo "# 17. Approval workflow: concurrent sessions, each own pending/grant#"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.approval.yaml >"$OUT/server.approval.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38420
+"$SESSIONLOAD" approval localhost:38420 bench-agent 20 10
+APPROVAL_STATUS=$?
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+if [ "$APPROVAL_STATUS" -ne 0 ]; then
+  echo "approval scenario FAILED (incorrect pending/grant behavior under load) -- see $OUT/server.approval.log" >&2
+  exit 1
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
