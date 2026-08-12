@@ -100,6 +100,32 @@ func TestHandler_CreateUser_SetsSCIMContentType(t *testing.T) {
 	}
 }
 
+// TestHandler_CreateUser_SetsLocationHeader is the regression test for
+// the bug the SCIM E2E/load-testing pass surfaced
+// (docs-site/content/advanced/benchmarks.md): RFC 7644 §3.3 requires a
+// successful POST create response to carry a Location header naming the
+// new resource's URI, and Bulk's own dispatchBulkOperation (bulk.go)
+// reads exactly that header to populate its per-operation "location"
+// field -- with it unset, both the direct create endpoint AND every
+// Bulk-batched create silently lost Location.
+func TestHandler_CreateUser_SetsLocationHeader(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newTestHandler(svc)
+
+	rec := doRequest(h, http.MethodPost, "/scim/v2/Users", `{"userName":"alice","active":true}`, "secret-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201, body %s", rec.Code, rec.Body.String())
+	}
+	u, ok := svc.GetUserByName("alice")
+	if !ok {
+		t.Fatal("alice not found after create")
+	}
+	want := "/scim/v2/Users/" + u.ID
+	if got := rec.Header().Get("Location"); got != want {
+		t.Fatalf("Location: got %q, want %q", got, want)
+	}
+}
+
 func TestHandler_CreateUser_DuplicateUserName_Returns409(t *testing.T) {
 	svc := usecase.NewProvisioningService()
 	h := newTestHandler(svc)
@@ -537,6 +563,29 @@ func TestHandler_CreateGroup_SetsSCIMContentType(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/scim+json" {
 		t.Fatalf("Content-Type: got %q, want %q", got, "application/scim+json")
+	}
+}
+
+// TestHandler_CreateGroup_SetsLocationHeader is the Groups equivalent of
+// TestHandler_CreateUser_SetsLocationHeader -- same RFC 7644 §3.3 /
+// Bulk-location regression.
+func TestHandler_CreateGroup_SetsLocationHeader(t *testing.T) {
+	svc := usecase.NewProvisioningService()
+	h := newGroupTestHandler(svc, usecase.NewBindingStore())
+
+	rec := doRequest(h, http.MethodPost, "/scim/v2/Groups", `{"displayName":"wardline:role-viewer"}`, "secret-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201, body %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("invalid create response: %v", err)
+	}
+	want := "/scim/v2/Groups/" + created.ID
+	if got := rec.Header().Get("Location"); got != want {
+		t.Fatalf("Location: got %q, want %q", got, want)
 	}
 }
 
