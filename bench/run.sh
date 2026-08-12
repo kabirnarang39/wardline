@@ -326,4 +326,42 @@ sleep 0.5 # grpc_listen starts alongside the HTTP listener, same reason scenario
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
 echo
+echo "###################################################################"
+echo "# 10. SCIM: Bulk operations and filter queries under load          #"
+echo "###################################################################"
+SCIMLOAD="$OUT/scimload"
+go build -o "$SCIMLOAD" ./bench/scimload
+export WARDLINE_BENCH_SCIM_TOKEN="bench-only-scim-token-do-not-use-in-production"
+"$BIN" serve --config ./bench/wardline.scim.yaml >"$OUT/server.scim.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38411
+
+echo "--- pre-seeding 50 users for the filter-query load below ---"
+for i in $(seq 1 50); do
+  active=true
+  [ $((i % 3)) -eq 0 ] && active=false
+  curl -s -o /dev/null -X POST "http://localhost:38411/scim/v2/Users" \
+    -H "Authorization: Bearer $WARDLINE_BENCH_SCIM_TOKEN" \
+    -H "Content-Type: application/scim+json" \
+    -d "{\"userName\":\"scim-seed-user-$i\",\"active\":$active}"
+done
+
+echo "--- filter query: GET /scim/v2/Users?filter=active eq true ---"
+printf 'GET http://localhost:38411/scim/v2/Users?filter=active%%20eq%%20true\nAuthorization: Bearer %s\n' "$WARDLINE_BENCH_SCIM_TOKEN" | \
+  vegeta attack -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/scim-filter-query.bin" | vegeta report | tee "$OUT/scim-filter-query.txt"
+echo
+
+echo "--- Bulk create operations (5 Creates per Bulk request, unique userNames) ---"
+"$SCIMLOAD" localhost:38411 "$WARDLINE_BENCH_SCIM_TOKEN" "$WORKERS" "$DURATION" 5
+SCIMLOAD_STATUS=$?
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+if [ "$SCIMLOAD_STATUS" -ne 0 ]; then
+  echo "scimload scenario FAILED (a Bulk operation failed under load) -- see $OUT/server.scim.log" >&2
+  exit 1
+fi
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
