@@ -28,6 +28,19 @@ globally, across every tenant — the "no tenant means global" convention
 - File-based role/binding management (`rbac.yaml`) is still the only
   static source — SCIM-provisioned bindings (see [SCIM](/features/scim/))
   are additive on top, not a replacement.
+- **The RBAC dashboard view (and its `GET /dashboard/api/rbac`
+  endpoint) lists only `rbac.yaml`'s static bindings.** SCIM-provisioned
+  bindings are fully enforced (a SCIM-derived role grants real
+  permissions on every request, verified end to end) but never appear
+  in this list or in a role's `binding_count`. The gap is structural,
+  not an oversight to patch: `CompositeAuthorizer` (what actually
+  authorizes a request once SCIM is on) only asks its dynamic source
+  "what bindings does *this one identity* have," the lookup shape
+  enforcement needs — it has no "list every binding that currently
+  exists" operation, which is what a display would need instead.
+  Adding that is a real new capability (touching the SCIM binding
+  store's interface and both its in-memory and Postgres
+  implementations), not a rewire.
 - When `credential.bootstrap_source: oidc`, cross-tenant credential-revoke
   scoping (see [SSO](/features/sso/)) falls back to requiring a global
   `ClusterRoleBinding` grant for *every* revoke — the OIDC bootstrapper

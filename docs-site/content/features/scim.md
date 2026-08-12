@@ -98,3 +98,9 @@ same bindings.
 - No UI for SCIM/tenant management — provisioning is API/IdP-driven
   only, same posture as every other admin-surface feature in this
   project.
+- **A SCIM-provisioned binding is enforced (verified end to end) but
+  invisible on the RBAC dashboard view and its API** — see
+  [RBAC](/features/rbac/)'s own known limitations for why: the dynamic
+  binding source enforcement reads from only answers "what bindings does
+  this one identity have," not "list every binding that exists," which
+  is what a display needs instead.
