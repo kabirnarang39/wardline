@@ -1,11 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 132" width="560" height="132" role="img" aria-label="Wardline">
-  <g fill="none" fill-rule="evenodd">
-    <!-- mark: a shield/barrier with the line that gates the crossing -->
-    <rect x="20" y="26" width="80" height="80" rx="18" fill="none" stroke="#15803D" stroke-width="5"/>
-    <line x1="20" y1="66" x2="100" y2="66" stroke="#15803D" stroke-width="5"/>
-    <circle cx="60" cy="46" r="6" fill="#15803D"/>
-    <circle cx="60" cy="86" r="6" fill="#0f172a" opacity="0.25"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 132" width="560" height="132" role="img" aria-label="Wardline — control plane for AI agents">
+  <defs>
+    <linearGradient id="wl-bar-light" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0969DA"/>
+      <stop offset="100%" stop-color="#1A7F37"/>
+    </linearGradient>
+    <clipPath id="wl-bar-clip-light">
+      <rect x="20" y="26" width="12" height="80" rx="3"/>
+    </clipPath>
+  </defs>
+
+  <!-- Same mark and same animation as banner-dark.svg, recolored for a
+       light background: one identity, both themes, matching exactly
+       how the dashboard/login page's own light/dark toggle works. -->
+  <rect x="20" y="26" width="12" height="80" rx="3" fill="url(#wl-bar-light)"/>
+
+  <g clip-path="url(#wl-bar-clip-light)">
+    <rect x="18" y="26" width="16" height="20" fill="#0F1419" opacity="0">
+      <animate attributeName="y" values="16;96" dur="2.8s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;0.35;0.35;0" keyTimes="0;0.15;0.75;1" dur="2.8s" begin="0s" repeatCount="indefinite"/>
+    </rect>
   </g>
-  <text x="126" y="84" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="58" font-weight="700" letter-spacing="-2.5" fill="#0f172a">wardline</text>
-  <text x="129" y="112" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="14" letter-spacing="0.5" fill="#15803D">control plane for AI agents</text>
+
+  <text x="50" y="84" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="700" letter-spacing="-2" fill="#0F1419">wardline</text>
+  <text x="53" y="112" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="13" letter-spacing="0.6" fill="#5B6B82">control plane for AI agents</text>
 </svg>
