@@ -44,6 +44,7 @@ and `bench/grpcload upstream` for gRPC.
 | Full stack allow (Bearer token; budget + anomaly + credential + audit all on) | 500 req/s | 100% | 0.82ms | 2.22ms | 10.4ms |
 | gRPC transport passthrough (Bearer token) | max (50 workers) | 100%, 0 errors | 1.28ms | 2.44ms | 3.35ms — **35,895 req/s throughput** |
 | Budget enforcement under 5x overload (100 req/window/1s) | 500 req/s | exactly 20% (1,500 allowed / 6,000 denied) | — | — | — |
+| Budget tenant-override AND-semantics (global default huge, tenant override 100/window/1s) | 500 req/s | exactly 20% (1,500 allowed / 6,000 denied) | 0.23ms | 0.60ms | 1.26ms |
 
 Two things worth calling out on their own:
 
