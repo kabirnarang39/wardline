@@ -28,6 +28,7 @@ WORKERS="${BENCH_WORKERS:-50}"
 GRPC_CONCURRENCY="${BENCH_GRPC_CONCURRENCY:-50}"
 MAX_WORKERS="${BENCH_MAX_WORKERS:-300}"        # concurrency for the unbounded max-throughput scenario
 MAXRATE_DURATION="${BENCH_MAXRATE_DURATION:-10s}"
+ANOMALY_ATTACK_DURATION="${BENCH_ANOMALY_ATTACK_DURATION:-5s}"  # a real attack is a short burst, not a sustained 15s scenario
 
 OUT="./bench/.out"
 BIN="./wardline"
@@ -273,6 +274,26 @@ echo "--- bench-noaccess (unbound): dashboard access denied ---"
 attack_get_identity rbac-denied 38407 bench-noaccess
 
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "###################################################################"
+echo "# 8. Anomaly detection: real attack-shaped load, confirm auto_block #"
+echo "###################################################################"
+ANOMALYATTACK="$OUT/anomalyattack"
+go build -o "$ANOMALYATTACK" ./bench/anomalyattack
+"$BIN" serve --config ./bench/wardline.anomaly-attack.yaml >"$OUT/server.anomaly-attack.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38408
+
+"$ANOMALYATTACK" localhost:38408 attack-agent 3 50 "$ANOMALY_ATTACK_DURATION"
+ANOMALYATTACK_STATUS=$?
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+if [ "$ANOMALYATTACK_STATUS" -ne 0 ]; then
+  echo "anomalyattack scenario FAILED (auto_block did not fire under load) -- see $OUT/anomaly.anomaly-attack.jsonl and $OUT/server.anomaly-attack.log" >&2
+  exit 1
+fi
 
 echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
