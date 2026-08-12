@@ -358,6 +358,28 @@ func postToolCallWithPath(t *testing.T, listenAddr, identity, tool, path string)
 	return postToolCallBody(t, listenAddr, identity, body)
 }
 
+// postToolCallWithTenant is like postToolCall but also sets
+// X-Wardline-Tenant, for tests exercising per-tenant budget overrides
+// (HeaderIdentity resolves tenant from this header — see
+// internal/features/proxy/adapter/identity.go).
+func postToolCallWithTenant(t *testing.T, listenAddr, identity, tenantName, tool string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":%q}}`, tool)
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", identity)
+	req.Header.Set("X-Wardline-Tenant", tenantName)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return resp
+}
+
 func postToolCallBody(t *testing.T, listenAddr, identity, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString(body))
@@ -441,6 +463,67 @@ budget:
 	thirdResp := postToolCall(t, listenAddr, "agent-abc123", "read_file")
 	if thirdResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for a call in the next window, got %d (stderr: %s)", thirdResp.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_BudgetTenantOverrideANDSemantics proves the tenant
+// override is checked *alongside*, not *instead of*, the identity budget —
+// InMemoryLimiter.Allow's doc comment promises "in addition to, not
+// instead of" (internal/features/budget/adapter/inmemory.go), and this is
+// the real-server proof, not just the fake-clock unit test. The global
+// default (100/window) is generous enough that identity alone would never
+// throttle here; only a strict per-tenant override (1/window) can produce
+// the 429 below. A second identity under the *same* tenant proves the
+// override is scoped by tenant, not shared across every identity as a
+// single global bucket. A third identity under an unlisted tenant proves
+// tenants with no override configured fall through to the generous
+// default untouched, per SetTenantLimit's doc comment.
+func TestServeEndToEnd_BudgetTenantOverrideANDSemantics(t *testing.T) {
+	listenAddr, _, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-a"
+    tool: "read_file"
+    effect: allow
+  - identity: "agent-b"
+    tool: "read_file"
+    effect: allow
+  - identity: "agent-c"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, `features:
+  budget_enforcement: true
+budget:
+  requests_per_window: 100
+  window_seconds: 1
+  tenants:
+    acme:
+      requests_per_window: 1
+      window_seconds: 1`)
+
+	firstResp := postToolCallWithTenant(t, listenAddr, "agent-a", "acme", "read_file")
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the first acme call within the tenant override, got %d (stderr: %s)", firstResp.StatusCode, stderr.String())
+	}
+
+	secondResp := postToolCallWithTenant(t, listenAddr, "agent-a", "acme", "read_file")
+	if secondResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429: acme's tenant override (1/window) should throttle even though the identity default (100/window) alone would allow it, got %d (stderr: %s)", secondResp.StatusCode, stderr.String())
+	}
+
+	// A different identity under the same tenant shares the tenant
+	// bucket -- the override is per-tenant, not per-identity -- so it's
+	// throttled too even though it has never called before.
+	otherIdentitySameTenant := postToolCallWithTenant(t, listenAddr, "agent-b", "acme", "read_file")
+	if otherIdentitySameTenant.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429: a second identity under the same over-budget tenant should also be throttled by the shared tenant bucket, got %d (stderr: %s)", otherIdentitySameTenant.StatusCode, stderr.String())
+	}
+
+	// A tenant with no override configured falls through to the generous
+	// global default untouched.
+	unoverriddenTenant := postToolCallWithTenant(t, listenAddr, "agent-c", "widgets-inc", "read_file")
+	if unoverriddenTenant.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200: a tenant with no configured override should use the global default, got %d (stderr: %s)", unoverriddenTenant.StatusCode, stderr.String())
 	}
 }
 

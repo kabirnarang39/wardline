@@ -78,6 +78,21 @@ attack() {
   echo
 }
 
+# attack_tenant is attack() plus X-Wardline-Tenant, for scenarios that need
+# to prove a per-tenant budget override holds under load (not just the
+# identity/global bucket).
+attack_tenant() {
+  local name="$1" port="$2" identity="$3" tenant="$4"
+  printf 'POST http://localhost:%s/\n' "$port" | \
+    vegeta attack -header "X-Wardline-Identity: $identity" \
+      -header "X-Wardline-Tenant: $tenant" \
+      -header "Content-Type: application/json" \
+      -body ./bench/body.json \
+      -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+    tee "$OUT/$name.bin" | vegeta report | tee "$OUT/$name.txt"
+  echo
+}
+
 echo
 echo "############################################"
 echo "# 1. Baseline (v0.1: proxy + policy + audit) #"
@@ -141,6 +156,22 @@ PIDS+=("$SRV")
 wait_healthy 38403
 
 attack budget-throttle 38403 bench-agent
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "#####################################################################"
+echo "# 4. Budget tenant-override AND-semantics: global default is huge   #"
+echo "#    (never throttles alone); only acme's tenant override (100/1s)  #"
+echo "#    can produce the throttling below -- proves the tenant bucket   #"
+echo "#    is consulted in addition to, not instead of, the identity      #"
+echo "#    bucket under real concurrent load.                             #"
+echo "#####################################################################"
+"$BIN" serve --config ./bench/wardline.budget-tenant-override.yaml >"$OUT/server.budget-tenant-override.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38404
+
+attack_tenant budget-tenant-override 38404 bench-agent acme
 
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
