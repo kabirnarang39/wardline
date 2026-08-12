@@ -140,6 +140,34 @@ passed between the backup and the restore relative to
 reflects, it just may not be the window you expect if the gap was
 long.
 
+## Rolling upgrades / mixed versions
+
+A rolling deploy always has a window where an old and a new binary run
+at once against the same shared Postgres schema (see
+[Postgres storage](/features/budget-enforcement/)'s shared-pool
+coverage) — confirmed safe with a real drill, not assumed: built the
+latest tagged release and the current binary, pointed both at the same
+fresh database with `postgres_storage` and `budget_enforcement` on, ran
+one alone first (20 requests, proving the older binary's own idempotent
+`CREATE TABLE IF NOT EXISTS` schema init), then started the newer
+binary **against that same already-initialized database while the
+older one kept running**, and fired 60 more requests split evenly
+across both at once. Result: both binaries served every request (200s
+throughout, no schema error in either log), and the shared
+`budget_buckets` row landed on exactly one combined count (80 — the 20
+before plus the 60 concurrent split) with no drift or duplicate row —
+the same no-double-counting guarantee the HA runbook entry proves for
+same-version replicas, holding across versions too.
+
+This works because every Postgres-backed adapter's schema init is
+`CREATE TABLE IF NOT EXISTS` with no destructive migration step — an
+older replica never has a schema the newer one can't also read, and
+neither one alters a table underneath the other. If a future change
+ever needs a genuine breaking schema migration (a column drop/rename,
+not an addition), this exact assumption stops holding and a real
+expand/contract migration plan becomes necessary before a rolling
+deploy — nothing in the codebase enforces that automatically today.
+
 ## Escalate immediately vs. let it self-heal
 
 **Self-heals, don't page a human at 3am for it alone:**
