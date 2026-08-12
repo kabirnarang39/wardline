@@ -104,3 +104,14 @@ exit) within that bound rather than hanging.
   preshared-secret bootstrap source whenever a target identity name is
   registered in more than one tenant — see [RBAC](/features/rbac/)'s
   known limitations.
+- This bootstrap source's real-load testing (see
+  [Benchmarks](/advanced/benchmarks/)) was proven against a
+  spec-compliant mock IdP built for that testing pass — real OIDC
+  discovery, real JWKS fetch and signature verification, real
+  issuer/audience checks — not against a specific vendor's OIDC
+  implementation (Okta, Entra ID, Auth0, etc.). Validating against
+  *your* actual IdP before go-live remains an operator step; this
+  feature's correctness against the OIDC spec itself is proven, but a
+  given vendor's own quirks (clock skew tolerance, non-standard claim
+  names, token lifetime conventions) are not something a mock can
+  stand in for.
