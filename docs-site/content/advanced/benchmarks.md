@@ -45,6 +45,10 @@ and `bench/grpcload upstream` for gRPC.
 | gRPC transport passthrough (Bearer token) | max (50 workers) | 100%, 0 errors | 1.28ms | 2.44ms | 3.35ms — **35,895 req/s throughput** |
 | Budget enforcement under 5x overload (100 req/window/1s) | 500 req/s | exactly 20% (1,500 allowed / 6,000 denied) | — | — | — |
 | Budget tenant-override AND-semantics (global default huge, tenant override 100/window/1s) | 500 req/s | exactly 20% (1,500 allowed / 6,000 denied) | 0.23ms | 0.60ms | 1.26ms |
+| oidc bootstrap (`POST /credentials/token`, real JWKS verify) | 500 req/s | 100% | 1.12ms | 1.49ms | 2.84ms |
+| oidc allow path (bootstrapped bearer token) | 500 req/s | 100% | 0.32ms | 0.50ms | 0.92ms |
+| mtls bootstrap (`POST /credentials/token`, header-based) | 500 req/s | 100% | 1.03ms | 1.17ms | 1.27ms |
+| mtls allow path (bootstrapped bearer token) | 500 req/s | 100% | 0.39ms | 1.15ms | 2.63ms |
 
 Two things worth calling out on their own:
 
@@ -87,6 +91,25 @@ this so it can't silently regress back to the default.
 This is the standard, well-documented fix for exactly this class of Go
 reverse-proxy bottleneck — not a workaround, the actual industry-standard
 tuning every Go HTTP proxy in production applies for the same reason.
+
+## Other bugs this pass found and fixed
+
+- **`credential.identities_file` was required for every bootstrap
+  source, including `oidc`.** The oidc load scenario below couldn't
+  even start `wardline serve` until this was fixed: oidc's serve-time
+  branch never reads that field at all (an ID token's own claims are
+  the whole identity source), yet config validation demanded it
+  unconditionally, forcing every OIDC-only operator to author and
+  maintain a dummy, unused file. Fixed in `internal/platform/config/config.go`;
+  presharedsecret and mtls (which do have a static registry) still
+  require it.
+- **The bench harness itself had a stale-file race** in the oidc
+  scenario: `bench/.out/` persists across runs, and the "wait for the
+  mock IdP's token file" check didn't distinguish a fresh write from a
+  previous run's leftover — running the suite twice back to back
+  produced a deterministic 100% `401` (a token signed by the *old*
+  run's throwaway RSA key, verified against the *new* run's JWKS).
+  Fixed in `bench/run.sh` by removing the file before regenerating it.
 
 ## Reproducing
 
