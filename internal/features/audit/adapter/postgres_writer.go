@@ -191,3 +191,93 @@ func (w *PostgresWriter) Purge(ctx context.Context, cutoff time.Time) (int, erro
 }
 
 var _ domain.Purger = (*PostgresWriter)(nil)
+
+// liveTimeout bounds Since -- it sits on the dashboard's live-audit
+// polling path (GET /dashboard/api/audit), not a one-shot CLI query, so
+// it gets writeTimeout's tighter bound rather than queryTimeout's
+// multi-minute one: a slow poll should fail fast and let the dashboard
+// retry, not hang the request.
+const liveTimeout = 5 * time.Second
+
+const sinceSQLUnfiltered = `
+SELECT id, timestamp, identity, tenant, tool, decision, latency_ms, reason, trace_id
+FROM audit_entries
+WHERE id > $1
+ORDER BY id ASC
+LIMIT $2`
+
+const sinceSQLTenantFiltered = `
+SELECT id, timestamp, identity, tenant, tool, decision, latency_ms, reason, trace_id
+FROM audit_entries
+WHERE id > $1 AND tenant = $2
+ORDER BY id ASC
+LIMIT $3`
+
+// LiveEntryRow is one row Since returns -- a plain struct, not
+// dashboard/domain.LiveEntry: audit/adapter must not import a sibling
+// feature's domain package (feature-sliced Clean Architecture -- see
+// CLAUDE.md), so the composition root (cmd/wardline/main.go, which
+// already imports both features to wire them together) adapts this
+// into dashboard/domain.LiveEntry itself. Field names and order match
+// dashboard/domain.LiveEntry's exactly to make that adaptation
+// mechanical.
+type LiveEntryRow struct {
+	ID        int64
+	Timestamp time.Time
+	Identity  string
+	Tenant    string
+	Tool      string
+	Decision  string
+	LatencyMS int64
+	Reason    string
+	TraceID   string
+}
+
+// Since returns every audit_entries row with id > afterID (optionally
+// scoped to tenantFilter, "" meaning unfiltered), oldest first, capped
+// at limit -- the cluster-wide counterpart to
+// dashboardusecase.RingBuffer.Since's in-memory, per-replica version.
+// Because every replica's PostgresWriter.Write inserts into the SAME
+// shared audit_entries table (see this file's own doc comment on
+// buildAuditSink), any replica's Since call sees every OTHER replica's
+// audit entries too, not just its own -- closing the cluster-wide
+// live-audit-aggregation gap RingBuffer alone has no way to close (it
+// is, by construction, one process's own in-memory slice).
+//
+// A query failure returns the error rather than failing open to an
+// empty slice -- unlike Revoker/Limiter's own fail-open postures (a
+// security decision degrading safely), a dropped live-audit poll has no
+// safety property to preserve by failing open; the caller (main.go's
+// adapter shim) logs it and the dashboard's next poll simply retries.
+func (w *PostgresWriter) Since(afterID int64, limit int, tenantFilter string) ([]LiveEntryRow, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
+	defer cancel()
+
+	var rows *sql.Rows
+	var err error
+	if tenantFilter == "" {
+		rows, err = w.db.QueryContext(ctx, sinceSQLUnfiltered, afterID, limit)
+	} else {
+		rows, err = w.db.QueryContext(ctx, sinceSQLTenantFiltered, afterID, tenantFilter, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query live audit entries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []LiveEntryRow
+	for rows.Next() {
+		var e LiveEntryRow
+		var reason, traceID sql.NullString
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.Identity, &e.Tenant, &e.Tool, &e.Decision, &e.LatencyMS, &reason, &traceID); err != nil {
+			return nil, fmt.Errorf("scan live audit entry: %w", err)
+		}
+		e.Reason = reason.String
+		e.TraceID = traceID.String
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate live audit entries: %w", err)
+	}
+	return out, nil
+}

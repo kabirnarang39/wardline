@@ -44,8 +44,13 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
   per-instance-persisted-not-merged shape. See [Anomaly
   Detection](/features/anomaly-detection/)'s own limitations section for
   the exact per-mechanism breakdown.
-- The dashboard's live audit view stays per-replica — no cluster-wide
-  aggregation yet.
+- **The dashboard's live audit view is cluster-wide when `postgres_storage`
+  is also on** — every replica's `PostgresWriter` inserts into the same
+  shared `audit_entries` table, so `GET /dashboard/api/audit` reads every
+  replica's traffic through `PostgresWriter.Since`, not just the replica
+  that happens to serve that dashboard request. Without `postgres_storage`,
+  the live view falls back to the in-memory ring buffer and stays
+  per-replica, same as before.
 - No automatic session/sticky-affinity load balancing is recommended as
   a workaround for the above — sticky sessions would reintroduce a
   single point of failure per identity.
