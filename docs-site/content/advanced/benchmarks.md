@@ -82,6 +82,8 @@ under real distributed client load with persistent connections.
 | Approval workflow: 20 concurrent sessions, own pending/grant | 20 concurrent sessions × 10 cycles | 100% correct (0 cross-session leakage) | — | — | — |
 | OTel tracing: baseline allow path with span export on | 500 req/s | 100% | 0.57ms | 1.16ms | 2.30ms |
 | Prometheus metrics: baseline allow path with recording on | 300 req/s | 100% | 0.29ms | 0.72ms | 1.20ms |
+| Prometheus metrics, race-instrumented build, postgres+budget+anomaly combo | 30 req/s × 3 identities, ~4 min (20,770 requests) | 100%, 0 races, exact bookkeeping (metrics counter matched audit count and expected total once settled) | — | — | — |
+| Prometheus metrics, 2 replicas sharing one Postgres pool | 15 + 5 req to replica A/B respectively | Each replica's own `/metrics` reflects only its own local traffic (15 vs. 5) — correct per-instance isolation, not a shared/aggregated counter | — | — | — |
 | Risk combo: rbac + scim + web_ui + postgres_storage (SCIM-derived binding + shared pool) | 500 req/s proxy, 100 req/s dashboard | 100% (proxy + viewer), 100% correctly denied (unbound) | 1.2ms | 2.4ms | 4.5ms |
 | Risk combo: taint + approval + job_budget + job_cost_budget (all four session-keyed) | 20 concurrent sessions × 10 cycles | 100% correct, no cross-feature interference | — | — | — |
 | **HA: 2 replicas, shared Postgres budget + audit, same load** | 500 req/s per replica (1,000 req/s combined) | **exactly 1,000/15,000 admitted** (matches the shared ceiling precisely — no double-counting) | 1.3ms | 3.0ms | 60ms |
