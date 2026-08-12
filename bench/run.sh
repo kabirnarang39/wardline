@@ -176,4 +176,78 @@ attack_tenant budget-tenant-override 38404 bench-agent acme
 kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
 
 echo
+echo "###############################################################"
+echo "# 5. Credential issuance: oidc bootstrap source (mock IdP+JWKS) #"
+echo "###############################################################"
+OIDCIDP="$OUT/oidcidp"
+go build -o "$OIDCIDP" ./bench/oidcidp
+OIDC_TOKEN_FILE="$OUT/oidc-idtoken.txt"
+# Removed first, not just overwritten: $OUT persists across runs, so a
+# stale token file from a PREVIOUS invocation (signed by that run's own
+# throwaway RSA key, which oidcidp regenerates fresh every start) would
+# otherwise satisfy the "-s FILE" wait check below immediately -- read
+# before this run's oidcidp has written its own token, or read the whole
+# stale file outright when this run's write happens to trail the check.
+# The wardline instance below fetches JWKS from THIS run's oidcidp, so a
+# stale token (signed by a different key than what's in that JWKS)
+# fails signature verification on every single request -- the bug this
+# comment documents, found by the load-testing pass itself.
+rm -f "$OIDC_TOKEN_FILE"
+"$OIDCIDP" "localhost:39402" "https://oidcidp.bench.example.com/" "wardline-bench" "$OIDC_TOKEN_FILE" >/dev/null 2>&1 & PIDS+=($!)
+for _ in $(seq 1 50); do [ -s "$OIDC_TOKEN_FILE" ] && break; sleep 0.1; done
+[ -s "$OIDC_TOKEN_FILE" ] || { echo "oidcidp never wrote its token file" >&2; exit 1; }
+OIDC_ID_TOKEN=$(cat "$OIDC_TOKEN_FILE")
+
+"$BIN" serve --config ./bench/wardline.oidc.yaml >"$OUT/server.oidc.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38405
+
+echo "--- oidc bootstrap: POST /credentials/token throughput ---"
+printf 'POST http://localhost:38405/credentials/token\n' | \
+  vegeta attack -header "Content-Type: application/json" \
+    -body <(printf '{"secret":"%s"}' "$OIDC_ID_TOKEN") \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/oidc-credential-issuance.bin" | vegeta report | tee "$OUT/oidc-credential-issuance.txt"
+echo
+
+echo "--- allow path with an oidc-bootstrapped bearer token ---"
+OIDC_BEARER=$(curl -s -X POST http://localhost:38405/credentials/token \
+  -H "Content-Type: application/json" \
+  -d "$(printf '{"secret":"%s"}' "$OIDC_ID_TOKEN")" | jq -r .token)
+printf 'POST http://localhost:38405/\nAuthorization: Bearer %s\n' "$OIDC_BEARER" | \
+  vegeta attack -header "Content-Type: application/json" \
+    -body ./bench/body.json \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/oidc-allow.bin" | vegeta report | tee "$OUT/oidc-allow.txt"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
+echo "###################################################################"
+echo "# 6. Credential issuance: mtls (header-based) bootstrap source     #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.mtls.yaml >"$OUT/server.mtls.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38406
+
+MTLS_SPIFFE_ID="spiffe://bench.example.com/ns/default/sa/bench-agent"
+
+echo "--- mtls bootstrap: POST /credentials/token throughput (trusted header set by the terminating mesh) ---"
+printf 'POST http://localhost:38406/credentials/token\nX-Wardline-Verified-Spiffe-Id: %s\n' "$MTLS_SPIFFE_ID" | \
+  vegeta attack -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/mtls-credential-issuance.bin" | vegeta report | tee "$OUT/mtls-credential-issuance.txt"
+echo
+
+echo "--- allow path with an mtls-bootstrapped bearer token ---"
+MTLS_BEARER=$(curl -s -X POST http://localhost:38406/credentials/token \
+  -H "X-Wardline-Verified-Spiffe-Id: $MTLS_SPIFFE_ID" | jq -r .token)
+printf 'POST http://localhost:38406/\nAuthorization: Bearer %s\n' "$MTLS_BEARER" | \
+  vegeta attack -header "Content-Type: application/json" \
+    -body ./bench/body.json \
+    -rate="$RATE" -duration="$DURATION" -workers="$WORKERS" | \
+  tee "$OUT/mtls-allow.bin" | vegeta report | tee "$OUT/mtls-allow.txt"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
