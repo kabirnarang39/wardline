@@ -132,6 +132,14 @@ func (h *Handler) handleUsersCollection(w http.ResponseWriter, r *http.Request) 
 			writeSCIMError(w, http.StatusConflict, "user already exists")
 			return
 		}
+		// RFC 7644 §3.3: a successful POST create response must include
+		// the new resource's Location. Set before writeJSON, which
+		// calls WriteHeader and locks in the header set -- Bulk's own
+		// dispatchBulkOperation (bulk.go) reads exactly this header to
+		// populate its per-operation "location" field, so a create
+		// without it silently loses Location on both the direct
+		// endpoint and every Bulk-batched create.
+		w.Header().Set("Location", "/scim/v2/Users/"+u.ID)
 		writeJSON(w, http.StatusCreated, userResource{ID: u.ID, UserName: u.UserName, Active: u.Active})
 	case http.MethodGet:
 		filter, filtered, err := parseSCIMFilter(r.URL.Query().Get("filter"))
@@ -255,6 +263,8 @@ func (h *Handler) handleGroupsCollection(w http.ResponseWriter, r *http.Request)
 			writeSCIMError(w, http.StatusConflict, "group already exists")
 			return
 		}
+		// See the matching comment in handleUsersCollection's POST path.
+		w.Header().Set("Location", "/scim/v2/Groups/"+g.ID)
 		writeJSON(w, http.StatusCreated, toGroupResource(g))
 	case http.MethodGet:
 		filter, filtered, err := parseSCIMFilter(r.URL.Query().Get("filter"))
