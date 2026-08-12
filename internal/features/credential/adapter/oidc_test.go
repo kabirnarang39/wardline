@@ -1,8 +1,12 @@
 package adapter
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -210,6 +214,80 @@ func TestOIDCBootstrapper_TamperedSignatureRejected(t *testing.T) {
 
 	if _, _, err := b.Authenticate(string(tampered)); err == nil {
 		t.Fatal("expected rejection for tampered signature")
+	}
+}
+
+// TestOIDCBootstrapper_AlgNoneRejected probes the classic JWT
+// algorithm-confusion attack: a hand-crafted, entirely unsigned token
+// (header {"alg":"none"}, empty third segment) claiming any identity/
+// tenant the attacker likes. A verifier that honors the token's own
+// "alg" header rather than requiring a real signature check against the
+// configured key set would accept this outright.
+func TestOIDCBootstrapper_AlgNoneRejected(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestJWKSServer(t, key, "test-key")
+	defer srv.Close()
+
+	b, err := NewOIDCBootstrapper("https://idp.example.com/", srv.URL, "wardline", "sub", "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"iss":"https://idp.example.com/","aud":"wardline","sub":"attacker","tenant":"acme","exp":9999999999}`,
+	))
+	forged := header + "." + payload + "."
+
+	if identity, tenantName, err := b.Authenticate(forged); err == nil {
+		t.Fatalf("expected rejection of an alg:none unsigned token, got identity=%q tenant=%q", identity, tenantName)
+	}
+}
+
+// TestOIDCBootstrapper_HMACConfusionWithRSAPublicKeyRejected probes the
+// other classic algorithm-confusion attack: an RS256 public key is,
+// structurally, just a number pair (n, e) an attacker can encode as raw
+// bytes -- if a verifier ever accepted an HS256 (symmetric) token and
+// used the RSA public key's own bytes as the HMAC secret, an attacker
+// who only knows the (inherently public) verification key could forge
+// a token, because the "secret" wouldn't be secret at all. jwx must
+// reject the alg mismatch (HS256 token vs. an RS256-only key in the
+// set) rather than silently attempting HMAC verification against it.
+func TestOIDCBootstrapper_HMACConfusionWithRSAPublicKeyRejected(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestJWKSServer(t, key, "test-key")
+	defer srv.Close()
+
+	b, err := NewOIDCBootstrapper("https://idp.example.com/", srv.URL, "wardline", "sub", "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	// The "secret" an attacker would use: the RSA public key's own
+	// modulus, DER-encoded -- public information, recoverable from the
+	// JWKS endpoint itself.
+	pubDER := x509.MarshalPKCS1PublicKey(&key.PublicKey)
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT","kid":"test-key"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"iss":"https://idp.example.com/","aud":"wardline","sub":"attacker","tenant":"acme","exp":9999999999}`,
+	))
+	signingInput := header + "." + payload
+	mac := hmac.New(sha256.New, pubDER)
+	mac.Write([]byte(signingInput))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	forged := signingInput + "." + sig
+
+	if identity, tenantName, err := b.Authenticate(forged); err == nil {
+		t.Fatalf("expected rejection of an HS256-signed token against an RS256-only key set, got identity=%q tenant=%q", identity, tenantName)
 	}
 }
 
