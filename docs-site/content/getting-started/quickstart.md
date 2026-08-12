@@ -4,6 +4,9 @@ weight: 20
 ---
 
 This gets one request through Wardline end to end in under five minutes.
+You'll start a fake destination server, start Wardline in front of it,
+send one request, and watch Wardline allow it — then send another and
+watch it get denied.
 
 ## 1. Start a mock upstream
 
