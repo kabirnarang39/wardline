@@ -39,10 +39,10 @@ A normal agent goes about its work, gets compromised partway through, and gets s
 make demo   # runs exactly this on your machine, in about 30 seconds
 ```
 
-The same run shows up in the built-in dashboard: the agent that got blocked, the anomaly that gave it away, and the policy it was up against.
+And here's the whole thing from the operator's side. You sign in, and there's the agent that got blocked, the anomaly that gave it away, the policy it was working against, and who's even allowed to touch any of it:
 
 <div align="center">
-  <img alt="Wardline dashboard: the blocked agent, its ml_score anomaly, and the policy" src="docs/images/wardline-dashboard-demo.webp" width="800">
+  <img alt="Wardline console walkthrough: signing in, then the blocked agent, its anomaly, the policy, and RBAC" src="docs/images/wardline-tour.gif" width="820">
 </div>
 
 ## How it works
