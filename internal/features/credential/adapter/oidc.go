@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lestrrat-go/httprc/v3"
@@ -24,6 +25,20 @@ var _ domain.Bootstrapper = (*OIDCBootstrapper)(nil)
 // login, short enough that a real key rotation (which every major IdP
 // performs periodically) is picked up without an operator restart.
 const jwksRefreshInterval = 15 * time.Minute
+
+// forceRefreshCooldown bounds how often a failed verification is allowed
+// to trigger an out-of-band JWKS refresh (see Authenticate) -- at most
+// once per this interval, across every concurrent caller, regardless of
+// how many tokens fail. Every major IdP's own key-rollover guidance
+// (Microsoft's Azure AD signing-key-rollover doc is the most explicit:
+// https://learn.microsoft.com/en-us/entra/identity-platform/active-directory-signing-key-rollover)
+// documents exactly this "unknown kid -> force a refresh and retry once"
+// pattern for a relying party that caches JWKS, because a real rotation
+// adds the new key before jwksRefreshInterval's next scheduled fetch
+// would otherwise see it. Rate-limited rather than unconditional so a
+// flood of garbage bearer tokens can't turn every rejected Authenticate
+// call into its own outbound request against the IdP's JWKS endpoint.
+const forceRefreshCooldown = 30 * time.Second
 
 // jwksBootstrapTimeout bounds the first, blocking JWKS fetch. Any
 // jwks_uri problem (unreachable, refused, 404, non-JWKS body) otherwise
@@ -114,6 +129,11 @@ type OIDCBootstrapper struct {
 	tenantClaim   string
 	cache         *jwk.Cache
 	jwksURI       string
+
+	// lastForcedRefresh is a UnixNano timestamp, CAS-guarded so
+	// concurrent failed Authenticate calls agree on which one (if any)
+	// gets to force a refresh -- see forceRefreshCooldown.
+	lastForcedRefresh atomic.Int64
 }
 
 func NewOIDCBootstrapper(issuer, jwksURI, audience, identityClaim, tenantClaim string) (*OIDCBootstrapper, error) {
@@ -157,6 +177,20 @@ func (o *OIDCBootstrapper) Close() error {
 	return o.cache.Shutdown(context.Background())
 }
 
+// tryClaimForceRefresh returns true for at most one caller per
+// forceRefreshCooldown -- every other concurrent caller within the same
+// window gets false and falls through to the normal rejection, so a
+// burst of failing verifications forces at most one extra JWKS fetch,
+// not one per request.
+func (o *OIDCBootstrapper) tryClaimForceRefresh() bool {
+	now := time.Now().UnixNano()
+	last := o.lastForcedRefresh.Load()
+	if now-last < int64(forceRefreshCooldown) {
+		return false
+	}
+	return o.lastForcedRefresh.CompareAndSwap(last, now)
+}
+
 func (o *OIDCBootstrapper) Authenticate(idToken string) (string, string, error) {
 	keySet, err := o.cache.Lookup(context.Background(), o.jwksURI)
 	if err != nil {
@@ -167,6 +201,22 @@ func (o *OIDCBootstrapper) Authenticate(idToken string) (string, string, error) 
 		jwt.WithIssuer(o.issuer),
 		jwt.WithAudience(o.audience),
 	)
+	if err != nil && o.tryClaimForceRefresh() {
+		// See forceRefreshCooldown's doc comment: this is the one retry
+		// a genuine mid-rotation "unknown kid" needs, bounded so it can't
+		// be turned into a JWKS-hammering amplifier.
+		if _, refreshErr := o.cache.Refresh(context.Background(), o.jwksURI); refreshErr == nil {
+			if freshSet, lookupErr := o.cache.Lookup(context.Background(), o.jwksURI); lookupErr == nil {
+				if retried, retryErr := jwt.Parse([]byte(idToken),
+					jwt.WithKeySet(freshSet),
+					jwt.WithIssuer(o.issuer),
+					jwt.WithAudience(o.audience),
+				); retryErr == nil {
+					parsed, err = retried, nil
+				}
+			}
+		}
+	}
 	if err != nil {
 		// The 401 returned to the caller stays generic/non-enumerable;
 		// this internal debug log is the only place the real reason
