@@ -172,6 +172,75 @@ default: deny
 	}
 }
 
+// TestServeEndToEnd_MalformedJSONBodyRejected proves the baseline hot
+// path's parse-error edge case end to end against a real running server:
+// unparsable JSON gets a 400 with a JSON-RPC -32700 parse-error envelope
+// (not a 5xx, not a hang), and the rejection still produces an audit
+// entry (decision "error") rather than silently dropping the request off
+// the audit trail — a swallowed error on this path would be a silent
+// security gap per this repo's Go conventions.
+func TestServeEndToEnd_MalformedJSONBodyRejected(t *testing.T) {
+	listenAddr, stdout, stderr, _, _ := startWardline(t, "policy.yaml", `
+rules:
+  - identity: "agent-abc123"
+    tool: "read_file"
+    effect: allow
+default: deny
+`, "")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+listenAddr, bytes.NewBufferString("not json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Wardline-Identity", "agent-abc123")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed JSON body, got %d (stderr: %s)", resp.StatusCode, stderr.String())
+	}
+
+	var rpcErr struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcErr); err != nil {
+		t.Fatalf("response body is not valid JSON-RPC error envelope: %v (body: %s)", err, body)
+	}
+	if rpcErr.Error.Code != -32700 {
+		t.Fatalf("expected JSON-RPC parse-error code -32700, got %d (body: %s)", rpcErr.Error.Code, body)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if lastLine == "" {
+		t.Fatalf("expected an audit entry for the rejected malformed request, got no audit output: %q", stdout.String())
+	}
+	var entry struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+		t.Fatalf("audit log line is not valid JSON: %v (line: %s)", err, lastLine)
+	}
+	if entry.Decision != "error" {
+		t.Fatalf("expected audit decision %q for the malformed request, got %q (line: %s)", "error", entry.Decision, lastLine)
+	}
+}
+
 // TestServeEndToEnd_ResourcesAndPromptsGatedByPolicy is the widening
 // feature's real end-to-end proof, mirroring the empirical-proof
 // discipline docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md
