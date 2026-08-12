@@ -590,4 +590,18 @@ if [ "$APPROVAL_STATUS" -ne 0 ]; then
 fi
 
 echo
+echo "###################################################################"
+echo "# 18. OTel tracing: span export overhead under load (vs baseline)  #"
+echo "###################################################################"
+OTELCOLLECTOR="$OUT/otelcollector"
+go build -o "$OTELCOLLECTOR" ./bench/otelcollector
+"$OTELCOLLECTOR" 39501 >/dev/null 2>&1 & PIDS+=($!)
+sleep 0.3
+"$BIN" serve --config ./bench/wardline.otel.yaml >"$OUT/server.otel.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38421
+attack otel-allow 38421 bench-agent
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
