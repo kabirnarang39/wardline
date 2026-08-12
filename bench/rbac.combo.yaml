@@ -1,0 +1,6 @@
+# Zero static bindings on purpose -- this combo scenario provisions
+# every RBAC grant via SCIM (see bench/run.sh's risk-combo scenario),
+# proving CompositeAuthorizer's dynamic (SCIM-derived) lookup path
+# holds under concurrent dashboard load, not the static file path
+# bench/rbac.bench.yaml already covers.
+bindings: []
