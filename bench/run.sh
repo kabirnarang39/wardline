@@ -364,4 +364,41 @@ if [ "$SCIMLOAD_STATUS" -ne 0 ]; then
 fi
 
 echo
+echo "###################################################################"
+echo "# 11. Dashboard: concurrent API endpoints under load, alongside    #"
+echo "#     real proxy traffic feeding audit/budget/anomaly data live    #"
+echo "###################################################################"
+"$BIN" serve --config ./bench/wardline.dashboard.yaml >"$OUT/server.dashboard.log" 2>&1 & SRV=$!
+PIDS+=("$SRV")
+wait_healthy 38412
+
+attack_dashboard_get() {
+  local name="$1" path="$2" rate="$3"
+  printf 'GET http://localhost:38412%s\n' "$path" | \
+    vegeta attack -rate="$rate" -duration="$DURATION" -workers=10 | \
+    tee "$OUT/$name.bin" | vegeta report | tee "$OUT/$name.txt"
+}
+
+# Real proxy traffic (allow path) and four distinct dashboard API
+# endpoints, all hammered concurrently -- the realistic shape of
+# several operators' browser tabs polling the dashboard while agent
+# traffic keeps flowing, not one endpoint tested in isolation. Waited
+# on by explicit PID, NOT a bare `wait` -- $SRV (wardline serve itself)
+# is also a background job of this shell and never exits on its own,
+# so a bare `wait` here would hang the whole script forever.
+attack dashboard-proxy-traffic 38412 bench-agent &
+DASH_PIDS=($!)
+attack_dashboard_get dashboard-status "/dashboard/api/status" 100 &
+DASH_PIDS+=($!)
+attack_dashboard_get dashboard-audit "/dashboard/api/audit?after=0&limit=20" 100 &
+DASH_PIDS+=($!)
+attack_dashboard_get dashboard-anomalies "/dashboard/api/anomalies" 100 &
+DASH_PIDS+=($!)
+attack_dashboard_get dashboard-budget "/dashboard/api/budget" 100 &
+DASH_PIDS+=($!)
+wait "${DASH_PIDS[@]}"
+
+kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true
+
+echo
 echo "== done. Raw vegeta reports + server/anomaly/audit logs under $OUT/ =="
