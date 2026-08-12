@@ -208,9 +208,10 @@ does not change this. This is why `web_ui` defaults to off.
   not a transparent background refresh — a deliberately bounded scope
   for this cycle (a real, separate feature: rotating a refresh-token
   cookie plus an auto-refresh flow), not silently incomplete.
-- Federation's correlated-alerts view is not tenant-scoped (see
-  [RBAC](/features/rbac/)'s known limitations) — it correlates on an
-  identity fingerprint computed locally, independent of tenant.
+- Federation's correlated-alerts view is now tenant-scoped like every
+  other dashboard view (see [Federation](/features/federation/)'s known
+  limitations for what's still instance-scoped: each Wardline instance
+  shows its own `Correlator`'s state, not a fleet-wide merged view).
 - **Policy, budget, and RBAC changes auto-apply on file edit when
   `features.config_file_watch` is on** — an `fsnotify` watcher on the
   main config file plus `policy_file`/`rbac.config_file` calls the same

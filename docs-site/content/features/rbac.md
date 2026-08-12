@@ -47,10 +47,10 @@ globally, across every tenant — the "no tenant means global" convention
   identity name, but a caller who already holds the global grant this
   path requires can pass an explicit `tenant` to scope it to one tenant
   instead).
-- Federation's correlated-alerts view is not tenant-scoped — it
-  correlates on an identity fingerprint computed locally, and making
-  that tenant-aware is a separate, not-yet-scheduled change (federation
-  has no dedicated docs page yet).
+- Federation's correlated-alerts view is now tenant-scoped, same as
+  every other dashboard view — see [Federation](/features/federation/)'s
+  own known limitations for what's still instance-scoped (each
+  Wardline instance's own `Correlator`, not merged fleet-wide).
 - Does not require `credential_issuance` — composes with whatever
   identity source is active, and is only as strong as whatever
   authenticates that identity.

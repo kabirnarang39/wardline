@@ -96,6 +96,35 @@ func TestAggregate_EntriesOutsideWindowExcluded(t *testing.T) {
 	}
 }
 
+// TestAggregate_SameIdentityDifferentTenants_NeverMerge is this task's
+// actual proof: Fingerprint hashes identity alone, so two different
+// tenants' identically-named identities produce the SAME fingerprint --
+// Tenant must join the grouping key, or these would incorrectly merge
+// into one summary.
+func TestAggregate_SameIdentityDifferentTenants_NeverMerge(t *testing.T) {
+	secret := []byte("secret")
+	start := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	end := start.Add(time.Minute)
+
+	anomalies := []anomalydomain.Anomaly{
+		{Identity: "alice", Tenant: "acme", Kind: anomalydomain.KindRateSpike, Timestamp: start.Add(10 * time.Second)},
+		{Identity: "alice", Tenant: "widgets-inc", Kind: anomalydomain.KindRateSpike, Timestamp: start.Add(10 * time.Second)},
+	}
+
+	summaries := usecase.Aggregate(anomalies, secret, start, end)
+
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 summaries for the same identity in 2 different tenants, got %d: %+v", len(summaries), summaries)
+	}
+	if summaries[0].Fingerprint != summaries[1].Fingerprint {
+		t.Errorf("expected both summaries to share the same fingerprint (identity-only hash) despite being 2 separate summaries, got %q and %q", summaries[0].Fingerprint, summaries[1].Fingerprint)
+	}
+	tenants := map[string]bool{summaries[0].Tenant: true, summaries[1].Tenant: true}
+	if !tenants["acme"] || !tenants["widgets-inc"] {
+		t.Errorf("expected one summary per tenant, got tenants %+v", tenants)
+	}
+}
+
 func TestAggregate_EmptyInput_EmptyOutput(t *testing.T) {
 	secret := []byte("secret")
 	start := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)

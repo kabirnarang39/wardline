@@ -1,20 +1,24 @@
 package usecase
 
-import "time"
+import (
+	"time"
 
-// GCCorrelatorOnce drops every (fingerprint, kind) state whose every
-// instance sighting is older than 2x interval before now. Exported (not
-// a method) and taking now explicitly, purely so tests can drive it
+	"github.com/kabirnarang39/wardline/internal/platform/tenant"
+)
+
+// GCCorrelatorOnce drops every (tenant, fingerprint, kind) state whose
+// every instance sighting is older than 2x interval before now. Exported
+// (not a method) and taking now explicitly, purely so tests can drive it
 // deterministically -- StartCorrelatorGC below is the real production
-// entry point. Dropping state is safe: the fingerprint simply looks
-// fresh again on its next sighting, same conservative posture as
-// anomaly detection's own identityState GC.
+// entry point. Dropping state is safe: the (tenant, fingerprint) pair
+// simply looks fresh again on its next sighting, same conservative
+// posture as anomaly detection's own identityState GC.
 func GCCorrelatorOnce(c *Correlator, now time.Time, interval time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	cutoff := now.Add(-2 * interval)
-	for fingerprint, byKind := range c.state {
+	for stateKey, byKind := range c.state {
 		for kind, st := range byKind {
 			stillFresh := false
 			for _, seen := range st.instances {
@@ -28,17 +32,18 @@ func GCCorrelatorOnce(c *Correlator, now time.Time, interval time.Duration) {
 			}
 		}
 		if len(byKind) == 0 {
-			delete(c.state, fingerprint)
+			delete(c.state, stateKey)
 		}
 	}
 }
 
 // CorrelatorHasFingerprint reports whether the correlator currently
-// holds any state for fingerprint, for any kind. Test-only helper.
-func CorrelatorHasFingerprint(c *Correlator, fingerprint string) bool {
+// holds any state for (tenantName, fingerprint), for any kind. Test-only
+// helper.
+func CorrelatorHasFingerprint(c *Correlator, tenantName, fingerprint string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.state[fingerprint]
+	_, ok := c.state[tenant.Key(tenantName, fingerprint)]
 	return ok
 }
 
