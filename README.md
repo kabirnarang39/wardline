@@ -5,7 +5,7 @@
   <img alt="Wardline" src="docs/images/banner-light.svg" width="460">
 </picture>
 
-**The control-plane proxy that auto-blocks compromised AI agents — in one static Go binary.**
+**The control-plane proxy that auto-blocks compromised AI agents, all from one static Go binary.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/kabirnarang39/wardline/ci.yml?branch=main&style=flat&label=CI&color=15803D)](https://github.com/kabirnarang39/wardline/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kabirnarang39/wardline?style=flat&label=release&color=15803D)](https://github.com/kabirnarang39/wardline/releases)
@@ -21,23 +21,25 @@
 
 ---
 
-Your AI agent has a thousand tools and no supervisor. The day it gets prompt-injected, jailbroken, or simply goes wrong, it starts calling things it never should — and you never wrote a rule for *that*, because you didn't see it coming.
+Give an AI agent a thousand tools and no one watching it, and sooner or later it does something you didn't plan for. Maybe it gets prompt-injected. Maybe someone jailbreaks it. Maybe it just goes wrong on its own. However it happens, it starts calling things it never should, and you never wrote a rule to stop that, because you had no idea it was coming.
 
-**Wardline** sits in front of every call your agents make — MCP servers, tools, gRPC upstreams — and enforces **identity, policy, budget, and audit**. Then it watches: statistical anomaly detection learns each agent's normal behavior and **blocks a compromised one in real time** — no rule written for the attack, no human in the loop. One static Go binary. No database, IdP, or sidecar to start.
+**Wardline** sits between your agents and everything they call: MCP servers, tools, gRPC upstreams. Every call goes through it, and on the way it checks who's asking, whether policy allows it, whether there's budget left, and it writes the decision down. Then it does the part a rulebook can't. It learns how each agent normally behaves, and the moment one stops acting like itself, it shuts it down. Right then, while it's happening. No rule for the specific attack, nobody woken up at 2am.
 
-### See it happen
+It's a single Go binary. No database to run, no identity provider to wire up, no sidecar. You download it and start it.
 
-A normal agent gets compromised mid-run. Wardline learns its baseline, catches the burst, and auto-blocks it — down to its previously-allowed calls — live:
+### See it for yourself
+
+A normal agent goes about its work, gets compromised partway through, and gets shut down for it. This is a real run, not a mockup:
 
 <div align="center">
   <img alt="Wardline auto-blocking a compromised agent" src="docs/images/wardline-demo.gif" width="800">
 </div>
 
 ```bash
-make demo   # runs exactly this, locally, in ~30s — mock MCP server + Wardline, zero setup
+make demo   # runs exactly this on your machine, in about 30 seconds
 ```
 
-Every decision lands in the built-in read-only dashboard — the block, the `ml_score` anomaly that triggered it, and the policy behind it:
+The same run shows up in the built-in dashboard: the agent that got blocked, the anomaly that gave it away, and the policy it was up against.
 
 <div align="center">
   <img alt="Wardline dashboard: the blocked agent, its ml_score anomaly, and the policy" src="docs/images/wardline-dashboard-demo.webp" width="800">
@@ -45,7 +47,7 @@ Every decision lands in the built-in read-only dashboard — the block, the `ml_
 
 ## How it works
 
-Any caller — an AI agent, a CLI/IDE, or an app — reaches its MCP/gRPC upstreams only through Wardline, which applies identity, policy, budget, and anomaly detection in-process and writes every decision to the audit trail.
+Anything that calls a tool (an AI agent, your CLI or IDE, an app) can only reach its upstreams by going through Wardline first. On the way through, it checks identity, applies policy, counts the call against the budget, runs it past anomaly detection, and records what it decided. Then it forwards the call, or it doesn't.
 
 <div align="center">
   <img alt="Wardline control plane: callers pass through identity, policy, budget, and anomaly checks before reaching MCP servers, tools, resources, gRPC, and APIs" src="docs/images/architecture.svg" width="900">
@@ -55,12 +57,14 @@ Full design: [Architecture](https://kabirnarang39.github.io/wardline/docs/concep
 
 ## What it does
 
-- **Real-time anomaly auto-block** — seven self-baselining heuristics (rate spike, novel tool, deny-rate spike, an `ml_score` z-score, a CUSUM drift chart for low-and-slow ramps, cross-tenant aggregation, and identity-churn) learn each agent online — no training data, no external model. A flagged agent is *rejected* for a bounded TTL, not just logged. Real measured recall and honest residuals in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
-- **Three policy backends, one binary** — YAML, embedded OPA/Rego, or embedded AWS Cedar, chosen by one config key. No external process, no network hop.
-- **Identity & access** — short-lived RS256 JWTs (refresh + JWKS rotation), OIDC / mTLS-SPIFFE bootstrap, Kubernetes-style RBAC, SCIM 2.0, end-to-end tenant isolation.
-- **Budget & rate control** — per-identity *and* per-tenant limits; both must clear for a call to pass.
-- **Compliance & audit** — structured JSON trail, signed evidence export for auditors, configurable retention, and `infer-policy` to bootstrap an allow-list from real traffic.
-- **Federation & observability** — cross-instance correlation over signed, pseudonymized summaries; OpenTelemetry tracing; Prometheus metrics; a live dashboard; Postgres-backed HA.
+The baseline (proxy, policy, audit) is always on. Everything else is one config flag away.
+
+- **Catches a compromised agent on its own.** Seven detectors watch each agent and learn its normal rhythm as it runs: sudden spikes, tools it has never called before, a climbing deny rate, a combined z-score, a slow drift that no single moment looks wrong on, patterns across a whole tenant, and floods of brand-new identities. There's no training data and nothing to host. When one trips, the agent is actually blocked for a while, not just written to a log. The real hit rates, and the honest gaps, are in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
+- **Write policy three ways, still one binary.** Plain YAML, OPA/Rego, or AWS Cedar. You pick one with a config key. Nothing external to run, no network hop.
+- **Real identity, not a header you have to trust.** Short-lived signed tokens with refresh and key rotation, sign-in over OIDC or mTLS/SPIFFE, Kubernetes-style RBAC, SCIM for provisioning, and hard tenant isolation.
+- **Budgets that actually stop a call.** Limits per agent and per tenant. A call has to clear both to go through.
+- **An audit trail an auditor can use.** Every decision as structured JSON, a signed evidence bundle you can hand over, retention you control, and a command that reads your real traffic and writes you a starting allow-list.
+- **See it and scale it.** Correlation across instances, OpenTelemetry traces, Prometheus metrics, a live dashboard, and multi-replica HA backed by Postgres.
 
 ## Getting Started
 
@@ -78,7 +82,7 @@ docker pull ghcr.io/kabirnarang39/wardline:latest
 ./wardline serve --config wardline.yaml.example
 ```
 
-Point `upstream` at a real MCP server (a proxied call 502s until you do — for a quick test, `python3 -m http.server 9000`). Every request carries an `X-Wardline-Identity` header; policy matches on that value plus the MCP tool name:
+Point `upstream` at a real MCP server. Until you do, a proxied call just returns 502 (for a quick test, `python3 -m http.server 9000` is enough). Every request carries an `X-Wardline-Identity` header, and policy matches on that value plus the MCP tool name:
 
 ```bash
 curl -X POST http://localhost:8080 \
@@ -87,7 +91,7 @@ curl -X POST http://localhost:8080 \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_file"}}'
 ```
 
-`X-Wardline-Identity` is a plain, unauthenticated header here — anyone who can reach the proxy can claim to be any identity. That's fine for this local, no-upstream smoke test; it is **not** fine for anything reachable by someone else. Before pointing this at a real upstream, turn on `credential_issuance` (verified RS256 bearer tokens replace the spoofable header) and `rbac` — see [Hardening](#hardening) below.
+Here, `X-Wardline-Identity` is just a plain header with nothing behind it, so anyone who can reach the proxy can claim to be anyone. That's fine for a local smoke test with no real upstream. It is **not** fine for anything someone else can reach. Before you point this at a real upstream, turn on `credential_issuance` (so a signed token replaces the header anyone could fake) and `rbac`. See [Hardening](#hardening) below.
 
 Prebuilt binaries (linux/darwin/windows · amd64/arm64) and multi-arch images ship on every `v*` tag via [Releases](https://github.com/kabirnarang39/wardline/releases) and [GHCR](https://github.com/kabirnarang39/wardline/pkgs/container/wardline).
 
@@ -95,11 +99,11 @@ Prebuilt binaries (linux/darwin/windows · amd64/arm64) and multi-arch images sh
 
 Full docs, per-feature design notes, and honest known-limitations live on the docs site:
 
-- [Getting Started](https://kabirnarang39.github.io/wardline/docs/getting-started/) — install, quickstart, configuration
-- [Concepts](https://kabirnarang39.github.io/wardline/docs/concepts/) — architecture, policy backends, identity, audit
-- [Features](https://kabirnarang39.github.io/wardline/docs/features/) — every capability in depth
-- [Deployment](https://kabirnarang39.github.io/wardline/docs/deployment/) — Docker, Helm, HA, observability
-- [Framework integrations](docs/integrations/) — LangChain, LlamaIndex, OpenAI Agents SDK, CrewAI, raw MCP
+- [Getting Started](https://kabirnarang39.github.io/wardline/docs/getting-started/): install, quickstart, configuration
+- [Concepts](https://kabirnarang39.github.io/wardline/docs/concepts/): architecture, policy backends, identity, audit
+- [Features](https://kabirnarang39.github.io/wardline/docs/features/): every capability in depth
+- [Deployment](https://kabirnarang39.github.io/wardline/docs/deployment/): Docker, Helm, HA, observability
+- [Framework integrations](docs/integrations/): LangChain, LlamaIndex, OpenAI Agents SDK, CrewAI, raw MCP
 
 ## Full capability list
 
@@ -107,7 +111,7 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 
 | Capability | Docs |
 |---|---|
-| Policy backends — YAML · OPA/Rego · AWS Cedar | [Policy backends](https://kabirnarang39.github.io/wardline/docs/concepts/policy-backends/) |
+| Policy backends: YAML · OPA/Rego · AWS Cedar | [Policy backends](https://kabirnarang39.github.io/wardline/docs/concepts/policy-backends/) |
 | Anomaly detection + auto-block | [Anomaly detection](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/) |
 | Budget enforcement (per-identity + per-tenant) | [Budget](https://kabirnarang39.github.io/wardline/docs/features/budget-enforcement/) |
 | Credential issuance (JWT + refresh + JWKS) | [Credentials](https://kabirnarang39.github.io/wardline/docs/features/credential-issuance/) |
@@ -129,22 +133,22 @@ Everything below is shipped and testable under [`internal/features/`](internal/f
 
 ## Performance
 
-Real `go test -bench` numbers, not marketing:
+These are real `go test -bench` numbers you can reproduce, not figures off a slide:
 
-- **Policy decision** — ~33 ns / 0 allocations at 10 rules (default YAML backend, Apple Silicon), ~2.4 µs at 1000 rules.
-- **Full seven-heuristic detector** — ~299 ns/op, 5 allocations, with `drift_detection`, `tenant_anomaly`, and `identity_churn` all on (~255 ns/op for the original four).
-- **Race-tested** — 205 concurrent goroutines (5 tenants × 40 identities + 5 attackers) against one shared `Detector` under `go test -race`, no data race.
-- **False positives** — `ml_score` holds **0 / 6,000 windows** across 20 seeds on steady traffic (budget < 2%).
+- **Policy decision:** about 33 ns and zero allocations at 10 rules (YAML backend, Apple Silicon), around 2.4 µs at 1000 rules.
+- **The full seven-detector stack:** about 299 ns per call and 5 allocations with everything on (around 255 ns for the original four).
+- **Race-tested:** 205 goroutines at once (5 tenants, 40 identities each, plus 5 attackers) all hitting one shared `Detector` under `go test -race`, with no data race.
+- **False positives:** `ml_score` stays at **0 out of 6,000 windows** across 20 seeds on steady traffic.
 
-Per-attack-shape recall curve and the adversarial battery (sybil, mimicry ceiling, burst-pause, disposable-identity rotation) live in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
+The full recall curve for each attack shape, plus the adversarial battery (sybil, mimicry ceiling, burst-pause, disposable-identity rotation), are in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
 
 ## Security
 
-The dashboard and the `X-Wardline-Identity` header are **unauthenticated by default** — pair with `credential_issuance` and/or `rbac` for real security value. Every optional capability ships off by default and fails closed. On startup Wardline logs a `WARN` for each insecure default still in effect, so the posture is never silent. Report vulnerabilities per [SECURITY.md](SECURITY.md).
+By default, the dashboard and the `X-Wardline-Identity` header are unauthenticated. Turn on `credential_issuance` and/or `rbac` before they count as security at all. Everything optional is off by default and fails closed, and on startup Wardline prints a `WARN` for every insecure default you've left in place, so you're never guessing about where you stand. Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ### Hardening
 
-Out of the box the proxy fails closed on *policy*, but identity and the dashboard are open. For any real deployment, turn on:
+Out of the box the proxy fails closed on policy, but identity and the dashboard are wide open. For anything real, turn these on:
 
 ```yaml
 features:
@@ -152,11 +156,11 @@ features:
   rbac: true                  # gate the dashboard and admin actions on real permissions
 ```
 
-With `credential_issuance` on, the spoofable header is replaced by RS256 bearer-token verification; with `rbac` on, dashboard read views and mutations require an authorized identity. `ml_score`/`auto_block` alone catch *abrupt* abuse but not *low-and-slow* ramps; `drift_detection` (a CUSUM control chart, on by default in the shipped example config) closes most of that gap — real, measured numbers, not a claim, in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark) — but a real residual (a ~1.15x sustained-forever ceiling for an attacker who's read the public thresholds) remains, see [known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#known-limitations). Keep explicit policy + budget limits as the hard floor regardless.
+With `credential_issuance` on, a signed token replaces the header anyone could fake. With `rbac` on, both viewing the dashboard and changing anything require an identity that's actually allowed to. One thing worth being honest about: `ml_score` and `auto_block` catch loud, sudden abuse well, but not a slow ramp. `drift_detection` (a CUSUM control chart, on by default in the shipped config) closes most of that gap, and the measured numbers are in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark). One real gap stays: an attacker who has read the public thresholds can hold a roughly 1.15x ramp forever, which is written up plainly in [known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#known-limitations). So keep explicit policy and budget limits as your hard floor no matter what.
 
 ## Project status
 
-Wardline is young and moving fast. Every feature's docs page is deliberately blunt about what it does and doesn't do. Feedback, issues, and contributions are welcome — especially on the anomaly-detection approach and threat model.
+Wardline is young and moving fast. Every feature's docs page is deliberately blunt about what it does and doesn't do. Feedback, issues, and contributions are welcome, especially on the anomaly-detection approach and threat model.
 
 ## Contributing
 
