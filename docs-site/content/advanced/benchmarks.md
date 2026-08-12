@@ -1,7 +1,7 @@
 ---
 title: "Benchmarks"
 weight: 30
-summary: "Real load-test numbers for every feature, two cross-cutting HA/soak runs, and the real bugs load testing found and fixed along the way."
+summary: "Real load-test numbers for every feature, plus cross-cutting risk-combo, HA, and soak runs."
 ---
 
 Real, sustained, concurrent load through a real `wardline serve` process --
@@ -81,34 +81,6 @@ Two things worth calling out on their own:
   seconds admitted precisely 1,500 requests and rejected the other
   6,000 with `429`, not a fail-open gap under load — see [Budget
   Enforcement](/features/budget-enforcement/).
-
-## A real bottleneck this benchmark found and fixed
-
-The unbounded max-throughput run originally sustained only **~4,100
-req/s**, with p99 climbing past 200ms even though the mock upstream
-alone (tested in isolation, no Wardline in front) handles ~89,000
-req/s. That gap meant the bottleneck was Wardline's own request path,
-not the upstream or the load generator.
-
-The cause: `http.Transport`'s default `MaxIdleConnsPerHost` is **2**.
-Wardline's entire job is fronting a small number of upstream hosts
-(often exactly one) under concurrent load from many agents at once —
-that default limits connection *reuse* to 2 pooled connections per
-host, so any concurrency past trivial forces a fresh TCP dial and
-handshake per request instead of reusing a keep-alive connection. Fine
-at low concurrency, a real ceiling under load.
-
-The fix (`internal/features/proxy/adapter/handler.go`,
-`upstreamMaxIdleConnsPerHost`): raise it to 256. Unbounded throughput on
-the same machine, same config, same mock upstream went from ~4,100 to
-**~20,900 req/s — about 5x — with p99 falling from 200ms+ to 111ms and
-0 errors** at every concurrency level tested. `TestNewHandler_TunesMaxIdleConnsPerHost`
-(`internal/features/proxy/adapter/handler_transport_test.go`) pins
-this so it can't silently regress back to the default.
-
-This is the standard, well-documented fix for exactly this class of Go
-reverse-proxy bottleneck — not a workaround, the actual industry-standard
-tuning every Go HTTP proxy in production applies for the same reason.
 
 ## Reproducing
 
