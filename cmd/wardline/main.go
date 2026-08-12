@@ -1180,7 +1180,17 @@ func runServe(logger *slog.Logger, args []string) {
 
 		var dashboardRoute http.Handler = dashboardadapter.NewHandler(auditSource, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
 		if rbacEnabled {
-			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
+			// A browser hitting /dashboard/ with no session should land on
+			// the login form, not a bare "unauthorized" -- but only when
+			// there's actually a login form to send them to (the browser
+			// login is mounted just below, guarded on the same
+			// issuanceForLogin). With no issuance, leave it "" so the 401
+			// stands.
+			loginRedirect := ""
+			if issuanceForLogin != nil {
+				loginRedirect = "/dashboard/login"
+			}
+			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger, loginRedirect)
 		}
 		extraRoutes["/dashboard/"] = dashboardRoute
 		logger.Info("dashboard enabled", "path", "/dashboard/")
