@@ -60,6 +60,7 @@ and `bench/grpcload upstream` for gRPC.
 | Job cost budget ceiling (1000/10-per-call) under 5x overload | 500 req/s | exactly 1.33% (100 allowed / 7,400 denied) | — | — | — |
 | Taint tracking: 30 concurrent sessions, per-session isolation | 30 concurrent sessions × 20 cycles | 100% correct (0 cross-session leakage) | — | — | — |
 | Approval workflow: 20 concurrent sessions, own pending/grant | 20 concurrent sessions × 10 cycles | 100% correct (0 cross-session leakage) | — | — | — |
+| OTel tracing: baseline allow path with span export on | 500 req/s | 100% | 0.57ms | 1.16ms | 2.30ms |
 | RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
 | RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 
