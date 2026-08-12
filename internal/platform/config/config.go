@@ -178,6 +178,31 @@ type KMSConfig struct {
 	Region string `yaml:"region"`
 }
 
+// SPIFFEWorkloadConfig configures the OUTBOUND SPIFFE Workload API
+// client (credentialadapter.SPIFFEWorkloadIdentity) -- only meaningful
+// when features.spiffe_workload_identity is on.
+type SPIFFEWorkloadConfig struct {
+	// SocketPath names the Workload API endpoint (typically a Unix
+	// domain socket a local SPIRE agent listens on, e.g.
+	// "unix:///run/spire/sockets/agent.sock"). Empty (the default) uses
+	// the go-spiffe SDK's own SPIFFE_ENDPOINT_SOCKET environment
+	// variable, matching the SPIFFE Workload API spec's own standard
+	// discovery mechanism -- so a deployment that already sets that env
+	// var (the common case in a SPIRE-equipped cluster) needs no config
+	// change at all.
+	SocketPath string `yaml:"socket_path"`
+	// UpstreamPeerID, when set, is the exact SPIFFE ID
+	// (credential.spiffe_workload's outbound mTLS connection to
+	// grpc_upstream) must present -- pinning one expected peer, the
+	// same specificity RBAC/credential's own explicit-over-inferred
+	// posture prefers elsewhere in this codebase. Empty accepts any
+	// SPIFFE-authenticated peer (tlsconfig.AuthorizeAny()) -- a real,
+	// working default (still requires a valid SPIFFE SVID, not "any
+	// certificate"), logged as a Warn at startup so an operator who
+	// meant to pin one peer notices the gap.
+	UpstreamPeerID string `yaml:"upstream_peer_id"`
+}
+
 // MTLSConfig configures the mTLS/SPIFFE bootstrap adapter. Only
 // validated (and only meaningful) when credential.bootstrap_source is
 // "mtls". Wardline never terminates TLS or parses X.509 itself -- Header
@@ -219,6 +244,14 @@ type CredentialConfig struct {
 	// drop it from this list. Empty (the default) is the no-rotation-in-
 	// progress state. See README.md "Credential issuance".
 	PreviousSigningKeyFiles []string `yaml:"previous_signing_key_files"`
+
+	// SPIFFEWorkload configures Wardline to fetch its own SPIFFE identity
+	// from a local SPIRE agent's Workload API, for OUTBOUND mutual TLS
+	// (the gRPC upstream dial, when both grpc_transport and
+	// grpc_upstream_tls are also on) -- distinct from BootstrapSource
+	// "mtls" above, which trusts an already-verified SPIFFE ID on
+	// INBOUND requests. See credentialadapter.SPIFFEWorkloadIdentity.
+	SPIFFEWorkload SPIFFEWorkloadConfig `yaml:"spiffe_workload"`
 
 	// KMS configures a cloud-KMS-backed signing key instead of a local
 	// PEM file -- mutually exclusive with SigningKeyFile (validate()

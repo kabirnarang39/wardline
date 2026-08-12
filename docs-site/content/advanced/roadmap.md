@@ -317,6 +317,16 @@ correctly.
   (`previous_signing_key_files`) works unchanged rotating in or out of
   KMS custody. GCP Cloud KMS and Azure Key Vault are a sibling adapter
   away. See [HA Deployment](/features/ha-deployment/).
+- **SPIFFE Workload API client** (`features.spiffe_workload_identity`) —
+  Wardline fetches its own auto-rotating X.509-SVID from a local SPIRE
+  agent via `go-spiffe/v2`'s `workloadapi.X509Source`, and presents it
+  as the client certificate on its outbound gRPC-upstream mTLS
+  connection (`credential.spiffe_workload.upstream_peer_id` pins the
+  expected upstream identity). Closes the "no SPIFFE Workload API
+  client in Wardline itself" gap for the outbound direction; the
+  inbound `mtls` bootstrap source's header-based trust handoff is a
+  separate, deliberate design decision and is unchanged. See
+  [mTLS/SPIFFE Bootstrap](/features/mtls-bootstrap/).
 
 ## Future directions (not committed)
 
