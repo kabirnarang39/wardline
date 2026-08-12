@@ -100,6 +100,46 @@ horizontally (each replica's own request-handling capacity is
 independent; only Postgres-backed state is shared) rather than
 searching for a code-level fix.
 
+## Postgres backup/restore
+
+Wardline itself has no backup mechanism — `postgres_storage` is a
+consumer of your Postgres instance, not an operator of it. Its own
+data (`audit_entries`, `budget_buckets`, SCIM tables, anomaly baseline/
+tenant/churn tables) is ordinary relational data with no special
+recovery procedure beyond your normal Postgres backup story. Confirmed
+with a real drill (dump the live database, restore into a separate
+database, verify row-for-row, then boot a real Wardline instance
+against the restored copy):
+
+```bash
+# Backup (pg_dump custom format -- the standard input to pg_restore)
+pg_dump -h <host> -U <user> -d <db> -Fc -f wardline_backup.dump
+
+# Restore (into a NEW database -- never restore over a live one you
+# haven't already decided to discard)
+createdb -h <host> -U <user> wardline_restored
+pg_restore -h <host> -U <user> -d wardline_restored wardline_backup.dump
+
+# Verify before cutting traffic over: row counts should match exactly
+psql -h <host> -U <user> -d <db> -c "SELECT count(*) FROM audit_entries;"
+psql -h <host> -U <user> -d wardline_restored -c "SELECT count(*) FROM audit_entries;"
+```
+
+Point `audit.postgres_dsn` at the restored database and start Wardline
+normally — no special recovery flag or startup mode is needed; the
+same `CREATE TABLE IF NOT EXISTS` idempotent-schema logic every
+Postgres-backed adapter already uses on every startup runs
+unconditionally, so a restored (non-empty) database behaves exactly
+like a fresh one that already has data in it. One real timing wrinkle
+to know about, not a restore bug: fixed-window budget counters
+(`budget_buckets`) reset on their own normal schedule based on wall
+time, so a bucket's `count` in the restored copy may already read as
+"reset" by the time you point traffic at it, if enough real time
+passed between the backup and the restore relative to
+`window_seconds` — the restored count is correct for the window it
+reflects, it just may not be the window you expect if the gap was
+long.
+
 ## Escalate immediately vs. let it self-heal
 
 **Self-heals, don't page a human at 3am for it alone:**
