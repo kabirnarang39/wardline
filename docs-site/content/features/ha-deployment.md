@@ -59,6 +59,15 @@ See the full operational guide: [High Availability](/deployment/high-availabilit
   verification-only during a rotation window (new tokens sign under the
   new key, old-key tokens keep verifying to their TTL), every token
   carries a `kid`, and `GET /credentials/jwks` publishes the active keys.
-  What's still out of scope is a **live cloud KMS integration**: the keys
-  are local PEM files, so an operator wanting KMS custody sources the PEM
-  bytes through their own secret pipeline.
+  **Live cloud KMS custody is also supported**: set `credential.kms.key_id`
+  (mutually exclusive with `signing_key_file`) to sign with an AWS KMS
+  asymmetric key instead of a local PEM file — the private key material
+  never leaves KMS/CloudHSM; every token issuance calls KMS's own `Sign`
+  API. `previous_signing_key_files` still works unchanged for the
+  verification-only rotation window when rotating in or out of KMS
+  custody, since verification only ever needs a public key, never the
+  private half. AWS credentials resolve via the SDK's standard default
+  chain (env vars, shared credentials file, IAM role) — never a static
+  key in Wardline's own config. GCP Cloud KMS and Azure Key Vault are a
+  sibling adapter away (same `crypto.Signer` extension point), not yet
+  shipped.
