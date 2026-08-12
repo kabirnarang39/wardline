@@ -33,6 +33,22 @@ Wardline's own overhead, not a stand-in's: `bench/httpupstream` for HTTP
 p50, confirmed by benchmarking it directly with nothing in front of it)
 and `bench/grpcload upstream` for gRPC.
 
+**Finding this machine's real ceiling**: sweeping sustained rate (not
+raw connection count) against the baseline allow path with a fixed,
+keep-alive-reusing worker pool, throughput peaks around **~37,000-
+38,800 req/s** (p50 2-4ms, p99 9-12ms, 100% success, 0 errors) at
+100-150 concurrent connections, then degrades past ~300-500 as the
+load generator and Wardline compete for the same 10 CPU cores on one
+machine -- a same-host testing artifact (both processes fighting for
+cores), not a Wardline-side defect: success stays 100% the whole way,
+it's purely a latency/throughput curve, never an error rate. Past
+~500-800 concurrent *new* connections specifically (not the sustained-
+rate sweep above), the load generator itself hits macOS's default
+listen backlog (`kern.ipc.somaxconn=128`) and ephemeral port range
+before Wardline's own capacity does -- a genuine ceiling for
+same-host loopback testing, not for Wardline running on a real host
+under real distributed client load with persistent connections.
+
 ## Results
 
 | Scenario | Rate | Success | p50 | p95 | p99 |
@@ -40,6 +56,7 @@ and `bench/grpcload upstream` for gRPC.
 | Baseline allow (proxy + policy + audit) | 500 req/s | 100% | 0.43ms | 1.48ms | 13.6ms |
 | Baseline deny | 500 req/s | 100% (all correctly 403) | 0.28ms | 0.74ms | 1.79ms |
 | **Baseline allow, unbounded** | max (300 workers) | **100%, 0 errors** | 8.9ms | 48.8ms | 111ms |
+| **Baseline allow, real ceiling** (sustained-rate sweep, 100-150 reused connections) | up to 100,000 req/s target | **100%, 0 errors** — sustains ~37,000-38,800 req/s | 2.1ms | 6.0ms | 9.0ms |
 | Full stack: credential issuance (`POST /credentials/token`) | 500 req/s | 100% | 1.52ms | 1.76ms | 2.30ms |
 | Full stack allow (Bearer token; budget + anomaly + credential + audit all on) | 500 req/s | 100% | 0.82ms | 2.22ms | 10.4ms |
 | gRPC transport passthrough (Bearer token) | max (50 workers) | 100%, 0 errors | 1.28ms | 2.44ms | 3.35ms — **35,895 req/s throughput** |
