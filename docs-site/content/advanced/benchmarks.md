@@ -1,7 +1,7 @@
 ---
 title: "Benchmarks"
 weight: 30
-summary: "Real load-test numbers for the proxy, budget, credential issuance, and gRPC transport hot paths -- and the one real bottleneck they found."
+summary: "Real load-test numbers for every feature, two cross-cutting HA/soak runs, and the real bugs load testing found and fixed along the way."
 ---
 
 Real, sustained, concurrent load through a real `wardline serve` process --
@@ -12,12 +12,12 @@ go install github.com/tsenart/vegeta@latest   # HTTP load generator
 ./bench/run.sh
 ```
 
-It drives [vegeta](https://github.com/tsenart/vegeta) against the HTTP
-proxy path and a purpose-built raw-gRPC load client
-(`bench/grpcload`) against the [gRPC transport](/features/grpc-transport/),
-covering the v0.1 baseline hot path, the same path with every optional
-feature also on, credential issuance, and budget enforcement actually
-holding its line under overload.
+It drives [vegeta](https://github.com/tsenart/vegeta) and a handful of
+purpose-built load clients (`bench/grpcload`, `bench/anomalyattack`,
+`bench/sessionload`, `bench/scimload`, `bench/federationwait`, ...) against
+every feature this proxy ships, plus three cross-cutting runs: 3-5
+risk-based feature-flag combinations, an HA run (2 replicas sharing one
+Postgres pool), and a 30-60 minute soak.
 
 ## Machine and method
 
@@ -49,6 +49,8 @@ and `bench/grpcload upstream` for gRPC.
 | oidc allow path (bootstrapped bearer token) | 500 req/s | 100% | 0.32ms | 0.50ms | 0.92ms |
 | mtls bootstrap (`POST /credentials/token`, header-based) | 500 req/s | 100% | 1.03ms | 1.17ms | 1.27ms |
 | mtls allow path (bootstrapped bearer token) | 500 req/s | 100% | 0.39ms | 1.15ms | 2.63ms |
+| RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
+| RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 | Anomaly detection: attack-shaped burst (novel-tool + deny-rate spike) | max (50 workers) | **auto_block fired** — ~50,000 req/s sustained during the burst | 1.0ms | 2.5ms | 4.0ms |
 | gRPC transport, TLS on (spiffe_workload_identity + real mutual TLS to upstream) | max (50 workers) | 100%, 0 errors | 0.91ms | 1.61ms | 2.09ms — **51,520 req/s throughput** |
 | SCIM filter query (`GET /scim/v2/Users?filter=...`) | 500 req/s | 100% | 0.27ms | 0.45ms | 0.88ms |
@@ -65,8 +67,6 @@ and `bench/grpcload upstream` for gRPC.
 | Risk combo: taint + approval + job_budget + job_cost_budget (all four session-keyed) | 20 concurrent sessions × 10 cycles | 100% correct, no cross-feature interference | — | — | — |
 | **HA: 2 replicas, shared Postgres budget + audit, same load** | 500 req/s per replica (1,000 req/s combined) | **exactly 1,000/15,000 admitted** (matches the shared ceiling precisely — no double-counting) | 1.3ms | 3.0ms | 60ms |
 | **Soak: 30 min sustained, real wall-clock time** | 150 req/s (270,000 requests total) | **100%, 0 errors** | 0.81ms | 1.46ms | 2.19ms |
-| RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
-| RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 
 Two things worth calling out on their own:
 
