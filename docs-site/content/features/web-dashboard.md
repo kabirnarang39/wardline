@@ -47,16 +47,20 @@ of sync with what those views show), a recent-activity bar chart, a
 a live pulse (requests/sec over the trailing 10 seconds, with a
 pause/resume toggle).
 
-**Chart caveat:** the recent-activity chart buckets **the last N
-buffered audit events only** — the same bounded, in-memory,
-resets-on-restart ring buffer (default capacity 1000) that the Activity
-view itself polls, not a query over the durable audit trail
-(`audit.output`'s JSONL file, or the `postgres_storage` table). On a
-busy instance that cycles through the buffer in minutes, the chart
-shows *recent* activity, not a full historical view — do not read it as
-"today's total traffic" once request volume exceeds the buffer's
-capacity. The chart's own caption states this plainly at runtime
-("Based on the last N buffered events — not a full historical view.");
+**Chart caveat:** without `features.postgres_storage`, the recent-activity
+chart buckets **the last N buffered audit events only** — the same
+bounded, in-memory, resets-on-restart ring buffer (default capacity
+1000) that the Activity view itself polls, not a query over the durable
+audit trail (`audit.output`'s JSONL file). On a busy instance that
+cycles through the buffer in minutes, the chart shows *recent* activity,
+not a full historical view — do not read it as "today's total traffic"
+once request volume exceeds the buffer's capacity. **With
+`features.postgres_storage` on, this caveat no longer applies**: the
+Activity view and this chart both read from the same durable,
+cluster-wide `audit_entries` table every replica writes into (see
+`PostgresWriter.Since`) — not a fixed-N in-memory window, and not
+per-replica. The chart's own subtitle states however many events the
+current poll actually returned, so it reads correctly either way;
 this is that caveat's source of truth, not a display bug.
 
 Overview polls at the same 2-second cadence as every other live view,
@@ -191,8 +195,10 @@ does not change this. This is why `web_ui` defaults to off.
 
 ## Known limitations
 
-- The recent-activity chart on Overview reflects the bounded audit ring
-  buffer, not the durable audit trail — see the chart caveat above.
+- Without `features.postgres_storage`, the recent-activity chart on
+  Overview reflects the bounded audit ring buffer, not the durable
+  audit trail — see the chart caveat above. With `postgres_storage` on,
+  it reads the same durable, cluster-wide table the Activity view does.
 - **`GET`/`POST /dashboard/login` and `POST /dashboard/logout` now
   deliver a bearer token to the browser** (`features.credential_issuance`
   on) — see "Auth requirement for mutations" above. Session lifetime is

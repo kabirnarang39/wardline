@@ -1108,7 +1108,38 @@ func runServe(logger *slog.Logger, args []string) {
 			}
 		}
 
-		var dashboardRoute http.Handler = dashboardadapter.NewHandler(ringBuffer, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
+		// auditSource backs the dashboard's live-audit view.
+		// ringBuffer (in-memory, this replica's own traffic only) is the
+		// default; when postgres_storage is also on and the audit
+		// writer is genuinely a *auditadapter.PostgresWriter (i.e.
+		// buildAuditSink actually picked the postgres path, not just
+		// the flag being on), swap in the Postgres-backed source
+		// instead -- every replica writes into the SAME audit_entries
+		// table, so any replica's dashboard now shows the whole
+		// fleet's live traffic, not just its own. Closes the
+		// cluster-wide live-audit-aggregation gap web-dashboard.md's
+		// "Known limitations" documents.
+		var auditSource dashboardadapter.AuditSource = ringBuffer
+		if pw, ok := writer.(*auditadapter.PostgresWriter); ok {
+			auditSource = postgresAuditSourceFunc(func(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry {
+				rows, err := pw.Since(afterID, limit, tenantFilter)
+				if err != nil {
+					logger.Warn("dashboard: live audit query failed, returning empty (client will retry)", "error", err)
+					return nil
+				}
+				out := make([]dashboarddomain.LiveEntry, len(rows))
+				for i, r := range rows {
+					out[i] = dashboarddomain.LiveEntry{
+						ID: r.ID, Timestamp: r.Timestamp, Identity: r.Identity, Tenant: r.Tenant,
+						Tool: r.Tool, Decision: r.Decision, LatencyMS: r.LatencyMS, Reason: r.Reason, TraceID: r.TraceID,
+					}
+				}
+				return out
+			})
+			logger.Info("dashboard live audit view backed by postgres (cluster-wide, not per-replica)")
+		}
+
+		var dashboardRoute http.Handler = dashboardadapter.NewHandler(auditSource, statusProvider, policySource, dashboardadapter.Assets(), anomalySource, federationSource, blockedSource, scopeResolver, unblockAuthorizer, rbacSource, budgetSource, reloadCoordinator, reloadAuth, reloadBuffer, callerInfoResolver, policyWriter, budgetWriter, complianceSource, approvalSource, jobBudgetSource, costBudgetSource)
 		if rbacEnabled {
 			dashboardRoute = rbacadapter.RequirePermission(rbacChecker, identityAuth, rbacdomain.PermissionDashboardView, dashboardRoute, logger)
 		}
@@ -1445,6 +1476,16 @@ func buildTracingProvider(logger *slog.Logger, featureFlags flags.Provider, cfg 
 	}
 	logger.Info("otel tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint, "service_name", cfg.ServiceName)
 	return tracing.NewOTLPHTTP(context.Background(), cfg.ServiceName, cfg.OTLPEndpoint)
+}
+
+// postgresAuditSourceFunc adapts a plain function to
+// dashboardadapter.AuditSource -- the closure built in runServe (see
+// auditSource's own wiring comment) doesn't need its own named type
+// there, matching revokeAuthorizerFunc's exact pattern just below.
+type postgresAuditSourceFunc func(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry
+
+func (f postgresAuditSourceFunc) Since(afterID int64, limit int, tenantFilter string) []dashboarddomain.LiveEntry {
+	return f(afterID, limit, tenantFilter)
 }
 
 // revokeAuthorizerFunc adapts a plain function to credentialadapter.RevokeAuthorizer,
