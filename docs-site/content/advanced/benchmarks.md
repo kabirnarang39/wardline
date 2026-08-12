@@ -54,6 +54,7 @@ and `bench/grpcload upstream` for gRPC.
 | SCIM filter query (`GET /scim/v2/Users?filter=...`) | 500 req/s | 100% | 0.27ms | 0.45ms | 0.88ms |
 | **SCIM Bulk create (5 ops/request)** | max (50 workers) | **100%, 0 errors** | 0.69ms | 3.15ms | 5.01ms — **49,689 bulk-req/s (248,445 Create ops/s)** |
 | Dashboard: 4 concurrent API endpoints + live proxy traffic | 100 req/s each endpoint, 500 req/s proxy | 100% (all 5 concurrent streams) | 0.35–0.65ms | 0.6–1.2ms | 1.1–2.2ms |
+| Postgres storage: audit + budget + anomaly on one shared pool (5 identities) | 100 req/s per identity | 100% | 1.2–1.4ms | 1.9–2.5ms | 3.5–4.1ms |
 | RBAC dashboard, viewer-bound identity | 500 req/s | 100% allowed | 0.15ms | 0.41ms | 0.99ms |
 | RBAC dashboard, unbound identity | 500 req/s | 100% correctly denied (403) | 0.16ms | 0.33ms | 0.60ms |
 
