@@ -1,0 +1,10 @@
+# Wide-open policy for the Glama automated-check container only.
+#
+# This is intentionally the opposite of a real deployment's posture: an
+# anonymous introspection client (Glama's checker) has no identity to
+# match against, so a normal default-deny policy would reject its
+# tools/call before it ever reached mock_mcp.go. That's correct behavior
+# for a real deployment and exactly wrong for this fixture -- see
+# ../mock_mcp.go and ../Dockerfile for the rest of the setup.
+rules: []
+default: allow
