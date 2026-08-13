@@ -164,6 +164,10 @@ features:
 
 With `credential_issuance` on, a signed token replaces the header anyone could fake. With `rbac` on, both viewing the dashboard and changing anything require an identity that's actually allowed to. One thing worth being honest about: `ml_score` and `auto_block` catch loud, sudden abuse well, but not a slow ramp. `drift_detection` (a CUSUM control chart, on by default in the shipped config) closes most of that gap, and the measured numbers are in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark). One real gap stays: an attacker who has read the public thresholds can hold a roughly 1.15x ramp forever, which is written up plainly in [known limitations](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#known-limitations). So keep explicit policy and budget limits as your hard floor no matter what.
 
+## Why Wardline, vs. the alternatives
+
+Bifrost is a faster single binary. ToolHive, Portkey, and Kong AI Gateway each go deeper on one piece of this. None of them combine proxy-layer taint tracking, a signed offline compliance bundle, privacy-preserving cross-instance correlation, intent-verified approval, and policy content portable across three engine backends in one self-hosted binary. Full comparison, checked claim by claim, in [docs/positioning/why-wardline.md](docs/positioning/why-wardline.md).
+
 ## Project status
 
 Wardline is young and moving fast. Every feature's docs page is deliberately blunt about what it does and doesn't do. Feedback, issues, and contributions are welcome, especially on the anomaly-detection approach and threat model.
