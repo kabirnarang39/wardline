@@ -89,15 +89,16 @@ func (r *JSONLReader) Query(ctx context.Context, from, to time.Time) ([]domain.E
 			entryTenant = tenant.Default
 		}
 		entries = append(entries, domain.Entry{
-			Timestamp: ts,
-			Identity:  raw.Identity,
-			Tenant:    entryTenant,
-			Tool:      raw.Tool,
-			Decision:  raw.Decision,
-			LatencyMS: raw.LatencyMS,
-			Reason:    raw.Reason,
-			TraceID:   raw.TraceID,
-			SessionID: raw.SessionID,
+			Timestamp:    ts,
+			Identity:     raw.Identity,
+			Tenant:       entryTenant,
+			Tool:         raw.Tool,
+			Decision:     raw.Decision,
+			LatencyMS:    raw.LatencyMS,
+			Reason:       raw.Reason,
+			TraceID:      raw.TraceID,
+			SessionID:    raw.SessionID,
+			TaintSources: raw.TaintSources,
 		})
 	}
 	if err := scanner.Err(); err != nil {

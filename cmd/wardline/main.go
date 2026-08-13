@@ -413,12 +413,13 @@ func runServe(logger *slog.Logger, args []string) {
 		}
 		taintEngine = taintusecase.NewEngine(taintCfg, taintadapter.NewInMemoryStore(), time.Now)
 		window := taintCfg.Window()
-		taintLookup = func(call proxydomain.ToolCall) bool {
+		taintLookup = func(call proxydomain.ToolCall) proxydomain.TaintSignal {
 			// An explicit X-Wardline-Session header wins (matching Publish's
 			// set-side preference); absent one, the TTL-window bucket derived
 			// from wall-clock time is the fallback session boundary.
 			session := platformsession.SessionID(call.SessionID, call.Tenant, call.Identity, call.Timestamp, window)
-			return taintEngine.Current(call.Tenant, call.Identity, session, call.Timestamp).Tainted
+			label := taintEngine.Current(call.Tenant, call.Identity, session, call.Timestamp)
+			return proxydomain.TaintSignal{Tainted: label.Tainted, Sources: label.Sources}
 		}
 		logger.Info("taint tracking enabled", "untrusted_sources", cfg.Taint.UntrustedSources, "ttl_seconds", taintCfg.TTL())
 	}

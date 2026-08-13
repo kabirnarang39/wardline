@@ -247,7 +247,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "")
+		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "", nil)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, nil, "cannot read body")
 		return
 	}
@@ -255,7 +255,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := proxyusecase.ParseRequest(identity, tenant, body)
 	if err != nil {
-		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "")
+		h.finish(span, identity, tenant, "", "error", "", "", start, nil, "", nil)
 		writeJSONRPCError(w, http.StatusBadRequest, rpcCodeParseError, parsed.ID, err.Error())
 		return
 	}
@@ -274,7 +274,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.autoBlockChecker != nil {
 		blockVerdict := h.autoBlockChecker.Check(identity, tenant, start)
 		if !blockVerdict.Allowed {
-			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, "", "blocked", blockVerdict.Reason, parsed.Call.SessionID, start, nil, "", nil)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(blockVerdict.RetryAfter)))
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "blocked due to anomalous behavior")
 			return
@@ -287,7 +287,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// upstream without policy or budget evaluation — every real MCP
 		// client performs this handshake before its first tool call. See
 		// docs/superpowers/specs/2026-07-27-mcp-protocol-passthrough-design.md.
-		h.forward(w, r, span, parsed, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "")
+		h.forward(w, r, span, parsed, identity, tenant, parsed.Method, parsed.ID, start, "passthrough", "", nil)
 		return
 	}
 
@@ -326,19 +326,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.approval == nil {
 			// Fail closed: policy asked for approval but the feature isn't
 			// wired, so there's no way to obtain one — deny.
-			h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 			return
 		}
 		redacted := proxyusecase.RedactSecrets(proxyusecase.ShallowParams(parsed.Call.Params))
 		res, err := h.approval.OnNeedsApproval(tenant, identity, auditTool, parsed.Method, parsed.Call.SessionID, redacted)
 		if err != nil {
-			h.finish(span, identity, tenant, auditTool, "deny", err.Error(), parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "deny", err.Error(), parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 			writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 			return
 		}
 		if !res.Approved {
-			h.finish(span, identity, tenant, auditTool, "needs_approval", verdict.Reason, parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "needs_approval", verdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 			writeJSONRPCError(w, http.StatusAccepted, rpcCodeServerErr, parsed.ID, "awaiting operator approval; retry after approval (pending id: "+res.PendingID+")")
 			return
 		}
@@ -353,7 +353,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the OPA backend, potentially internal error text, file paths, or
 		// rule names) — record it in the audit log for the operator, but
 		// never echo it to the untrusted HTTP caller.
-		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "")
+		h.finish(span, identity, tenant, auditTool, "deny", verdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 		writeJSONRPCError(w, http.StatusForbidden, rpcCodeServerErr, parsed.ID, "denied by policy")
 		return
 	}
@@ -364,7 +364,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// widening that key space to arbitrary resource URIs is a
 		// separate design question, deliberately out of scope. See
 		// docs/superpowers/specs/2026-08-08-widen-policy-resources-prompts-design.md.
-		h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
+		h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason, verdict.TaintSources)
 		return
 	}
 
@@ -372,7 +372,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !budgetVerdict.Allowed {
 		// Same reasoning as the policy-deny path above: detailed reason to
 		// the audit log, generic message to the caller.
-		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+		h.finish(span, identity, tenant, auditTool, "throttled", budgetVerdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(budgetVerdict.RetryAfter)))
 		writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "throttled by budget")
 		return
@@ -408,7 +408,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// ceiling for every subsequent call, not just this one.
 		jbVerdict := h.jobBudgetChecker.Check(tenant, identity, parsed.Call.SessionID, start)
 		if !jbVerdict.Allowed && !admittedViaGrant {
-			h.finish(span, identity, tenant, auditTool, "job_budget_exceeded", jbVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "job_budget_exceeded", jbVerdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 			writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "job budget ceiling exceeded")
 			return
 		}
@@ -447,7 +447,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.costBudgetChecker != nil {
 		cbVerdict := h.costBudgetChecker.Check(tenant, identity, parsed.Call.SessionID, call.Tool, start)
 		if !cbVerdict.Allowed && !admittedViaGrant {
-			h.finish(span, identity, tenant, auditTool, "cost_budget_exceeded", cbVerdict.Reason, parsed.Call.SessionID, start, nil, "")
+			h.finish(span, identity, tenant, auditTool, "cost_budget_exceeded", cbVerdict.Reason, parsed.Call.SessionID, start, nil, "", verdict.TaintSources)
 			writeJSONRPCError(w, http.StatusTooManyRequests, rpcCodeServerErr, parsed.ID, "cost budget ceiling exceeded")
 			return
 		}
@@ -470,7 +470,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason)
+	h.forward(w, r, span, parsed, identity, tenant, auditTool, parsed.ID, start, "allow", successReason, verdict.TaintSources)
 }
 
 // forward proxies the request upstream, recording exactly one audit entry
@@ -481,7 +481,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // reason recorded alongside it — empty for an ordinary allow (and always
 // empty for passthrough, which never reaches a budget check), non-empty
 // only when the budget check failed open and that needs a durable trace.
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, parsed prdomain.ParsedRequest, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision, successReason string) {
+// taintSources carries the calling Verdict's taint provenance through to
+// both possible audit entries below — nil for the protocol-passthrough
+// caller, which never reaches Decide at all.
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Span, parsed prdomain.ParsedRequest, identity, tenant, tool string, id json.RawMessage, start time.Time, successDecision, successReason string, taintSources []string) {
 	proxy := *h.upstream // shallow copy: per-request ErrorHandler/ModifyResponse closures
 	recorded := false
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -489,7 +492,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 		// The upstream never responded, so a claimed write definitely did not
 		// take effect — record it as contradicted.
 		eff, st := proxyusecase.ExtractEffect(parsed, proxyusecase.EffectSignal{ResponseStatus: http.StatusBadGateway}, proxyusecase.RedactSecrets)
-		h.finish(span, identity, tenant, tool, "error", "", parsed.Call.SessionID, start, eff, st)
+		h.finish(span, identity, tenant, tool, "error", "", parsed.Call.SessionID, start, eff, st, taintSources)
 		writeJSONRPCError(w, http.StatusBadGateway, rpcCodeServerErr, id, "upstream unreachable")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -497,7 +500,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, span trace.Spa
 			recorded = true
 			sig := readResponseSignal(resp)
 			eff, st := proxyusecase.ExtractEffect(parsed, sig, proxyusecase.RedactSecrets)
-			h.finish(span, identity, tenant, tool, successDecision, successReason, parsed.Call.SessionID, start, eff, st)
+			h.finish(span, identity, tenant, tool, successDecision, successReason, parsed.Call.SessionID, start, eff, st, taintSources)
 		}
 		return nil
 	}
@@ -545,7 +548,7 @@ func retryAfterSeconds(d time.Duration) int {
 // entry for a completed request — every return point in
 // ServeHTTP/forward needs both, so they're combined here rather than
 // repeated at each call site.
-func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
+func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reason, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus, taintSources []string) {
 	span.SetAttributes(
 		attribute.String("wardline.tool", tool),
 		attribute.String("wardline.decision", decision),
@@ -582,11 +585,11 @@ func (h *Handler) finish(span trace.Span, identity, tenant, tool, decision, reas
 	if h.metricsRecorder != nil {
 		h.metricsRecorder.ObserveRequest(decision, h.now().Sub(start))
 	}
-	h.record(identity, tenant, tool, decision, reason, traceID, sessionID, start, effect, status)
+	h.record(identity, tenant, tool, decision, reason, traceID, sessionID, start, effect, status, taintSources)
 }
 
-func (h *Handler) record(identity, tenant, tool, decision, reason, traceID, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus) {
-	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, sessionID, effect, status)
+func (h *Handler) record(identity, tenant, tool, decision, reason, traceID, sessionID string, start time.Time, effect *auditdomain.Effect, status auditdomain.EffectStatus, taintSources []string) {
+	h.recorder.RecordWithEffect(identity, tenant, tool, decision, reason, traceID, h.now().Sub(start), start, sessionID, effect, status, taintSources)
 }
 
 // readResponseSignal reads a bounded prefix of the upstream response body to

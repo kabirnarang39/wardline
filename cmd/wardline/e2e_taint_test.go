@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +79,34 @@ taint:
 	afterRead := postToolCall(t, listenAddr, "agent-abc123", "delete_file")
 	if afterRead.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for a write after an untrusted read when taint is off, got %d (stderr: %s)", afterRead.StatusCode, stderr.String())
+	}
+}
+
+// TestServeEndToEnd_TaintedDenialRecordsSourceInAudit closes a real gap:
+// taint/domain.Label has carried Sources since taint tracking shipped, but
+// nothing ever read it back out -- an operator investigating a
+// tainted-write denial could see THAT a call was tainted (only if the
+// policy author's own reason string happened to mention it) but never
+// WHICH untrusted call actually caused it, from Wardline's own audit trail.
+// Proves, through the real binary, that the denied write's audit entry now
+// carries taint_sources regardless of what the policy's reason string says.
+func TestServeEndToEnd_TaintedDenialRecordsSourceInAudit(t *testing.T) {
+	listenAddr, stdout, stderr, _, _ := startWardline(t, "policy.rego", taintPolicy, `policy_backend: opa
+features:
+  taint_tracking: true
+taint:
+  untrusted_sources:
+    - web_fetch`)
+
+	if got := postToolCall(t, listenAddr, "agent-abc123", "web_fetch"); got.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for the untrusted read, got %d (stderr: %s)", got.StatusCode, stderr.String())
+	}
+	if got := postToolCall(t, listenAddr, "agent-abc123", "delete_file"); got.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for the tainted write, got %d (stderr: %s)", got.StatusCode, stderr.String())
+	}
+
+	if !strings.Contains(stdout.String(), `"taint_sources":["web_fetch"]`) {
+		t.Errorf("expected the tainted write's audit entry to record taint_sources, got stdout:\n%s", stdout.String())
 	}
 }
 
