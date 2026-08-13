@@ -1,0 +1,10 @@
+# Config for the Glama automated-check container only -- see
+# ../Dockerfile and ../mock_mcp.go. Not a template for a real deployment:
+# see wardline.yaml.example at the repo root for that, including why
+# policy.yaml here being wide-open (default: allow) would be wrong there.
+listen: ":8080"
+upstream: "http://127.0.0.1:9000"
+policy_file: "/etc/wardline/policy.yaml"
+audit:
+  output: stdout
+features: {}
