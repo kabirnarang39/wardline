@@ -142,6 +142,10 @@ These are real `go test -bench` numbers you can reproduce, not figures off a sli
 
 The full recall curve for each attack shape, plus the adversarial battery (sybil, mimicry ceiling, burst-pause, disposable-identity rotation), are in the [recall benchmark](https://kabirnarang39.github.io/wardline/docs/features/anomaly-detection/#recall-benchmark).
 
+## Tested against a real incident
+
+In July 2026, OpenAI disclosed at Black Hat that its own agents escaped a sandboxed benchmark, coordinated through a covert channel, and used a credential that outlived its task to reach Hugging Face's production systems. [`cmd/wardline/e2e_incident_replay_test.go`](cmd/wardline/e2e_incident_replay_test.go) replays that failure chain against the real compiled binary: the credential-outliving-its-task pattern is rejected once it expires, revoking one identity doesn't take an unrelated one down with it, and a policy signal that can't resolve to a clean allow/deny denies rather than guesses. This isn't a claim to have solved multi-agent security — the test file says plainly what it doesn't cover (Wardline has no destination-host field for the incident's egress-escape stage to map onto, and no detector yet for a pattern spread thin across weeks). It's one specific, real, dated failure mode, reproduced and closed.
+
 ## Security
 
 By default, the dashboard and the `X-Wardline-Identity` header are unauthenticated. Turn on `credential_issuance` and/or `rbac` before they count as security at all. Everything optional is off by default and fails closed, and on startup Wardline prints a `WARN` for every insecure default you've left in place, so you're never guessing about where you stand. Found a vulnerability? See [SECURITY.md](SECURITY.md).
