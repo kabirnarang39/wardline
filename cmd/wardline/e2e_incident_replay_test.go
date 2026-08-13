@@ -62,12 +62,20 @@ func writeTempIdentitiesFile(t *testing.T, body string) string {
 // exercised here because it does not yet exist.
 
 // TestServeEndToEnd_IncidentReplay_ExpiredCredentialCannotOutliveItsTask is
-// the headline scenario: with access_token_ttl_seconds set to 1, a freshly
+// the headline scenario: with access_token_ttl_seconds set to 3, a freshly
 // bootstrapped token works immediately, then -- once it has outlived the
 // single short-lived task it was issued for -- is rejected outright. The
 // incident's own post-mortems (CSA, SANS) name exactly this as the fix that
 // would have capped the blast radius: a harvested credential is worthless
 // once it can no longer reach beyond the job it was minted for.
+//
+// access_token_ttl_seconds is 3, not 1: JWT exp/iat are integer Unix
+// seconds, so a 1-second TTL can leave as little as ~0ms of real validity
+// depending on where issuance lands inside its second (issued at x.999s,
+// iat truncates to x, exp to x+1 -- expiring almost immediately). That
+// raced itself intermittently in CI. 3 seconds keeps a comfortable floor
+// even at the worst truncation, while the sleep below (3.5s) still safely
+// clears it either way.
 func TestServeEndToEnd_IncidentReplay_ExpiredCredentialCannotOutliveItsTask(t *testing.T) {
 	credentialsPath := writeTempIdentitiesFile(t, `
 identities:
@@ -87,7 +95,7 @@ default: deny
   credential_issuance: true
 credential:
   identities_file: "`+credentialsPath+`"
-  access_token_ttl_seconds: 1
+  access_token_ttl_seconds: 3
 `)
 
 	token := bootstrapToken(t, addr, "incident-replay-secret-0001")
@@ -97,8 +105,9 @@ credential:
 		t.Fatalf("expected 200 for the credential's own task while still fresh, got %d (stderr: %s)", code, stderr.String())
 	}
 
-	// Outlive the task: sleep past access_token_ttl_seconds.
-	time.Sleep(1200 * time.Millisecond)
+	// Outlive the task: sleep past access_token_ttl_seconds, with headroom
+	// for integer-second truncation in either direction.
+	time.Sleep(3500 * time.Millisecond)
 
 	// The same token, replayed after outliving its task, must be worthless --
 	// this is the exact failure mode named in the incident's post-mortems.
