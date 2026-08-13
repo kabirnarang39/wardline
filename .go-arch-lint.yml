@@ -27,6 +27,10 @@ exclude:
   # application this linter's layering rule governs, same reasoning as
   # docs-site/site/charts above.
   - bench
+  # deploy/glama holds a single standalone stub (mock_mcp.go) used only as
+  # Wardline's upstream inside glama.ai's automated-check container -- same
+  # shape and same reasoning as bench/ above, not part of the application.
+  - deploy
 
 excludeFiles:
   - ".*_test\\.go$"
