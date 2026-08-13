@@ -9,6 +9,7 @@
 # Ko-fi is instant but pays out via PayPal (~8% effective) — no UPI for donors.
 # For Indian supporters, add a Razorpay/UPI page under `custom:`.
 
-# github: kabirnarang39           # after GitHub Sponsors is approved for your account
+github: kabirnarang39
+
 # ko_fi: your-ko-fi-handle        # instant; https://ko-fi.com/<handle>
 # custom: ["https://razorpay.me/@your-handle"]   # optional India-friendly UPI/card page
