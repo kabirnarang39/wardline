@@ -23,14 +23,16 @@ func NewRecorder(w domain.Writer, sink domain.LiveSink, onError func(error)) *Re
 }
 
 func (r *Recorder) Record(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time) {
-	r.RecordWithEffect(identity, tenantName, tool, decision, reason, traceID, latency, now, "", nil, "")
+	r.RecordWithEffect(identity, tenantName, tool, decision, reason, traceID, latency, now, "", nil, "", nil)
 }
 
 // RecordWithEffect is Record plus the optional post-condition Effect and its
-// derived status (see proxy/usecase.ExtractEffect). effect is nil / status is
-// "" for reads and every path that doesn't capture an effect — identical to
-// Record in that case.
-func (r *Recorder) RecordWithEffect(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time, sessionID string, effect *domain.Effect, status domain.EffectStatus) {
+// derived status (see proxy/usecase.ExtractEffect), and taintSources -- the
+// untrusted-source tool(s) that tainted this call's session, when
+// taint_tracking is on and the session was tainted at decision time; nil
+// otherwise. effect is nil / status is "" for reads and every path that
+// doesn't capture an effect — identical to Record in that case.
+func (r *Recorder) RecordWithEffect(identity, tenantName, tool, decision, reason, traceID string, latency time.Duration, now time.Time, sessionID string, effect *domain.Effect, status domain.EffectStatus, taintSources []string) {
 	entry := domain.Entry{
 		Timestamp:    now,
 		Identity:     identity,
@@ -43,6 +45,7 @@ func (r *Recorder) RecordWithEffect(identity, tenantName, tool, decision, reason
 		SessionID:    sessionID,
 		Effect:       effect,
 		EffectStatus: status,
+		TaintSources: taintSources,
 	}
 	if err := r.writer.Write(entry); err != nil && r.onError != nil {
 		r.onError(err)

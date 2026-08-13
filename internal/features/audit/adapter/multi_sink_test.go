@@ -1,6 +1,7 @@
 package adapter_test
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/kabirnarang39/wardline/internal/features/audit/adapter"
@@ -23,10 +24,10 @@ func TestMultiSink_PublishReachesEveryMember(t *testing.T) {
 	e := domain.Entry{Identity: "alice", Tool: "read_file", Decision: "allow"}
 	m.Publish(e)
 
-	if len(a.entries) != 1 || a.entries[0] != e {
+	if len(a.entries) != 1 || !reflect.DeepEqual(a.entries[0], e) {
 		t.Errorf("expected sink a to receive the entry, got %+v", a.entries)
 	}
-	if len(b.entries) != 1 || b.entries[0] != e {
+	if len(b.entries) != 1 || !reflect.DeepEqual(b.entries[0], e) {
 		t.Errorf("expected sink b to receive the entry, got %+v", b.entries)
 	}
 }

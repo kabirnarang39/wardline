@@ -6,10 +6,10 @@ import (
 	"github.com/kabirnarang39/wardline/internal/platform/reload"
 )
 
-// TaintLookup reports whether a call's (tenant, identity, session) currently
-// carries an integrity taint. Supplied only when taint_tracking is on; a nil
-// lookup means untainted, so the feature adds zero behavior when off.
-type TaintLookup func(domain.ToolCall) bool
+// TaintLookup reports a call's (tenant, identity, session) taint state.
+// Supplied only when taint_tracking is on; a nil lookup means untainted (the
+// zero domain.TaintSignal), so the feature adds zero behavior when off.
+type TaintLookup func(domain.ToolCall) domain.TaintSignal
 
 // JobBudgetLookup reports whether a call's (tenant, identity, session) job
 // has exceeded its per-job request ceiling. Supplied only when job_budget is
@@ -74,6 +74,10 @@ func NewDeciderWithHolderTaintJobBudgetAndCostBudget(holder *reload.ReloadableEn
 }
 
 func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
+	var taint domain.TaintSignal
+	if d.taint != nil {
+		taint = d.taint(call)
+	}
 	pc := policydomain.Context{
 		Identity:       call.Identity,
 		Tenant:         call.Tenant,
@@ -83,7 +87,7 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 		Timestamp:      call.Timestamp,
 		RemoteAddr:     call.RemoteAddr,
 		UserAgent:      call.UserAgent,
-		Tainted:        d.taint != nil && d.taint(call),
+		Tainted:        taint.Tainted,
 		JobOverBudget:  d.jobBudget != nil && d.jobBudget(call),
 		CostOverBudget: d.costBudget != nil && d.costBudget(call),
 	}
@@ -96,9 +100,13 @@ func (d *Decider) Decide(call domain.ToolCall) domain.Verdict {
 	case policydomain.EffectNeedsApproval:
 		outcome = domain.OutcomeNeedsApproval
 	}
-	return domain.Verdict{
+	verdict := domain.Verdict{
 		Allow:   outcome == domain.OutcomeAllow,
 		Outcome: outcome,
 		Reason:  decision.Reason,
 	}
+	if taint.Tainted {
+		verdict.TaintSources = taint.Sources
+	}
+	return verdict
 }

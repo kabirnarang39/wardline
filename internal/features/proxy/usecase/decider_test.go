@@ -120,10 +120,32 @@ func TestDecide_TaintLookupSetsContextTainted(t *testing.T) {
 	// lookup returning true -> tainted.
 	engineOn := &recordingEngine{}
 	var eOn policydomain.Engine = engineOn
-	dOn := usecase.NewDeciderWithHolderAndTaint(reload.NewReloadableEngine(&eOn), func(domain.ToolCall) bool { return true })
-	dOn.Decide(call)
+	dOn := usecase.NewDeciderWithHolderAndTaint(reload.NewReloadableEngine(&eOn), func(domain.ToolCall) domain.TaintSignal {
+		return domain.TaintSignal{Tainted: true, Sources: []string{"web_fetch"}}
+	})
+	verdict := dOn.Decide(call)
 	if !engineOn.captured.Tainted {
 		t.Errorf("taint lookup returning true should set Context.Tainted")
+	}
+	if got := verdict.TaintSources; len(got) != 1 || got[0] != "web_fetch" {
+		t.Errorf("expected Verdict.TaintSources to carry the lookup's sources, got %v", got)
+	}
+}
+
+// TestDecide_UntaintedCallCarriesNoTaintSources proves TaintSources stays
+// nil on the Verdict when the lookup reports untainted -- a real (non-nil)
+// lookup that simply says "not tainted this time" must not leak a stale or
+// fabricated source list onto an otherwise-ordinary call's audit entry.
+func TestDecide_UntaintedCallCarriesNoTaintSources(t *testing.T) {
+	call := domain.ToolCall{Identity: "alice", Tool: "read", Tenant: "acme"}
+	engine := &recordingEngine{}
+	var e policydomain.Engine = engine
+	d := usecase.NewDeciderWithHolderAndTaint(reload.NewReloadableEngine(&e), func(domain.ToolCall) domain.TaintSignal {
+		return domain.TaintSignal{Tainted: false, Sources: []string{"stale_leftover_source"}}
+	})
+	verdict := d.Decide(call)
+	if verdict.TaintSources != nil {
+		t.Errorf("expected nil TaintSources on an untainted call, got %v", verdict.TaintSources)
 	}
 }
 

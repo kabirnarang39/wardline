@@ -61,6 +61,33 @@ type Verdict struct {
 	Allow   bool
 	Outcome Outcome
 	Reason  string
+
+	// TaintSources names the untrusted-source tool(s) that tainted this
+	// call's session, when taint_tracking is on and the session is
+	// currently tainted -- nil otherwise (including when taint_tracking is
+	// off, or the session was never tainted). Recorded regardless of
+	// Outcome: an ALLOW under taint is exactly as worth an operator seeing
+	// in the audit trail as a DENY under taint is, since policy (not this
+	// field) is what decided whether taint mattered for this call.
+	//
+	// This closes a real gap: taint/domain.Label has carried this same
+	// data (as Sources) since taint tracking shipped, but nothing ever
+	// read it back out -- an operator investigating a tainted-write denial
+	// could see THAT the call was tainted (via policy's own reason
+	// string, if the policy author happened to say so) but never WHICH
+	// untrusted call actually caused it, from Wardline's own audit trail.
+	TaintSources []string
+}
+
+// TaintSignal is what a TaintLookup reports for one ToolCall: whether its
+// session is currently tainted, and if so, which untrusted-source tool(s)
+// caused it. A small, proxy-owned type -- not a reuse of taint/domain.Label
+// -- so this package never imports the taint feature's domain type directly,
+// the same "own your full vertical" boundary every other cross-feature
+// signal in this Context (JobOverBudget, CostOverBudget) already respects.
+type TaintSignal struct {
+	Tainted bool
+	Sources []string
 }
 
 // ParsedRequest is the result of parsing an incoming MCP JSON-RPC

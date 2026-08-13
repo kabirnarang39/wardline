@@ -45,6 +45,16 @@ type Entry struct {
 	// caller sent one. Empty when absent (the taint engine then falls back
 	// to its TTL window). Optional/additive — omitempty in serialization.
 	SessionID string
+
+	// TaintSources names the untrusted-source tool(s) that tainted this
+	// call's (tenant, identity, session) at decision time, when
+	// taint_tracking is on and the session was tainted -- nil otherwise.
+	// Recorded regardless of Decision: an allowed call under taint is
+	// exactly as worth surfacing here as a denied one, since policy (not
+	// this field) is what decided whether taint mattered. Same
+	// optional/additive scope as SessionID -- JSONL only for now, not yet
+	// carried by the Postgres writer or the dashboard's LiveEntry.
+	TaintSources []string
 }
 
 // EffectStatus classifies whether a write-shaped call's claimed change was
