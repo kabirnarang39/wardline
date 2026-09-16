@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/kms v1.55.5
 	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v3 v3.2.0
 	github.com/open-policy-agent/opa v1.19.0
